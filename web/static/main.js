@@ -1379,6 +1379,34 @@ async function triggerGenerate() {
 /**
  * Copy prompt to clipboard
  */
+/**
+ * Build the plain-text payload that Overview Copy/Download should emit.
+ *
+ * The Overview tab visually concatenates the overview body with a
+ * "本次生成新增或改动的内容" (change_summary_cn) section for regenerated
+ * versions. Copy/Download should match that, but Raw Text must NEVER
+ * be polluted with this concatenation — Raw Text stays the clean
+ * NotebookLM-ready prompt.
+ */
+function getOverviewPlainText() {
+    const overview = (typeof currentOverviewText === 'string' ? currentOverviewText : '') || '';
+    const changeSummary = (typeof currentChangeSummaryText === 'string' ? currentChangeSummaryText : '') || '';
+
+    const overviewTrimmed = overview.replace(/\s+$/u, '');
+    if (!changeSummary.trim()) {
+        return overviewTrimmed;
+    }
+
+    const header = '本次生成新增或改动的内容';
+    const parts = [];
+    if (overviewTrimmed) {
+        parts.push(overviewTrimmed);
+    }
+    parts.push(header);
+    parts.push(changeSummary.replace(/^\s+|\s+$/gu, ''));
+    return parts.join('\n\n');
+}
+
 async function copyPrompt() {
     let text = '';
 
@@ -1390,7 +1418,7 @@ async function copyPrompt() {
         const previewEl = document.getElementById('prompt-preview');
         text = previewEl.innerText || previewEl.textContent;
     } else if (currentPromptViewMode === 'overview') {
-        text = currentOverviewText;
+        text = getOverviewPlainText();
     } else if (currentPromptViewMode === 'review') {
         // AI Review tab: copy the markdown summary if a review is loaded.
         if (!currentReviewData || typeof getReviewContent !== 'function') {
@@ -1443,7 +1471,7 @@ function downloadPrompt() {
         text = previewEl.innerText || previewEl.textContent;
         filenameSuffix = 'preview';
     } else if (currentPromptViewMode === 'overview') {
-        text = currentOverviewText;
+        text = getOverviewPlainText();
         filenameSuffix = 'overview';
     } else if (currentPromptViewMode === 'review') {
         if (!currentReviewData || typeof getReviewContent !== 'function') {

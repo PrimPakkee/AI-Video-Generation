@@ -1141,6 +1141,46 @@ def generate_preview_text(raw_text: str) -> str:
     return '\n'.join(preview)
 
 
+def _build_ai_review_markdown(review_data: Optional[dict]) -> str:
+    """Build a portable markdown rendering of an AI review payload.
+
+    Mirrors the frontend reviewToMarkdown() shape so the bundled
+    ai_review.md inside Download All matches what users see in the UI.
+    Returns a placeholder string when no review data is available.
+    """
+    if not review_data:
+        return "AI Review has not been generated yet.\n"
+
+    rows = review_data.get("rows") or []
+    total_score = review_data.get("total_score", 0)
+    overall_review = review_data.get("overall_review") or ""
+
+    def _esc(value: Any) -> str:
+        text = "" if value is None else str(value)
+        return text.replace("|", "\\|").replace("\n", " ")
+
+    lines = ["# AI Quality Evaluation", ""]
+    lines.append("| Criterion | Weight | Evaluation Focus | LLM Score | LLM Comment |")
+    lines.append("|-----------|-------:|------------------|----------:|-------------|")
+    for row in rows:
+        lines.append(
+            "| {criterion} | {weight} | {focus} | {score} | {comment} |".format(
+                criterion=_esc(row.get("criterion", "")),
+                weight=_esc(row.get("weight", "")),
+                focus=_esc(row.get("evaluation_focus", "")),
+                score=_esc(row.get("llm_score", "")),
+                comment=_esc(row.get("llm_comment", "")),
+            )
+        )
+    lines.append(
+        f"| **Total Score** | **100%** | - | **{_esc(total_score)}/100** | - |"
+    )
+    lines.append(
+        f"| **Overall Review** | - | - | - | {_esc(overall_review)} |"
+    )
+    return "\n".join(lines) + "\n"
+
+
 @app.get("/api/history/{history_id}/download-all")
 async def download_all(
     history_id: int,
@@ -1154,9 +1194,11 @@ async def download_all(
         db: Database session
 
     Returns:
-        Streaming zip file containing raw_text.txt, preview.txt, overview.txt
+        Streaming zip file containing raw_text.txt, preview.txt, overview.txt,
+        ai_review.md, and metadata.json
     """
     from fastapi.responses import StreamingResponse
+    from web.db.models import PromptReview
     import io
     import zipfile
 
@@ -1195,11 +1237,10 @@ async def download_all(
                 output_dir = Path(record.output_dir)
                 topic_json_file = output_dir / "topic.json"
                 if topic_json_file.exists():
-                    import json
                     with open(topic_json_file, 'r', encoding='utf-8') as f:
                         topic_data = json.load(f)
                         core_concept = topic_data.get('core_concept')
-            except:
+            except Exception:
                 pass
 
             overview_cn = generate_fallback_overview(record.title, core_concept)
@@ -1207,6 +1248,183 @@ async def download_all(
         # Add change_summary_cn if available
         if record.change_summary_cn:
             overview_cn = f"{overview_cn}\n\n本次生成新增或改动的内容\n\n{record.change_summary_cn}"
+
+        # ---- AI Review markdown (STRICTLY read-only) ----
+        # IMPORTANT: download_all is a GET endpoint and MUST NOT mutate the
+        # database. We deliberately bypass PromptReviewRepository helpers here
+        # because:
+        #   * get_review_status() side-effects timed-out generating rows.
+        #   * get_review_by_history_id() filters to the current schema only,
+        #     which would hide legacy reviews that are still worth archiving.
+        # We do a direct read-only ORM query and derive everything in memory.
+        CURRENT_REVIEW_SCHEMA = "v0.4.6.9_strict"
+
+        review_records = []
+        try:
+            review_records = (
+                db.query(PromptReview)
+                .filter(PromptReview.history_id == history_id)
+                .order_by(PromptReview.updated_at.desc())
+                .all()
+            )
+        except Exception as e:
+            print(f"Warning: Failed to read review rows for download_all: {e}")
+            review_records = []
+
+        def _try_parse_review_json(raw):
+            if not raw:
+                return None
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                return None
+            if not isinstance(parsed, dict):
+                return None
+            return parsed
+
+        def _is_renderable(parsed):
+            # We need at least one of rows / total_score / overall_review
+            # for the markdown table to be meaningful.
+            if not isinstance(parsed, dict):
+                return False
+            return any(k in parsed for k in ("rows", "total_score", "overall_review"))
+
+        def _normalize_status(value):
+            normalized = (value or "").strip().lower() or "none"
+            # 'active' is the legacy synonym for a completed review
+            # (see create_review()'s `status='active'`).
+            if normalized == "active":
+                return "completed"
+            return normalized
+
+        # Partition records into current-schema vs legacy (any other schema,
+        # including missing/None — treat those as legacy too).
+        current_schema_records = [
+            r for r in review_records
+            if r.review_schema_version == CURRENT_REVIEW_SCHEMA
+        ]
+        legacy_records = [
+            r for r in review_records
+            if r.review_schema_version != CURRENT_REVIEW_SCHEMA
+        ]
+
+        # Pick the best current-schema record by status priority, then recency.
+        # `review_records` is already ordered by updated_at DESC, so we just
+        # need to scan in priority order.
+        STATUS_PRIORITY = ("completed", "stale", "generating", "failed")
+        chosen_record = None
+        chosen_origin = None  # 'current' | 'legacy' | None
+
+        for status_key in STATUS_PRIORITY:
+            for r in current_schema_records:
+                if _normalize_status(r.status) == status_key:
+                    chosen_record = r
+                    chosen_origin = "current"
+                    break
+            if chosen_record is not None:
+                break
+
+        # Normalized status drives subsequent decisions; raw 'active' from
+        # create_review() should fall into the 'completed' priority bucket
+        # above, but if everything was unrecognized we still pick the newest.
+        if chosen_record is None and current_schema_records:
+            # Some other status value we didn't enumerate — still take newest.
+            chosen_record = current_schema_records[0]
+            chosen_origin = "current"
+
+        # If we have no current-schema record (or only an `none`/empty one)
+        # and there are legacy reviews, fall back to the newest renderable
+        # legacy review. Otherwise keep the legacy fallback even if not
+        # renderable, so metadata can still surface its existence.
+        if chosen_record is None and legacy_records:
+            renderable_legacy = None
+            for r in legacy_records:
+                parsed = _try_parse_review_json(r.review_json)
+                if _is_renderable(parsed):
+                    renderable_legacy = r
+                    break
+            if renderable_legacy is not None:
+                chosen_record = renderable_legacy
+            else:
+                chosen_record = legacy_records[0]
+            chosen_origin = "legacy"
+
+        # Derive export-only fields from the chosen record. None of this writes
+        # back to the database.
+        review_status = "none"
+        review_total_score = None
+        review_schema_version = None
+        review_data_for_md: Optional[dict] = None
+        review_parse_failed = False
+
+        if chosen_record is not None:
+            review_total_score = chosen_record.total_score
+            review_schema_version = chosen_record.review_schema_version
+            parsed = _try_parse_review_json(chosen_record.review_json)
+            if parsed is None and chosen_record.review_json:
+                review_parse_failed = True
+            elif parsed is not None and _is_renderable(parsed):
+                review_data_for_md = parsed
+
+            if chosen_origin == "legacy":
+                review_status = "stale"
+            else:
+                # Current schema: trust the row's status, but also flag stale
+                # when the row's own status field already says so.
+                review_status = _normalize_status(chosen_record.status)
+                if review_status not in ("completed", "stale", "generating", "failed"):
+                    # Unknown status — fall through to "none" semantics for the
+                    # ai_review.md text but keep schema/score in metadata.
+                    review_status = "none"
+
+        if review_status == "completed" and review_data_for_md:
+            ai_review_md = _build_ai_review_markdown(review_data_for_md)
+        elif review_status == "stale" and review_data_for_md:
+            ai_review_md = (
+                "Note: This AI Review may be outdated because the prompt has changed.\n\n"
+                + _build_ai_review_markdown(review_data_for_md)
+            )
+        elif review_status == "generating":
+            ai_review_md = (
+                "AI Review is currently generating and has not been completed yet.\n"
+            )
+        elif review_status == "failed":
+            ai_review_md = "AI Review generation failed or is unavailable.\n"
+        elif review_parse_failed:
+            ai_review_md = "AI Review data exists but could not be parsed.\n"
+        else:
+            ai_review_md = "AI Review has not been generated yet.\n"
+
+        # ---- metadata.json (read-only summary; no secrets) ----
+        def _iso(dt):
+            try:
+                return dt.isoformat() if dt else None
+            except Exception:
+                return None
+
+        metadata_payload = {
+            "id": record.id,
+            "title": record.title,
+            "slug": record.slug,
+            "output_dir": record.output_dir,
+            "model": record.model,
+            "mode": record.mode,
+            "status": record.status,
+            "topic_group_id": record.topic_group_id,
+            "version_number": record.version_number,
+            "created_at": _iso(record.created_at),
+            "updated_at": _iso(record.updated_at),
+            "has_preview_text": bool(record.preview_text),
+            "has_overview_cn": bool(record.overview_cn),
+            "has_change_summary_cn": bool(record.change_summary_cn),
+            "regenerate_from_history_id": record.regenerate_from_history_id,
+            "regenerate_feedback": record.regenerate_feedback,
+            "ai_review_status": review_status,
+            "ai_review_total_score": review_total_score,
+            "ai_review_schema_version": review_schema_version,
+            "export_schema_version": "v0.4.10",
+        }
+        metadata_json_str = json.dumps(metadata_payload, ensure_ascii=False, indent=2)
 
         # Create zip in memory
         zip_buffer = io.BytesIO()
@@ -1219,6 +1437,12 @@ async def download_all(
 
             # Add overview.txt
             zip_file.writestr('overview.txt', overview_cn)
+
+            # Add ai_review.md (read-only; never triggers generation)
+            zip_file.writestr('ai_review.md', ai_review_md)
+
+            # Add metadata.json (read-only summary; no API keys/secrets)
+            zip_file.writestr('metadata.json', metadata_json_str)
 
         # Prepare zip for download
         zip_buffer.seek(0)

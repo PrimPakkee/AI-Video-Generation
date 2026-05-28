@@ -2,6 +2,80 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.4.10 - Prompt Mode 导出一致性与冻结说明书
+
+### 二次热修（v0.4.10 hotfix）
+- **Download All 只读性修复**：`web/app.py` `download_all()` 之前调用了
+  `PromptReviewRepository.get_review_status(db, history_id)`，该函数内部会在 generating
+  超时时调用 `mark_review_failed()`，把 review 状态写回数据库。这意味着
+  `GET /api/history/{id}/download-all` 这样一个下载接口会在用户「下载」时悄悄修改
+  `data/prompt_history.db`，违反「下载必须只读」的约定。修复后 `download_all()`
+  不再调用任何会触发写库的 helper，整个链路对数据库零写入，不再触发任何 timeout 标记。
+- **Download All 旧 schema AI Review 兼容**：之前 hotfix 用
+  `PromptReviewRepository.get_review_by_history_id()` 读取 review，但该 helper 默认只匹配
+  当前 schema (`v0.4.6.9_strict`)，导致只存在旧 schema review（如 `v0.4.6_calibrated` /
+  `v0.4.5_legacy`）的历史记录被误判为「AI Review has not been generated yet.」。
+  修复后 `download_all()` 改为直接 `db.query(PromptReview).filter(...).order_by(...).all()`
+  做只读查询，先从当前 schema 中按 `completed > stale > generating > failed` 选最近一条；
+  若当前 schema 完全没有 review，则回退到旧 schema 中最近一条 `review_json` 可解析的记录，
+  在 `ai_review.md` 顶部追加 `Note: This AI Review may be outdated because the prompt
+  has changed.`，并把 `metadata.json` 中的 `ai_review_status` 标记为 `"stale"`、
+  `ai_review_schema_version` 保留旧 schema 字符串、`ai_review_total_score` 保留旧 score。
+  仅有旧 schema 但 `review_json` 解析失败时，写入「AI Review data exists but could not
+  be parsed.」并保留 metadata 中的 schema/score；完全没有 review 时落入 `"none"`。
+  整个分支对数据库依然零写入。
+- **`scripts/run_stability_checks.py` 加固**：v0.4.10 检查中新增三项 FAIL 级源码审计 ——
+  (1) `download_all()` 函数体禁止出现 `get_review_status(`；
+  (2) 禁止出现 `get_review_by_history_id(`；
+  (3) 必须直接 `db.query(PromptReview)` 读 `PromptReview` 表以保证旧 schema 兼容。
+  定位方式为按 `async def download_all` 起点截取到下一个 `@app.` / `async def ` / `def `
+  顶层定义为止，剥除 `#` 注释行后做纯文本扫描，不引入新依赖、不启动服务、不访问网络、
+  不修改数据库。
+
+### 修复
+- **Download All 内容补齐**：`GET /api/history/{id}/download-all` 现在打包 `raw_text.txt` /
+  `preview.txt` / `overview.txt` / `ai_review.md` / `metadata.json` 五个文件。`ai_review.md`
+  按前端 `reviewToMarkdown` 同款表格输出；`stale` 状态会在 markdown 头部追加
+  「Note: This AI Review may be outdated because the prompt has changed.」；review 不存在时
+  写入占位文案，不会触发 LLM 调用。`metadata.json` 仅包含 id / title / slug / output_dir /
+  model / mode / status / topic_group_id / version_number / created_at / updated_at /
+  has_preview_text / has_overview_cn / has_change_summary_cn / regenerate_from_history_id /
+  regenerate_feedback / ai_review_status / ai_review_total_score / ai_review_schema_version /
+  export_schema_version 字段，**不包含 API key、`.env`、密钥或本地路径以外的敏感信息**。
+- **Overview Copy / Download 缺失 change_summary_cn**：`web/static/main.js` 新增
+  `getOverviewPlainText()` 辅助函数，Overview 视图的 Copy / Download 现在会拼接
+  `currentOverviewText` 与 `currentChangeSummaryText`，并以「本次生成新增或改动的内容」
+  作为分隔标题，与 UI 渲染保持一致。该改动**只影响 Overview 链路**，Raw / Preview / AI Review
+  的复制下载内容保持不变；Raw Text 仍是干净的 NotebookLM Prompt。
+
+### 审计
+- **AI Review 表格列结构核对**：再次审计 `web/static/ai_review.js` 中
+  `renderReviewWithToolbar()` 表格 —— 表头 5 列（Criterion / Weight / Evaluation Focus /
+  LLM Score / LLM Comment），所有 body / Total Score / Overall Review 行均为 5 个 `<td>`，
+  每行只有一个 `<td class="weight">`，无重复 weight 列。本次未对该函数做结构性修改。
+
+### 新增
+- **Prompt Mode 冻结说明书** `docs/prompt_mode_freeze_spec.md`：覆盖 (1) 当前能力清单、
+  (2) 不可破坏的核心约定（Raw 必须干净、schema 冻结、Prompt 主提示词冻结、AI Review 评分协议
+  冻结、NotebookLM 输出结构冻结、隐私与安全）、(3) Prompt Mode 与未来 Video Mode 的边界、
+  (4) 后续 Claude Code 修改约束（任务范围、禁止接触清单、严禁行为、验证义务、报告格式、
+  冲突与歧义处理）。该文档作为后续修改的「读权威」，与之冲突的改动应先暂停并请求人工确认。
+
+### 调整
+- **稳定性脚本升级到 v0.4.10**：`scripts/run_stability_checks.py` 标题更新为
+  `Prompt Mode Stability Checks - v0.4.10`，新增 `check_v0410_fixes()`：核对
+  `download_all` 包内出现 `ai_review.md` 与 `metadata.json` 字符串，前端
+  `getOverviewPlainText` 函数存在，`docs/prompt_mode_freeze_spec.md` 存在。脚本继续保持
+  read-only：不调用外部 LLM、不修改数据库、不触发任何下载。
+
+### 注意
+- 本次未引入 Video Mode、video provider、video API、video tab、Seedance 接口或异步视频任务队列。
+- 本次未修改数据库 schema、`requirements.txt`、Prompt 生成主提示词、AI Review 评分标准、
+  NotebookLM Prompt 输出结构、Raw / Preview / Overview / AI Review tab 主逻辑、Regenerate
+  主逻辑、版本管理主逻辑、收藏 / 置顶 / 回收站逻辑。
+- 本次未提交 `.env`、`data/*.db`、`data/*.db-shm`、`data/*.db-wal`、`data/backups/*.db`、
+  `outputs/`、`__MACOSX/`、`.DS_Store`、任何 API key 或真实密钥。
+
 ## v0.4.9 - Prompt Mode 稳定性收尾与 AI Review 状态修复
 
 ### 二次热修（v0.4.9 hotfix）

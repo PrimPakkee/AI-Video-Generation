@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prompt Mode Stability Checks Script (v0.4.9)
+Prompt Mode Stability Checks Script (v0.4.10)
 
 Runs read-only checks for code and database integrity. Does not call
 external APIs and does not modify the database.
@@ -9,7 +9,7 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.4.9"
+STABILITY_CHECKS_VERSION = "v0.4.10"
 
 import sys
 import os
@@ -315,6 +315,150 @@ class StabilityChecker:
             print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} fix sanity checks failed")
             self.checks_failed += 1
 
+    def check_v0410_fixes(self):
+        """v0.4.10-specific source-level checks (read-only)."""
+        print("\n" + "="*80)
+        print("v0.4.10 Fix Sanity Checks")
+        print("="*80)
+
+        all_passed = True
+
+        # Check 1: download_all endpoint adds ai_review.md and metadata.json
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src = f.read()
+            if "'ai_review.md'" in app_src or '"ai_review.md"' in app_src:
+                print("  [OK] download_all bundles ai_review.md")
+            else:
+                print("  [FAIL] download_all is missing ai_review.md entry")
+                all_passed = False
+            if "'metadata.json'" in app_src or '"metadata.json"' in app_src:
+                print("  [OK] download_all bundles metadata.json")
+            else:
+                print("  [FAIL] download_all is missing metadata.json entry")
+                all_passed = False
+            if "_build_ai_review_markdown" in app_src:
+                print("  [OK] _build_ai_review_markdown helper present")
+            else:
+                print("  [WARN] _build_ai_review_markdown helper missing")
+                self.warnings += 1
+        except Exception as e:
+            print(f"  [WARN] Could not inspect web/app.py: {e}")
+            self.warnings += 1
+
+        # Check 2: Frontend getOverviewPlainText helper exists and is used
+        try:
+            with open("web/static/main.js", "r", encoding="utf-8") as f:
+                main_src = f.read()
+            if "function getOverviewPlainText" in main_src:
+                print("  [OK] main.js defines getOverviewPlainText()")
+            else:
+                print("  [FAIL] main.js missing getOverviewPlainText() helper")
+                all_passed = False
+            if "getOverviewPlainText()" in main_src:
+                # Make sure it is referenced in copy / download paths.
+                used_in_copy_or_download = main_src.count("getOverviewPlainText()") >= 2
+                if used_in_copy_or_download:
+                    print("  [OK] getOverviewPlainText() used in copy + download paths")
+                else:
+                    print("  [WARN] getOverviewPlainText() referenced fewer than 2 times")
+                    self.warnings += 1
+        except Exception as e:
+            print(f"  [WARN] Could not inspect web/static/main.js: {e}")
+            self.warnings += 1
+
+        # Check 3: AI Review table has exactly 5-col header and no duplicate weight
+        try:
+            with open("web/static/ai_review.js", "r", encoding="utf-8") as f:
+                review_src = f.read()
+            weight_th_count = review_src.count(">Weight</th>")
+            if weight_th_count == 1:
+                print("  [OK] ai_review.js has exactly one Weight <th>")
+            else:
+                print(f"  [FAIL] ai_review.js has {weight_th_count} Weight <th> entries (expected 1)")
+                all_passed = False
+        except Exception as e:
+            print(f"  [WARN] Could not inspect web/static/ai_review.js: {e}")
+            self.warnings += 1
+
+        # Check 4: Freeze spec doc exists
+        if os.path.exists("docs/prompt_mode_freeze_spec.md"):
+            print("  [OK] docs/prompt_mode_freeze_spec.md present")
+        else:
+            print("  [FAIL] docs/prompt_mode_freeze_spec.md missing")
+            all_passed = False
+
+        # Check 5: download_all() must NOT call get_review_status().
+        # download_all is a GET endpoint and must be read-only;
+        # get_review_status() may mutate the DB by marking stuck
+        # generating reviews as failed.
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                _src = f.read()
+            marker = "async def download_all"
+            start = _src.find(marker)
+            if start == -1:
+                print("  [WARN] Could not locate download_all() in web/app.py")
+                self.warnings += 1
+            else:
+                # Find the end of the function: next top-level @app. decorator
+                # or top-level `def `/`async def ` after `start`.
+                tail = _src[start:]
+                # Skip past the def line itself before searching for the next route.
+                next_route = tail.find("\n@app.", 1)
+                next_top_def = tail.find("\nasync def ", 1)
+                next_plain_def = tail.find("\ndef ", 1)
+                candidates = [c for c in (next_route, next_top_def, next_plain_def) if c != -1]
+                end = min(candidates) if candidates else len(tail)
+                body = tail[:end]
+                # Strip whole-line comments so doc/comments mentioning the
+                # forbidden call don't trigger a false positive. Inline `#`
+                # comments are also stripped per line.
+                code_only_lines = []
+                for line in body.splitlines():
+                    stripped = line.lstrip()
+                    if stripped.startswith("#"):
+                        continue
+                    if "#" in line:
+                        line = line.split("#", 1)[0]
+                    code_only_lines.append(line)
+                code_only = "\n".join(code_only_lines)
+                if "get_review_status(" in code_only:
+                    print("  [FAIL] download_all() calls get_review_status() "
+                          "(must be strictly read-only — would mutate DB)")
+                    all_passed = False
+                else:
+                    print("  [OK] download_all() does not call get_review_status()")
+
+                # download_all() must NOT use get_review_by_history_id() either:
+                # that helper filters to the current schema and would hide
+                # legacy reviews that v0.4.10 expects to export as stale.
+                if "get_review_by_history_id(" in code_only:
+                    print("  [FAIL] download_all() calls get_review_by_history_id() "
+                          "(filters current schema only — legacy reviews would be lost)")
+                    all_passed = False
+                else:
+                    print("  [OK] download_all() does not call get_review_by_history_id()")
+
+                # And it must directly query the PromptReview table so legacy
+                # schema rows are visible.
+                if "PromptReview" in code_only and "db.query(PromptReview)" in code_only:
+                    print("  [OK] download_all() reads PromptReview directly (db.query)")
+                else:
+                    print("  [FAIL] download_all() must read PromptReview directly via "
+                          "db.query(PromptReview) for legacy-schema export support")
+                    all_passed = False
+        except Exception as e:
+            print(f"  [WARN] Could not scan download_all() body: {e}")
+            self.warnings += 1
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} fix sanity checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} fix sanity checks failed")
+            self.checks_failed += 1
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -344,6 +488,7 @@ class StabilityChecker:
         required_doc_globs = [
             "docs/v0.4.6.9_*.md",
             "docs/v0.4.6.8_*.md",
+            "docs/prompt_mode_freeze_spec.md",
         ]
 
         all_exist = True
@@ -401,6 +546,7 @@ def main():
         checker.check_python_compile()
         checker.check_js_syntax()
         checker.check_v049_fixes()
+        checker.check_v0410_fixes()
         checker.check_database_integrity()
     except Exception as e:
         print(f"\n[ERROR] Stability check failed: {e}")
