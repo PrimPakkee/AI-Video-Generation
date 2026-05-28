@@ -1,318 +1,301 @@
-# AI Video Generation - AI Educational Video Workflow Engine
+# AI Video Generation
 
-## 项目简介
+> AI-powered educational short-video prompt generation tool —— 现阶段聚焦 Prompt Mode，长期演进到 Video Mode 端到端教育短视频生成。
 
-这是一个面向 Think Academy 海外业务的 **AI 教育短视频工作流引擎（AI Educational Video Workflow Engine）**。
+---
 
-**最终长期目标**：输入一个选题 → 自动输出可发布的 mp4 短视频。
+## 中文版
 
-**当前短期目标（Phase 2A）**：输入题目 → 自动生成可投喂 NotebookLM 的高质量 prompt。
+### 项目简介
 
-**当前阶段定位**：
-- 本项目负责：自动生成 NotebookLM source prompt
-- NotebookLM 负责：执行视频生成（根据我们的 prompt 生成视频）
-- 最终演进：完全替代 NotebookLM，实现端到端 mp4 输出
+**AI Video Generation** 是一个面向教育短视频场景的 AI 生成工作流工具。
 
-这个项目将逐步发展成一个端到端的自动化视频生产流水线，从选题到成片，尽量减少人工干预。
+- **当前短期目标**：构建一个 *AI-powered educational short-video prompt generation tool*，用户输入一个教育短视频题目，系统自动生成可直接复制到 **NotebookLM** 的高质量视频生成 Prompt。
+- **当前核心阶段**：**Prompt Mode**。本项目当前阶段不直接生成视频文件，而是负责生成结构化、可控、可审核的视频创作 Prompt。
+- **长期目标**：**Video Mode**。未来计划接入 **Seedance 2.0 / SeeDance 2.0** 等视频生成能力，实现「输入题目 → 自动生成 Prompt → 自动生成视频 → 网页端播放、预览、下载、管理」的端到端闭环。
 
-## 解决的问题
+> ⚠️ 当前阶段并未实现端到端视频生成。请明确区分：
+> - ✅ 已实现：**Prompt Mode**（生成 NotebookLM Prompt）
+> - 🔜 规划中：**Video Mode**（端到端视频生成）
 
-### 当前流程的痛点
-- ❌ 流程分散：需要在 ChatGPT、NotebookLM、Gamma、即梦 AI、剪映之间反复切换
-- ❌ 人工搬运：每个环节都需要人工复制粘贴
-- ❌ 标准不一致：每次生成的风格、结构、质量都不稳定
-- ❌ 效率低下：一条视频从选题到成片需要数小时
-- ❌ 难以复用：没有标准化模板，每次都从头开始
+---
 
-### 我们的解决方案
-- ✅ 标准化流程：将经验沉淀为模板和规范
-- ✅ 结构化输出：20-field NotebookLM prompt structure
-- ✅ 风格一致性：内置 Think Academy AI 教育短视频风格指南
-- ✅ 自动化生成：从任意题目自动生成 NotebookLM prompt
-- ✅ 质量保证：内置质量检查清单
+### 适用平台与题材
 
-## 版本路线图
+- **平台**：TikTok、YouTube Shorts、Instagram Reels 等短视频平台
+- **题材**：数学、逻辑、概率、商业数学、认知心理等教育类短视频
+- **风格**：单人旁白、白底线稿、逻辑推理画面、短视频节奏、字幕与画面强约束
 
-### Phase 1: Template Mode（已完成 ✅）
-**Phase 1A**: 基础模板体系
-- ✅ 完整的项目文档体系
-- ✅ 20-field NotebookLM prompt 标准
-- ✅ 示例选题库（JSONL 格式）
+---
 
-**Phase 1B**: Enhanced Template Mode（已完成 ✅）
-- ✅ 自动生成完整 video package（从 enhanced topic data）
-- ✅ 支持 50-60 秒视频结构
-- ✅ 词数、时间轴、模式命名一致性
-- ✅ Topic 001 可作为 NotebookLM 测试样例
+### 核心功能
 
-### Phase 2: LLM-Powered Generation（当前阶段 🚧）
-**Phase 2A**: Title-to-NotebookLM Prompt MVP（进行中 🚧）
-- ✅ **输入**：任意教育短视频题目（不依赖 topic_library_sample.jsonl）
-  - 例如："为什么数字9总感觉最特别"
-  - 例如："为什么0.999...等于1"
-  - 例如："为什么排队总觉得旁边那队更快"
-- ✅ **处理**：调用 LLM 自动生成 enhanced topic JSON
-- ✅ **输出**：notebooklm_clean_source.txt（可直接复制到 NotebookLM）
-- ✅ 支持 OpenAI-compatible API
-- ✅ dry-run 模式（不调用 API，只生成 prompt）
-- ✅ mock-response 模式（本地测试，不调用 API）
+#### A. Prompt Mode（当前主路径）
 
-**Phase 2B**: Batch Processing
-- ⏳ 批量题目输入
-- ⏳ 并发 LLM 调用
-- ⏳ 批量生成 NotebookLM prompts
+- 用户输入教育短视频题目。
+- 系统生成结构化的 NotebookLM Prompt。
+- 适用于 TikTok / YouTube Shorts / Instagram Reels 等短视频平台。
+- 支持数学、逻辑、概率、商业数学、认知心理等教育类题材。
 
-### Phase 3: Visual & Audio Generation
-- ⏳ 接入视觉生成 API（图像/动画）
-- ⏳ 接入 TTS（文本转语音）
-- ⏳ 字幕自动对齐
+#### B. Topic-based Prompt Generation
 
-### Phase 4: End-to-End Video Pipeline
-- ⏳ ffmpeg 视频合成
-- ⏳ 自动化后期处理
-- ⏳ 端到端输出 mp4
-- ⏳ 自动质量评分
-- ⏳ 根据视频表现数据优化 Prompt
+根据用户输入题目生成完整视频创作 Prompt，Prompt 内容包含但不限于：
 
-## 项目结构
+- 标题（Title）
+- 目标平台（Target Platform）
+- 目标受众（Target Audience）
+- 视频时长（Duration）
+- 核心概念（Core Concept）
+- 题面（Problem Statement）
+- 答案（Correct Answer）
+- 推理过程（Reasoning Steps）
+- 旁白稿（Narration Script）
+- 字幕建议（Subtitle Segments）
+- 视觉风格（Visual Style）
+- 禁止事项与错误限制（Restrictions & Pitfalls）
+
+强调：
+- **单人旁白**、教育短视频风格、白底线稿、逻辑推理画面、短视频节奏；
+- 字幕与画面的强约束；
+- 系统当前生成的是 **NotebookLM 可直接使用的 Prompt**，而**不是视频文件本身**。
+
+#### C. History Management（历史记录）
+
+- 左侧历史题目列表。
+- 支持历史记录查看。
+- 支持搜索、置顶、收藏、删除、废纸篓、日期筛选等功能。
+- 历史记录用于管理不同题目和不同生成结果。
+
+#### D. Version Management（版本管理）
+
+- 同一题目支持多个版本。
+- 每次 Regenerate 会生成新版本。
+- 用户可在 **Version 下拉框**中切换不同版本。
+- 旧版本不会被覆盖，便于比较、回看、回退。
+
+#### E. Prompt View Modes（视图切换）
+
+- **Raw Text**：原始 NotebookLM Prompt，适合直接复制使用。
+- **Preview**：结构化预览，便于快速检查 Prompt 各组成部分。
+- **Overview**：中文内容概览，解释这条视频准备讲什么、怎么讲、画面如何呈现。
+- **AI Review**：基于多维度质量维度对 Prompt 进行自动质检。
+
+#### F. AI Review（自动质检）
+
+对 Prompt 进行多维度质量评估，评价维度包括但不限于：
+
+- 完整性
+- 逻辑正确性
+- NotebookLM 可用性
+- 视觉可控性
+- 短视频适配度
+- 单人旁白约束
+- 教育清晰度
+- 风险与错误控制
+
+支持：
+- 各维度评分与点评
+- 总分与整体评价
+- 手动触发重新质检
+
+> 当前 AI Review 仍在持续校准评分严格性和评价质量，避免出现过度宽松或模板化结果。
+
+#### G. Regeneration Workflow（再生成流程）
+
+- 用户可基于当前版本继续输入修改要求。
+- 系统根据已有 Prompt 与新增要求生成新版本。
+- Regenerate **不会覆盖旧版本**，而是生成新的 Version。
+- Overview 中会说明本次新增或改动内容，帮助用户理解新版本相对旧版本的变化。
+
+#### H. Local Web App（本地 Web 应用）
+
+- **后端**：FastAPI
+- **前端**：静态前端页面 + JS 脚本
+- **数据库**：SQLite（本地）
+- **访问方式**：本地运行后通过 `http://127.0.0.1:8000` 访问
+
+> 当前项目以本地开发和原型验证为主，后续可扩展到云端部署。
+
+---
+
+### 项目结构
 
 ```
 AI Video Generation/
-├── README.md                          # 项目总览（当前文件）
-├── docs/                              # 产品文档
-│   ├── product_brief.md               # 产品需求文档
-│   ├── workflow.md                    # 完整工作流说明
-│   ├── style_guide.md                 # Think Academy AI 视频风格指南
-│   └── prompt_schema.md               # 结构化输出 Schema
-├── templates/                         # 可复用模板库
-│   ├── notebooklm_prompt_template.md  # NotebookLM Prompt 模板
-│   ├── storyboard_template.md         # 分镜模板
-│   └── qa_checklist_template.md       # 质量检查清单模板
-├── data/                              # 选题库和数据
-│   └── topic_library_sample.jsonl     # 示例选题库（JSONL 格式）
-├── outputs/                           # 输出文件存放处
-├── assets/                            # 视觉资源和素材
-└── scripts/                           # 当前可运行的自动化脚本
+├── README.md           # 项目说明（当前文件）
+├── CHANGELOG.md        # 版本更新记录
+├── requirements.txt    # Python 依赖
+├── web/                # Web 应用入口、API、静态页面与前端脚本
+├── scripts/            # Prompt 生成、LLM 调用、AI Review、数据修复与测试辅助脚本
+├── templates/          # NotebookLM Prompt、QA checklist、storyboard 等模板文件
+├── docs/               # 版本说明、产品文档、技术路线和功能设计记录
+├── tests/              # 测试用例和测试数据
+├── config/             # 配置示例文件（example.env 等）
+├── data/               # 本地数据和示例数据
+├── outputs/            # 本地生成结果目录
+└── assets/             # 视觉资源和素材
 ```
 
-## 快速开始
-
-### Phase 2A: Title-to-NotebookLM Prompt（推荐）
-
-**前置要求**：
-1. Python 3.8+
-2. OpenAI-compatible API（可选，dry-run 不需要）
-
-**配置 API（可选）**：
-```bash
-# 复制示例配置
-cp config/example.env .env
-
-# 编辑 .env，填入你的 API 信息
-# AI_VIDEO_LLM_PROVIDER=openai_compatible
-# AI_VIDEO_LLM_BASE_URL=https://api.openai.com/v1
-# AI_VIDEO_LLM_MODEL=gpt-4o-mini
-# AI_VIDEO_LLM_API_KEY=your_api_key_here
-
-# 加载环境变量
-source .env  # bash/zsh
-# 或者
-set -a; source .env; set +a  # 更通用的方式
-```
-
-**使用方法**：
-
-**1. Dry-run 模式（推荐先测试）**：
-```bash
-python scripts/generate_video_package.py \
-  --title "为什么数字9总感觉最特别" \
-  --mode llm \
-  --dry-run \
-  --output-slug number_9_test
-```
-这会生成 LLM prompt 但不调用 API。
-
-**2. LLM 生成模式**：
-```bash
-python scripts/generate_video_package.py \
-  --title "为什么数字9总感觉最特别" \
-  --mode llm \
-  --output-slug number_9
-```
-这会调用 LLM 生成完整的 NotebookLM prompt。
-
-**3. 使用已有 topic（Phase 1B 模式）**：
-```bash
-python scripts/generate_video_package.py --topic-id 001 --overwrite
-```
-从 topic_library_sample.jsonl 中读取已增强的题目。
-
-**输出文件**：
-- `notebooklm_clean_source.txt` - **复制这个到 NotebookLM**
-- `video_package.md` - 内部项目管理
-- `internal_review.md` - 质量审核记录
-- `llm_generation_prompt.md` - LLM 调用记录
-- `llm_raw_response.txt` - LLM 原始返回
-
-### Phase 1: Template Mode（手动模式）
-
-如果不使用 LLM，可以手动填充模板：
-1. 打开 `templates/notebooklm_prompt_template.md`
-2. 根据题目填充所有字段
-3. 复制到 NotebookLM 生成视频
-
-## 面向的平台和受众
-
-- **平台**：TikTok、YouTube Shorts、Instagram Reels、小红书
-- **受众**：海外学生和家长
-- **时长**：30-90 秒短视频
-- **语言**：英语（面向海外市场）
-
-## 核心风格原则
-
-⭐ **必须**：
-- Single narrator / 单人旁白 / monologue narration
-- 白底线稿、简洁图示
-- 大而清晰的字幕
-- 前后一致的核心图示
-- 逻辑正确的推理过程
-
-❌ **禁止**：
-- 双人对话、访谈、播客、多人讨论
-- 复杂背景、无关装饰、随机人物/动物
-- 黑色背景、恐怖风格
-- 为了效果牺牲答案准确性
-
-## 两种工作流模式
-
-### 模式 A：NotebookLM Prompt Mode（当前支持）
-```
-输入题目 
-→ 填充 NotebookLM Prompt 模板 
-→ 人工复制到 NotebookLM 
-→ NotebookLM 生成视频 
-→ 在剪映中后期调整
-```
-**适用场景**：利用 NotebookLM 的视频生成能力，人工介入较多
-
-### 模式 B：Direct Video Pipeline Mode（未来目标）
-```
-输入题目 
-→ 自动生成脚本、分镜 
-→ 自动生成画面提示词 
-→ 自动生成旁白音频 
-→ 自动生成字幕文件 
-→ ffmpeg 自动合成 
-→ 输出 mp4 视频
-```
-**适用场景**：完全自动化，批量生产，无需人工介入
-
-详见 `docs/workflow.md` 和 `docs/technical_roadmap.md`
+> 注意：
+> - `.env` **不会**提交到 GitHub，需要用户在本地自行配置；
+> - `.venv`、`outputs/`、本地数据库文件等**不进入** Git 版本管理；
+> - 不要在 README 或任何提交内容中写入真实 API Key、内部密钥或敏感地址。
 
 ---
 
-## 两种生成模式（Template Mode / LLM Mode）
+### 本地运行
 
-本项目在内容生成层面支持两种模式，方便不同阶段使用：
+#### 1. 环境准备
 
-### Template Mode（Legacy / Testing Only）
-**说明**：
-- **主要用途**：回归测试、golden sample 对比
-- 不调用任何外部 API
-- 不消耗模型 token，零成本
-- 只读取 `data/topic_library_sample.jsonl` 和 `templates/`
-- **限制**：必须先把题目写入 topic_library_sample.jsonl（不适合随时输入任意题目）
-- 生成结构完整但带 TODO 占位符的 video package（如果 topic 包含 enhanced fields，则生成完整内容）
-
-**使用场景**：
-- 回归测试：确保代码改动不破坏现有功能
-- Golden sample：Topic 001 作为标准参考
-- 测试模板设计是否合理
-- 团队内部流程培训
-
-**命令示例**：
 ```bash
-python scripts/generate_video_package.py --topic-id 001
-# 使用 Template Mode（legacy）
-```
-
-**⚠️ 注意**：这不是主产品路径。真正使用时，请用 LLM Mode（输入任意题目，不需要预先写入 JSONL）。
-
-### LLM Mode（Phase 2A，**主产品路径** ⭐）
-**说明**：
-- **这是主入口**：用户输入任意题目，不需要预先写入 topic_library_sample.jsonl
-- 调用 OpenAI-compatible API（支持 ChatGPT、gpt-4o-mini、gpt-4o 及其他兼容 API）
-- LLM 自动补全所有字段：
-  - title_en、topic_label_en、core_concept
-  - full_problem、question、correct_answer、wrong_intuition
-  - reasoning_steps、narration_script
-  - subtitle_segments、storyboard_scenes
-  - notebooklm_specific_instructions
-- 需要通过 `.env` 文件配置 API_KEY、BASE_URL、MODEL_NAME
-- **绝对不要把 API Key 写死在代码里**
-
-**使用场景**：
-- **主要使用场景**：任意题目输入 → 立即生成 NotebookLM prompt
-- 快速从题目生成完整 video package
-- 自动化内容生产流程
-
-**命令示例**：
-```bash
-# Dry-run（不调用 API，只生成 prompt）
-python scripts/generate_video_package.py \
-  --title "为什么数字9总感觉最特别" \
-  --mode llm \
-  --dry-run
-
-# Mock response（测试完整链路，不调用 API）
-python scripts/generate_video_package.py \
-  --title "为什么数字9总感觉最特别" \
-  --mode llm \
-  --mock-response tests/fixtures/number_9_response.json
-
-# 真实 LLM 调用（需要先配置 .env）
-python scripts/generate_video_package.py \
-  --title "为什么数字9总感觉最特别" \
-  --mode llm
-```
-
-**当前状态**：
-1. ✅ Dry-run 已完成
-2. ✅ API 调用框架已完成
-3. ⏳ 需要配置 .env 中的 AI_VIDEO_LLM_API_KEY 后进行真实 API 测试
-
-**配置步骤**：
-```bash
-cp config/example.env .env
-# 编辑 .env，设置你的 API key
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
----
+#### 2. 启动 Web 应用
 
-## 适用人群
+```bash
+python -m uvicorn web.app:app --reload --port 8000
+```
 
-- **产品经理**：理解工作流，优化流程
-- **内容运营**：使用模板批量生产视频资料
-- **视频编导**：遵循风格指南保证质量一致性
-- **技术开发**：未来实现自动化脚本
+#### 3. 访问
 
-## 贡献指南
+打开浏览器访问：
 
-目前项目处于 MVP 阶段，主要工作：
-1. 优化 LLM prompt 模板（`scripts/llm_topic_enhancer.py`）
-2. 测试任意题目生成效果
-3. 记录 NotebookLM 生成结果
-4. 迭代 notebooklm_clean_source.txt 的风格约束
-
-## 联系方式
-
-- 项目负责人：Think Academy 海外业务产品实习生
-- 使用场景：AI 教育短视频生产
-- 更新频率：根据实际使用反馈迭代
+```
+http://127.0.0.1:8000
+```
 
 ---
 
-**版本**：v0.2.0-phase2a  
-**最后更新**：2026-05-14  
-**状态**：Phase 2A MVP ready for real API smoke test
+### 环境变量说明
+
+请在项目根目录创建本地 `.env` 文件（不要提交到 GitHub）。常用变量如下：
+
+| 变量名 | 用途 |
+| --- | --- |
+| `AI_VIDEO_LLM_PROVIDER` | LLM provider 类型（如 OpenAI-compatible） |
+| `AI_VIDEO_LLM_BASE_URL` | OpenAI-compatible API base URL |
+| `AI_VIDEO_LLM_MODEL` | 用于 Prompt 生成和 AI Review 的模型名称 |
+| `AI_VIDEO_LLM_API_KEY` | 本地配置的 API Key（**不应提交到 GitHub**） |
+| `AI_VIDEO_LLM_MAX_TOKENS` | 模型最大输出 token 配置 |
+| `AI_VIDEO_LLM_TIMEOUT` | 模型请求超时时间 |
+
+> ⚠️ 任何真实 API Key、公司内部密钥、内部地址都不应出现在 README、提交记录或仓库任何文件中。
+
+---
+
+### 当前版本状态
+
+- **当前版本阶段**：`v0.4.x — Prompt Mode stability and AI Review iteration`
+- **已完成**：Prompt Mode 的核心功能（Prompt 生成、历史记录、版本管理、视图切换、AI Review、Regenerate workflow、本地 Web 应用）。
+- **正在进行**：
+  - AI Review 评分严格性持续校准
+  - 编辑保存稳定性
+  - 数据保护与回归测试
+  - README 与 GitHub 仓库规范化
+- **尚未完成**：端到端视频生成（Video Mode 属于长期路线）。
+
+---
+
+### Roadmap（规划路线）
+
+| 版本 | 主要内容 |
+| --- | --- |
+| **v0.4.x** | Prompt Mode 稳定性修复、AI Review 校准、README 与 GitHub 仓库规范化 |
+| **v0.5.x** | Prompt Mode 完整测试、体验优化、更多题材模板 |
+| **v0.6.x** | Video Mode 原型设计 |
+| **v0.8.x** | 接入 Seedance 2.0 / SeeDance 2.0 视频生成能力 |
+| **v1.0.0** | 输入题目 → 自动生成 Prompt → 自动生成视频 → 网页端播放 / 下载 / 管理的完整闭环 |
+
+未来可继续扩展：
+- 用户登录系统
+- 用户空间与权限
+- 云端部署
+- 视频生成任务队列
+- 视频资产管理
+
+---
+
+## English Version
+
+### Overview
+
+**AI Video Generation** is an AI-powered workflow tool for creating educational short videos.
+
+- **Short-term goal**: an *AI-powered educational short-video prompt generation tool*. The user provides an educational short-video topic, and the system generates a structured **NotebookLM** prompt that can be copied directly into NotebookLM to drive video generation.
+- **Current stage — Prompt Mode**: the project currently focuses on generating high-quality, structured prompts. It does **not** generate video files at this stage.
+- **Long-term goal — Video Mode**: integrate **Seedance 2.0 / SeeDance 2.0** so that users can input a topic and the system automatically produces a finished educational short video, with in-browser playback, preview, download, and management.
+
+> Today's reality:
+> - ✅ Implemented: **Prompt Mode** (NotebookLM prompt generation)
+> - 🔜 Planned: **Video Mode** (end-to-end video generation)
+
+### Target Platforms & Topics
+
+- **Platforms**: TikTok, YouTube Shorts, Instagram Reels.
+- **Topics**: math, logic, probability, business math, cognitive psychology, and other educational subjects.
+- **Style**: single-narrator monologue, white background with line art, reasoning-driven visuals, short-form pacing, strong subtitle and visual constraints.
+
+### Core Features
+
+- **Prompt Mode** — generate a structured NotebookLM prompt from a user-supplied topic.
+- **Topic-based Prompt Generation** — full prompt covering title, platform, audience, duration, core concept, problem statement, correct answer, reasoning steps, narration script, subtitles, visual style, and restrictions. The output is a NotebookLM-ready prompt, **not** a video file.
+- **History Management** — left-side history list with search, pin, favorite, delete, trash, and date filtering.
+- **Version Management** — multiple versions per topic; each Regenerate creates a new version without overwriting old ones; switch via the Version dropdown.
+- **Prompt View Modes** — Raw Text (copy-ready), Preview (structured), Overview (Chinese summary of intent and visuals), AI Review (automated QA).
+- **AI Review** — multi-dimensional automated quality check (completeness, logical correctness, NotebookLM usability, visual controllability, short-form fit, single-narrator constraint, educational clarity, risk control). Scoring strictness is still being calibrated.
+- **Regeneration Workflow** — users can refine the current version with extra requirements; the system creates a new version, and the Overview explains what changed.
+- **Local Web App** — FastAPI backend + static frontend + local SQLite database, accessible at `http://127.0.0.1:8000`.
+
+### Project Structure
+
+```
+web/         FastAPI app, API routes, static frontend, JS scripts
+scripts/     Prompt generation, LLM calls, AI Review, data tools
+templates/   NotebookLM prompt, QA checklist, storyboard templates
+docs/        Product docs, version notes, technical roadmap
+tests/       Test cases and fixtures
+config/      Example configuration files
+data/        Local and sample data
+outputs/     Local generation outputs
+```
+
+`.env`, `.venv/`, `outputs/`, and local database files are **not** committed to Git. Never put real API keys or sensitive addresses in this repository.
+
+### Local Setup
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m uvicorn web.app:app --reload --port 8000
+```
+
+Then open `http://127.0.0.1:8000`.
+
+### Environment Variables
+
+Configure a local `.env` (do not commit):
+
+- `AI_VIDEO_LLM_PROVIDER` — LLM provider type.
+- `AI_VIDEO_LLM_BASE_URL` — OpenAI-compatible API base URL.
+- `AI_VIDEO_LLM_MODEL` — model used for prompt generation and AI Review.
+- `AI_VIDEO_LLM_API_KEY` — local API key (must not be committed).
+- `AI_VIDEO_LLM_MAX_TOKENS` — max output tokens.
+- `AI_VIDEO_LLM_TIMEOUT` — request timeout.
+
+### Current Status
+
+The project is in **v0.4.x — Prompt Mode stability and AI Review iteration**. Prompt Mode core features are in place. Ongoing work focuses on AI Review calibration, edit-save stability, data protection, regression tests, and repository normalization. End-to-end video generation is not yet implemented and remains a long-term Video Mode goal.
+
+### Roadmap
+
+- **v0.4.x** — Prompt Mode stability fixes, AI Review calibration, repository normalization.
+- **v0.5.x** — Full Prompt Mode testing, UX polish, more topic templates.
+- **v0.6.x** — Video Mode prototype design.
+- **v0.8.x** — Integrate Seedance 2.0 / SeeDance 2.0 video generation.
+- **v1.0.0** — Topic → prompt → video → in-browser playback, download, and management, end to end.
+
+Future extensions: user accounts, user workspaces, cloud deployment, video job queue, and video asset management.
