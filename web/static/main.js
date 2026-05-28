@@ -1391,6 +1391,18 @@ async function copyPrompt() {
         text = previewEl.innerText || previewEl.textContent;
     } else if (currentPromptViewMode === 'overview') {
         text = currentOverviewText;
+    } else if (currentPromptViewMode === 'review') {
+        // AI Review tab: copy the markdown summary if a review is loaded.
+        if (!currentReviewData || typeof getReviewContent !== 'function') {
+            alert('AI Review has not been generated yet. Click Re-review to generate one before copying.');
+            return;
+        }
+        text = getReviewContent();
+    }
+
+    if (!text || !String(text).trim()) {
+        alert('There is nothing to copy yet for this view.');
+        return;
     }
 
     try {
@@ -1418,6 +1430,8 @@ async function copyPrompt() {
 function downloadPrompt() {
     let text = '';
     let filenameSuffix = '';
+    let extension = 'txt';
+    let mimeType = 'text/plain;charset=utf-8';
 
     // Get text and filename based on current view mode
     if (currentPromptViewMode === 'raw') {
@@ -1431,9 +1445,18 @@ function downloadPrompt() {
     } else if (currentPromptViewMode === 'overview') {
         text = currentOverviewText;
         filenameSuffix = 'overview';
+    } else if (currentPromptViewMode === 'review') {
+        if (!currentReviewData || typeof getReviewContent !== 'function') {
+            alert('AI Review has not been generated yet. Click Re-review to generate one before downloading.');
+            return;
+        }
+        text = getReviewContent();
+        filenameSuffix = 'ai_review';
+        extension = 'md';
+        mimeType = 'text/markdown;charset=utf-8';
     }
 
-    if (!text.trim()) {
+    if (!text || !String(text).trim()) {
         return;
     }
 
@@ -1444,13 +1467,23 @@ function downloadPrompt() {
         .replace(/[^a-z0-9_-]+/g, '_')
         .replace(/^_+|_+$/g, '') || 'prompt';
 
+    // Build a timestamp suffix for AI Review files so users can keep
+    // multiple review snapshots without overwriting.
+    let stampedSuffix = filenameSuffix;
+    if (currentPromptViewMode === 'review') {
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        stampedSuffix = `${filenameSuffix}_${ts}`;
+    }
+
     // Create blob and download
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob([text], { type: mimeType });
     const url = URL.createObjectURL(blob);
 
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${safeSlug}_${filenameSuffix}.txt`;
+    link.download = `${safeSlug}_${stampedSuffix}.${extension}`;
     document.body.appendChild(link);
     link.click();
 
@@ -2094,7 +2127,29 @@ function enterEditMode() {
     if (editingViewMode === 'raw') {
         contentToEdit = currentRawText || '';
     } else if (editingViewMode === 'preview') {
-        contentToEdit = currentPreviewTextEdited || '';
+        // Prefer the user-edited Preview text if it exists.
+        // Otherwise fall back to the current rendered Preview so the
+        // textarea is never blank on first edit.
+        if (currentPreviewTextEdited && currentPreviewTextEdited.trim()) {
+            contentToEdit = currentPreviewTextEdited;
+        } else {
+            const previewEl = document.getElementById('prompt-preview');
+            const renderedText = previewEl
+                ? (previewEl.innerText || previewEl.textContent || '')
+                : '';
+            contentToEdit = renderedText.trim();
+            // Last-resort fallback: generate from the raw prompt directly.
+            if (!contentToEdit && currentRawText) {
+                try {
+                    const sections = parsePromptSections(currentRawText);
+                    const tmp = document.createElement('div');
+                    tmp.innerHTML = generatePreviewHTML(sections);
+                    contentToEdit = (tmp.innerText || tmp.textContent || '').trim();
+                } catch (e) {
+                    contentToEdit = currentRawText;
+                }
+            }
+        }
     } else if (editingViewMode === 'overview') {
         contentToEdit = currentOverviewText || '';
     }

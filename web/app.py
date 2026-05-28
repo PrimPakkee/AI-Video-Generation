@@ -4,6 +4,7 @@ AI Video Prompt Generator - Web Interface
 FastAPI backend for generating NotebookLM prompts via web UI
 """
 
+import json
 import os
 import re
 import secrets
@@ -1419,6 +1420,7 @@ async def get_review(
     """
     try:
         from web.db.repository_review import PromptReviewRepository
+        from web.db.models import PromptReview
 
         # Check if history record exists
         record = PromptHistoryRepository.get_history_record(db, history_id)
@@ -1444,11 +1446,39 @@ async def get_review(
             }
 
         if status == 'stale':
+            # Try to surface the most recent reviewable content so the
+            # frontend can keep showing the old review with a stale banner.
+            stale_review_data = None
+            try:
+                stale_review = db.query(PromptReview).filter(
+                    PromptReview.history_id == history_id
+                ).order_by(PromptReview.updated_at.desc()).all()
+                # Prefer the latest review record that actually has parseable JSON
+                # with structured fields (not a placeholder/error envelope).
+                for candidate in stale_review:
+                    if not candidate.review_json:
+                        continue
+                    try:
+                        parsed = json.loads(candidate.review_json)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if isinstance(parsed, dict) and (
+                        parsed.get('rows')
+                        or parsed.get('total_score')
+                        or parsed.get('overall_review')
+                    ):
+                        stale_review_data = parsed
+                        break
+            except Exception:
+                stale_review_data = None
+
             return {
                 "success": True,
-                "has_review": False,
+                "has_review": stale_review_data is not None,
                 "status": "stale",
-                "review": None
+                "review": stale_review_data,
+                "message": "The prompt has changed since this review was generated. "
+                           "Click Re-review to refresh."
             }
 
         if status == 'generating':
@@ -1549,15 +1579,33 @@ async def get_review_debug(
         # Get review record (if exists)
         review = PromptReviewRepository.get_review_by_history_id(db, history_id)
 
+        # Compute a content fingerprint that helps explain why a review may
+        # be stale. This is local-only metadata, not a real schema field.
+        prompt_text = record.prompt_text or ''
+        try:
+            import hashlib
+            prompt_text_sha1 = hashlib.sha1(
+                prompt_text.encode('utf-8', errors='replace')
+            ).hexdigest()
+        except Exception:
+            prompt_text_sha1 = None
+
         debug_info = {
             "success": True,
             "history_id": history_id,
             "history_info": {
-                "prompt_id": record.prompt_id,
-                "version": record.version,
-                "prompt_hash": record.prompt_hash,
+                "id": record.id,
+                "slug": record.slug,
+                "title": record.title,
+                "topic_group_id": record.topic_group_id,
+                "version_number": record.version_number,
+                "status": record.status,
+                "model": record.model,
+                "mode": record.mode,
+                "prompt_text_length": len(prompt_text),
+                "prompt_text_sha1": prompt_text_sha1,
                 "created_at": record.created_at.isoformat() if record.created_at else None,
-                "updated_at": record.updated_at.isoformat() if record.updated_at else None
+                "updated_at": record.updated_at.isoformat() if record.updated_at else None,
             }
         }
 
@@ -1565,11 +1613,12 @@ async def get_review_debug(
             # Review record exists
             debug_info["review_record"] = {
                 "id": review.id,
+                "history_id": review.history_id,
                 "status": review.status,
                 "schema_version": review.review_schema_version,
+                "total_score": review.total_score,
                 "created_at": review.created_at.isoformat() if review.created_at else None,
                 "updated_at": review.updated_at.isoformat() if review.updated_at else None,
-                "error_message": review.error_message if hasattr(review, 'error_message') else None
             }
 
             # Parse review JSON
@@ -1578,9 +1627,15 @@ async def get_review_debug(
                     review_data = json.loads(review.review_json)
                     debug_info["review_data"] = review_data
                     debug_info["review_json_length"] = len(review.review_json)
+                    # Bubble up an error_message if present in the JSON envelope
+                    # (mark_review_failed stores it under the 'error' key).
+                    if isinstance(review_data, dict) and review_data.get('error'):
+                        debug_info["review_record"]["error_message"] = (
+                            review_data.get('error')
+                        )
                 except Exception as parse_error:
                     debug_info["review_data"] = None
-                    debug_info["review_json_raw"] = review.review_json[:1000]  # First 1000 chars
+                    debug_info["review_json_raw"] = review.review_json[:1000]
                     debug_info["parse_error"] = str(parse_error)
             else:
                 debug_info["review_data"] = None
@@ -1785,10 +1840,12 @@ async def generate_review(
 @app.get("/api/health")
 async def health_check(db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Health check endpoint"""
+    from sqlalchemy import text
+
     database_status = "ok"
     try:
-        # Test database connection
-        db.execute("SELECT 1")
+        # Test database connection (SQLAlchemy 2.0 requires text() wrapper)
+        db.execute(text("SELECT 1"))
     except Exception:
         database_status = "error"
 

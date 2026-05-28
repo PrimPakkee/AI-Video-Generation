@@ -1,5 +1,22 @@
 # AI Video Generation - Prompt Schema 设计文档
 
+> ⚠️ **v0.4.9 更新提示**：本文档为早期 schema 设计稿，与当前 `scripts/llm_topic_enhancer.py` /
+> `scripts/generate_video_package.py` 的实际字段名已不完全一致。为避免误导，下面列出
+> **当前真实使用的关键字段**，本次仅做最小补充，不重写整套文档。
+>
+> ### 当前真实字段（与代码一致，权威）
+> - `overview_cn`：中文内容概览，对应 Overview 视图。
+> - `reasoning_steps`：分步推理（替代旧文档中的 `reasoning_process`）。
+> - `subtitle_segments`：字幕分段（替代旧文档中的 `on_screen_text`，含 `timestamp` / `text` / `highlight_words`）。
+> - `storyboard_scenes`：分镜（替代旧文档中的 `storyboard`，含 `scene_id` / `timestamp` /
+>   `narration` / `onscreen_text` / `visual_description`）。
+> - `core_visual_consistency`：核心视觉一致性描述。
+> - `notebooklm_specific_instructions`：NotebookLM 专用指令。
+> - `change_summary_cn`：仅 Regenerate 版本写入，描述本次相对旧版本的改动（用于 Overview
+>   下方的「本次生成新增或改动的内容」区块）。
+>
+> 下文保留旧 schema 设计稿作为历史背景；以代码与当前 NotebookLM 输出为准。
+
 ## 一、Schema 概述
 
 本文档定义了 AI 教育短视频生产资料的标准化输出结构。每条视频必须包含 **15 个核心字段**，确保信息完整、风格一致、质量可控。

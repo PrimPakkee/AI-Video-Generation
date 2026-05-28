@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Stability Checks Script - v0.4.7
+Prompt Mode Stability Checks Script (v0.4.9)
 
-Runs comprehensive checks for code and database integrity.
+Runs read-only checks for code and database integrity. Does not call
+external APIs and does not modify the database.
 
 Usage:
     python scripts/run_stability_checks.py
 """
+
+STABILITY_CHECKS_VERSION = "v0.4.9"
 
 import sys
 import os
@@ -36,7 +39,8 @@ class StabilityChecker:
             "web/db/models.py",
             "scripts/llm_topic_enhancer.py",
             "scripts/audit_and_repair_prompt_history.py",
-            "scripts/run_stability_checks.py"
+            "scripts/run_stability_checks.py",
+            "scripts/cleanup_ai_reviews.py"
         ]
 
         all_passed = True
@@ -229,12 +233,97 @@ class StabilityChecker:
             print("\n[WARN] Database has some issues (see warnings above)")
             self.checks_passed += 1  # Not a failure, just warnings
 
+    def check_v049_fixes(self):
+        """v0.4.9-specific source-level checks (no external calls, no DB writes)."""
+        print("\n" + "="*80)
+        print(f"v0.4.9 Fix Sanity Checks")
+        print("="*80)
+
+        all_passed = True
+
+        # Check 1: /api/health uses text() wrapper for SQLAlchemy 2.0
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src = f.read()
+            if 'db.execute(text("SELECT 1"))' in app_src:
+                print("  [OK] /api/health uses SQLAlchemy 2.0 text() wrapper")
+            else:
+                print("  [WARN] /api/health may not use text() wrapper")
+                self.warnings += 1
+
+            # Check 2: stale review branch surfaces prior review content
+            if '"status": "stale"' in app_src and 'stale_review_data' in app_src:
+                print("  [OK] /review surfaces prior review content on stale")
+            else:
+                print("  [WARN] /review stale branch may not return prior review")
+                self.warnings += 1
+
+            # Check 3: debug endpoint no longer references invented fields.
+            # Use word boundaries so 'record.version_number' is not a false positive.
+            import re as _re
+            for bad_field in ('record.prompt_id', 'record.version', 'record.prompt_hash'):
+                pattern = _re.escape(bad_field) + r'(?![A-Za-z0-9_])'
+                if _re.search(pattern, app_src):
+                    print(f"  [FAIL] debug endpoint still references {bad_field}")
+                    all_passed = False
+
+            # Check 4: web/app.py must have a top-level `import json`.
+            # The stale review branch and debug endpoint use json.loads at runtime,
+            # so a missing top-level import will cause NameError that gets swallowed
+            # by broad `except Exception` and silently returns review: null.
+            has_top_level_json_import = False
+            for line in app_src.splitlines():
+                stripped = line.strip()
+                if stripped.startswith('#'):
+                    continue
+                # Top-level only: no leading whitespace.
+                if line == 'import json' or line.startswith('import json '):
+                    has_top_level_json_import = True
+                    break
+                if line.startswith('import json,') or line.startswith('import json;'):
+                    has_top_level_json_import = True
+                    break
+                # also accept 'from json import ...' at top level
+                if line.startswith('from json '):
+                    has_top_level_json_import = True
+                    break
+            if has_top_level_json_import:
+                print("  [OK] web/app.py has top-level `import json`")
+            else:
+                print("  [FAIL] web/app.py is missing top-level `import json` "
+                      "(stale review branch will swallow NameError and return null)")
+                all_passed = False
+        except Exception as e:
+            print(f"  [WARN] Could not inspect web/app.py: {e}")
+            self.warnings += 1
+
+        # Check 4: Cleanup script exists
+        if os.path.exists("scripts/cleanup_ai_reviews.py"):
+            print("  [OK] scripts/cleanup_ai_reviews.py present")
+        else:
+            print("  [FAIL] scripts/cleanup_ai_reviews.py missing")
+            all_passed = False
+
+        # Check 5: Stuck generating reviews warning is preserved by integrity check
+        # (the actual count is reported by check_database_integrity).
+        print("  [INFO] Stuck-generating warning is reported by Database Integrity Check")
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} fix sanity checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} fix sanity checks failed")
+            self.checks_failed += 1
+
     def check_required_files(self):
         """Check required files exist"""
+        import glob
+
         print("\n" + "="*80)
         print("Required Files Check")
         print("="*80)
 
+        # Core files - missing any of these is a hard FAIL.
         required_files = [
             "web/app.py",
             "web/db/database.py",
@@ -247,8 +336,14 @@ class StabilityChecker:
             "web/static/index.html",
             "scripts/llm_topic_enhancer.py",
             "data/prompt_history.db",
-            "docs/v0.4.6.9_AI质检严格评分校准.md",
-            "docs/v0.4.6.8_AI质检手动重新质检按钮与触发逻辑重构.md"
+        ]
+
+        # Doc presence checks: use version-prefix globs instead of exact
+        # Chinese filenames so cross-platform encoding quirks don't cause
+        # false FAILs. Missing docs are a WARN, not a FAIL.
+        required_doc_globs = [
+            "docs/v0.4.6.9_*.md",
+            "docs/v0.4.6.8_*.md",
         ]
 
         all_exist = True
@@ -259,8 +354,16 @@ class StabilityChecker:
                 print(f"  [FAIL] Missing: {file_path}")
                 all_exist = False
 
+        for pattern in required_doc_globs:
+            matches = glob.glob(pattern)
+            if matches:
+                print(f"  [OK] {pattern} -> {os.path.basename(matches[0])}")
+            else:
+                print(f"  [WARN] No doc matches pattern: {pattern}")
+                self.warnings += 1
+
         if all_exist:
-            print("\n[OK] All required files exist")
+            print("\n[OK] All required core files exist")
             self.checks_passed += 1
         else:
             print("\n[FAIL] Some required files are missing")
@@ -288,7 +391,7 @@ class StabilityChecker:
 
 def main():
     print("\n" + "="*80)
-    print("Stability Checks - v0.4.7")
+    print(f"Prompt Mode Stability Checks - {STABILITY_CHECKS_VERSION}")
     print("="*80)
 
     checker = StabilityChecker()
@@ -297,6 +400,7 @@ def main():
         checker.check_required_files()
         checker.check_python_compile()
         checker.check_js_syntax()
+        checker.check_v049_fixes()
         checker.check_database_integrity()
     except Exception as e:
         print(f"\n[ERROR] Stability check failed: {e}")
