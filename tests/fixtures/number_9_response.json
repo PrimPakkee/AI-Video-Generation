@@ -1,0 +1,148 @@
+{
+  "id": "test_001",
+  "category": "数论",
+  "topic_label_en": "Number Theory / Cultural Mathematics",
+  "title_cn": "为什么数字9总感觉最特别",
+  "title_en": "Why Does 9 Feel So Special?",
+  "core_concept": "Divisibility Rules and Cultural Significance",
+  "target_duration": "50-60s",
+  "difficulty": "easy",
+  "visual_feasibility": "high",
+  "viral_potential": "high",
+  "status": "pending",
+  "full_problem": "The number 9 appears in multiplication tables, ancient cultures, and mathematics in curious ways. Why does 9 seem so special compared to other numbers?",
+  "question": "What makes the number 9 special in mathematics?",
+  "correct_answer": "9 has unique divisibility properties: the digits of any multiple of 9 always sum to 9 or a multiple of 9.",
+  "short_explanation": "Nine has special divisibility rules that make it stand out. Any multiple of 9 has digits that sum to 9 or another multiple of 9, creating patterns that feel almost magical.",
+  "wrong_intuition": "People often think 9 is special just because it is the highest single digit, but its true uniqueness comes from deeper mathematical properties.",
+  "reasoning_steps": [
+    {
+      "step": 1,
+      "step_title": "9 is the highest single digit",
+      "explanation": "At first glance, 9 stands out because it is the last digit before we hit 10. But there is more to the story."
+    },
+    {
+      "step": 2,
+      "step_title": "Multiplication table patterns",
+      "explanation": "When you multiply 9 by any number, the digits of the result always add up to 9 or a multiple of 9. For example: 9 x 2 = 18, and 1 + 8 = 9."
+    },
+    {
+      "step": 3,
+      "step_title": "The digit sum rule",
+      "explanation": "This pattern works for all multiples of 9. Try 9 x 7 = 63. Check: 6 + 3 = 9. Or 9 x 12 = 108. Check: 1 + 0 + 8 = 9."
+    },
+    {
+      "step": 4,
+      "step_title": "Why does this happen?",
+      "explanation": "This happens because 9 is one less than 10, our base number system. This creates a repeating cycle when you add the digits together."
+    },
+    {
+      "step": 5,
+      "step_title": "Cultural significance",
+      "explanation": "Many cultures see 9 as special or sacred. Now you know there is real mathematics behind the mystery."
+    }
+  ],
+  "hook": "Why does 9 show up everywhere in multiplication, ancient cultures, and math tricks?",
+  "takeaway": "The number 9 has unique divisibility properties that create fascinating patterns. Its digits always sum to 9 or a multiple of 9, making it truly special in mathematics.",
+  "cta": "Follow for more number theory secrets and mathematical curiosities.",
+  "narration_script": "Why does 9 show up everywhere? Multiplication tables, ancient cultures, math tricks. At first, 9 seems special because it is the highest single digit. But there is more. When you multiply 9 by any number, the digits of the result always add up to 9 or a multiple of 9. Try it. Nine times two equals eighteen. One plus eight equals nine. Nine times seven equals sixty-three. Six plus three equals nine. Nine times twelve equals one hundred eight. One plus zero plus eight equals nine. This works every single time. Why? Because 9 is one less than 10, our base number. This creates a repeating cycle. Many cultures see 9 as sacred. Now you know there is real mathematics behind the mystery. Follow for more number theory secrets.",
+  "subtitle_segments": [
+    {
+      "timestamp": "00:00-00:05",
+      "text": "Why does 9 show up everywhere?",
+      "highlight_words": "9"
+    },
+    {
+      "timestamp": "00:05-00:10",
+      "text": "Multiplication tables, ancient cultures, math tricks.",
+      "highlight_words": "Multiplication"
+    },
+    {
+      "timestamp": "00:10-00:16",
+      "text": "9 is the highest single digit. But there is more.",
+      "highlight_words": "more"
+    },
+    {
+      "timestamp": "00:16-00:24",
+      "text": "Multiply 9 by any number: digits always sum to 9.",
+      "highlight_words": "sum to 9"
+    },
+    {
+      "timestamp": "00:24-00:32",
+      "text": "9 x 2 = 18. Check: 1 + 8 = 9.",
+      "highlight_words": "9"
+    },
+    {
+      "timestamp": "00:32-00:40",
+      "text": "9 x 7 = 63. Check: 6 + 3 = 9.",
+      "highlight_words": "9"
+    },
+    {
+      "timestamp": "00:40-00:48",
+      "text": "Why? 9 is one less than 10, our base.",
+      "highlight_words": "one less than 10"
+    },
+    {
+      "timestamp": "00:48-00:54",
+      "text": "Many cultures see 9 as sacred.",
+      "highlight_words": "sacred"
+    },
+    {
+      "timestamp": "00:54-00:58",
+      "text": "Real mathematics behind the mystery.",
+      "highlight_words": "mathematics"
+    }
+  ],
+  "storyboard_scenes": [
+    {
+      "scene_id": 1,
+      "timestamp": "00:00-00:05",
+      "narration": "Why does 9 show up everywhere? Multiplication tables, ancient cultures, math tricks.",
+      "onscreen_text": "Why does 9 show up everywhere?",
+      "visual_description": "White background. Large hand-drawn number '9' in center. Small icons around it: multiplication symbol, ancient temple, magic wand. Clean black hand-drawn lines.",
+      "style_restrictions": "Clean doodle style, white background, black lines, simple and clear."
+    },
+    {
+      "scene_id": 2,
+      "timestamp": "00:05-00:16",
+      "narration": "At first, 9 seems special because it is the highest single digit. But there is more.",
+      "onscreen_text": "9 is the highest single digit. But there is more.",
+      "visual_description": "Show digits 0-9 in a row. Highlight '9' at the end with yellow highlight box. Then add a question mark next to it.",
+      "style_restrictions": "Hand-drawn numbers, yellow highlight for emphasis."
+    },
+    {
+      "scene_id": 3,
+      "timestamp": "00:16-00:32",
+      "narration": "When you multiply 9 by any number, the digits of the result always add up to 9. Try it. Nine times two equals eighteen. One plus eight equals nine.",
+      "onscreen_text": "9 x 2 = 18. Check: 1 + 8 = 9.",
+      "visual_description": "Show multiplication: 9 x 2 = 18. Then show: 1 + 8 = 9 with yellow highlight around final '9'.",
+      "style_restrictions": "Hand-drawn numbers and math symbols, yellow highlight on results."
+    },
+    {
+      "scene_id": 4,
+      "timestamp": "00:32-00:40",
+      "narration": "Nine times seven equals sixty-three. Six plus three equals nine.",
+      "onscreen_text": "9 x 7 = 63. Check: 6 + 3 = 9.",
+      "visual_description": "Show multiplication: 9 x 7 = 63. Then show: 6 + 3 = 9 with yellow highlight.",
+      "style_restrictions": "Same hand-drawn style, consistent throughout."
+    },
+    {
+      "scene_id": 5,
+      "timestamp": "00:40-00:48",
+      "narration": "This works every single time. Why? Because 9 is one less than 10, our base number.",
+      "onscreen_text": "Why? 9 is one less than 10.",
+      "visual_description": "Show: 10 - 1 = 9. Draw a base-10 number line from 0 to 10, with 9 highlighted. Yellow highlight on '9 = 10 - 1'.",
+      "style_restrictions": "Clean diagram, hand-drawn number line."
+    },
+    {
+      "scene_id": 6,
+      "timestamp": "00:48-00:58",
+      "narration": "Many cultures see 9 as sacred. Now you know there is real mathematics behind the mystery. Follow for more number theory secrets.",
+      "onscreen_text": "Real mathematics behind the mystery. Follow for more!",
+      "visual_description": "Show final text: 'Real mathematics behind the mystery.' Then show CTA: 'Follow for more number theory secrets.'",
+      "style_restrictions": "Large centered text, yellow highlight on key phrase."
+    }
+  ],
+  "core_visual_consistency": "The number 9 should ALWAYS be drawn in the same hand-drawn style throughout all scenes. Use consistent black hand-drawn line style. The number should have a slightly irregular, hand-drawn feel. DO NOT change the number's style between scenes. All backgrounds must remain white. All text must be in bold Sans-serif font with yellow highlight boxes for key terms.",
+  "notebooklm_specific_instructions": "Do not show ancient temples in detail or realistic cultural imagery. Keep the focus on the number 9 and the mathematical patterns. Use simple hand-drawn number icons and math symbols only. Do not add decorative cultural elements. The video must remain focused on the mathematical concept."
+}

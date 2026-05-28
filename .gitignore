@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# API keys and secrets (extra safety)
+*_api_key*
+*_secret*
+credentials.json
+
+# Output directories (optional - uncomment if you don't want to track outputs)
+# outputs/
+# outputs/*
+
+# Temporary timestamped output directories
+outputs/*_202*
+
+# LLM debug files
+llm_error.txt
+validation_errors.txt
+
+# macOS system files
+__MACOSX/
+
+# Database files (v0.3+)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+*.db
+*.db-shm
+*.db-wal
+
+# Local virtual environment
+.venv/
+
+# Generated output packages
+outputs/
+
+# Database repair backups
+data/*.db.repair_backup_*
+data/*repair_backup*

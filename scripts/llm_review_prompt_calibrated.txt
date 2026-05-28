@@ -1,0 +1,293 @@
+    def _build_review_user_prompt(self, raw_prompt):
+        """Build user prompt with rubric and the prompt to review - v0.4.6 Calibrated"""
+        return dedent(f"""
+        Evaluate the following NotebookLM prompt according to the strict rubric below.
+
+        **IMPORTANT EVALUATION PRINCIPLES**:
+
+        1. **Evidence-Based Scoring**: Each score must be based on concrete evidence from the prompt text.
+        2. **Do NOT default to full score**: Full score requires excellence with no meaningful improvement needed.
+        3. **Do NOT reward keyword presence only**: Score based on quality, specificity, executability, and correctness.
+        4. **Identify both strengths AND weaknesses**: Every llm_comment must mention what is good and what can be improved (if applicable).
+        5. **Be strict but fair**: Do not invent problems, but do not be overly generous either.
+
+        **GENERAL SCORING SCALE**:
+        - 95-100% of max score: Excellent. Very specific, complete, and directly usable. No meaningful issue found.
+        - 85-94% of max score: Strong. Mostly complete and usable, but there are minor gaps or areas for improvement.
+        - 70-84% of max score: Acceptable. Usable, but several details are generic, incomplete, or need manual refinement.
+        - 50-69% of max score: Weak. Important parts are missing, vague, or difficult to execute.
+        - Below 50% of max score: Poor. The criterion is mostly not satisfied.
+
+        ---
+
+        **Rubric (8 dimensions, total 100 points)**:
+
+        ### 1. Completeness (15 points, weight: 15%)
+
+        **Evaluation Focus**:
+        Check whether the prompt contains all necessary modules, including title, topic, target platform, target audience, video length, core concept, hook, full puzzle setup, question, correct answer, reasoning, narration, on-screen text, visual style, format requirements, constraints, and call to action.
+
+        **Full Score Condition** (15/15):
+        - Prompt includes ALL required modules
+        - Each module has substantial content (not just titles/placeholders)
+        - Content is directly executable, not generic templates
+
+        **Deduction Rules**:
+        - Missing ANY key module (title, question, answer, reasoning, narration, visual style, constraints): deduct 2-5 points
+        - Modules present but content is empty or template-like: max 11/15
+        - Modules present but generic/not directly usable: max 13/15
+
+        ---
+
+        ### 2. Logical Correctness (20 points, weight: 20%)
+
+        **Evaluation Focus**:
+        Check whether the puzzle logic, answer, reasoning steps, and explanation are correct. Penalize mathematical mistakes, conceptual errors, contradictions, missing conditions, or mismatch between the question and answer.
+
+        **Full Score Condition** (20/20):
+        - Question, answer, and reasoning are fully consistent
+        - No mathematical or conceptual errors
+        - Reasoning steps are clear and logically sound
+
+        **Deduction Rules**:
+        - No clear answer provided: max 12/20
+        - Answer and reasoning do not match: max 10/20
+        - Math or logic error present: max 8/20
+        - Reasoning correct but steps are too abrupt/incomplete: max 17/20
+        - Do NOT give full score just because the language is fluent
+
+        ---
+
+        ### 3. NotebookLM Usability (15 points, weight: 15%)
+
+        **Evaluation Focus**:
+        Check whether the prompt is suitable as NotebookLM Copied Text input. It should be clear, structured, executable, and free from irrelevant engineering metadata, database paths, internal comments, or debugging information.
+
+        **Full Score Condition** (15/15):
+        - Prompt can be directly copied to NotebookLM without cleanup
+        - Clear structure with no engineering artifacts
+        - No database paths, API references, debug info, or internal review comments
+
+        **Deduction Rules**:
+        - Contains engineering info (output slug, directory, database, API, debug, internal review): max 10/15
+        - Instructions too long but key points unclear: max 12/15
+        - Usable but requires manual cleanup: max 13/15
+
+        ---
+
+        ### 4. Visual Directability (10 points, weight: 10%)
+
+        **Evaluation Focus**:
+        Check whether the prompt gives enough visual direction, including clean white-background line-art style, clear diagrams, subtitles, scene progression, visual consistency, and restrictions against irrelevant decorative visuals.
+
+        **Full Score Condition** (10/10):
+        - Visual style is clearly specified (white background, hand-drawn, etc.)
+        - Core diagram/visual progression is concrete and scene-specific
+        - Scene-by-scene visual changes are described
+        - Subtitles and on-screen text are specified
+        - Restrictions against decorative/inconsistent visuals are present
+
+        **Deduction Rules**:
+        - Only generic "white background / hand-drawn style" without scene details: max 7/10
+        - No explanation of how core diagram evolves: max 7/10
+        - No restriction against decorative/inconsistent visuals: max 8/10
+        - Visual descriptions too abstract for NotebookLM to execute: max 8/10
+
+        ---
+
+        ### 5. Short-video Suitability (10 points, weight: 10%)
+
+        **Evaluation Focus**:
+        Check whether the prompt is suitable for TikTok, YouTube Shorts, and Instagram Reels. It should have a strong hook, compact pacing, short-video structure, and a clear ending.
+
+        **Full Score Condition** (10/10):
+        - Strong opening hook is present
+        - 50-60 second pacing is clear
+        - Content structure fits short-video format
+        - Clear ending or takeaway
+
+        **Deduction Rules**:
+        - No strong hook: max 8/10
+        - Pacing too slow or content too long: max 7/10
+        - No clear ending or takeaway: max 8/10
+        - More like a long lecture than a short video: max 6/10
+
+        ---
+
+        ### 6. Single-narrator Compliance (10 points, weight: 10%)
+
+        **Evaluation Focus**:
+        Check whether the prompt clearly requires single narrator / monologue narration and avoids dialogue, interview, podcast, two-host conversation, multiple speakers, or back-and-forth discussion.
+
+        **Full Score Condition** (10/10):
+        - Explicitly requires single narrator / monologue
+        - Explicitly prohibits dialogue, interview, podcast, two-host, multiple speakers
+
+        **Deduction Rules**:
+        - Only mentions "single narrator" but doesn't prohibit multi-person formats: max 8/10
+        - Contains dialogue/host A/B/conversation language: max 5/10
+        - Format might be interpreted as interview by NotebookLM: max 7/10
+
+        ---
+
+        ### 7. Educational Clarity (10 points, weight: 10%)
+
+        **Evaluation Focus**:
+        Check whether the prompt explains the core idea clearly for students, parents, and general short-video viewers. It should be easy to follow and avoid unnecessary complexity.
+
+        **Full Score Condition** (10/10):
+        - Core concept is explained in an accessible way
+        - Step-by-step breakdown is present
+        - Analogies or intuitive explanations are used
+        - Key terms are highlighted via subtitles
+
+        **Deduction Rules**:
+        - Explanation too abstract: max 7/10
+        - No step-by-step breakdown: max 8/10
+        - Missing analogies, intuitive examples, or key subtitle suggestions: max 8/10
+        - Explanation correct but not easy to understand: max 8/10
+
+        ---
+
+        ### 8. Risk & Error Control (10 points, weight: 10%)
+
+        **Evaluation Focus**:
+        Check whether the prompt includes safeguards against wrong answers, altered puzzle conditions, visual contradictions, irrelevant scenes, excessive decoration, inconsistent diagrams, or misleading explanations.
+
+        **Full Score Condition** (10/10):
+        - Clear restrictions against wrong answers or altering the puzzle
+        - Visual consistency requirements are stated
+        - Answer and visual must match (explicitly stated)
+        - Restrictions against decorative/irrelevant elements
+
+        **Deduction Rules**:
+        - No restriction against wrong answers or changing the puzzle: max 7/10
+        - No visual consistency constraints: max 8/10
+        - No requirement for answer-visual alignment: max 8/10
+        - Constraints too generic: max 8/10
+
+        ---
+
+        **TOTAL SCORE CALIBRATION**:
+
+        - 98-100: Exceptional, nearly publication-ready, no meaningful improvement needed.
+        - 94-97: Excellent, only very minor refinements needed.
+        - 88-93: Strong and usable, but still has some improvement areas.
+        - 80-87: Good draft, usable but needs refinement.
+        - 70-79: Needs noticeable improvement.
+        - Below 70: Weak or incomplete.
+
+        **IMPORTANT**:
+        - If every dimension receives full score, you must explicitly justify why there are no meaningful improvements.
+        - 100/100 should be RARE.
+        - Do NOT give full score by default.
+
+        ---
+
+        **Prompt to evaluate**:
+        ```
+        {raw_prompt}
+        ```
+
+        ---
+
+        **Evaluation Steps (Follow strictly)**:
+
+        For each dimension:
+        1. Identify concrete evidence from the prompt.
+        2. Identify at least one possible weakness or improvement area (if any exists).
+        3. Assign a score based on the rubric and deduction rules.
+        4. Do NOT give full score unless no meaningful weakness exists.
+
+        **Output Format**:
+        Return ONLY a JSON object with this exact structure:
+
+        {{
+          "rows": [
+            {{
+              "criterion": "Completeness",
+              "weight": "15%",
+              "evaluation_focus": "Check whether the prompt contains all necessary modules, including title, topic, target platform, target audience, video length, core concept, hook, full puzzle setup, question, correct answer, reasoning, narration, on-screen text, visual style, format requirements, constraints, and call to action.",
+              "max_score": 15,
+              "score": <integer 0-15>,
+              "llm_score": "<score>/15",
+              "llm_comment": "<Mention both what is good and what can be improved. Be specific, not generic. Example: 'The prompt includes the main required sections and clear narration structure, but the visual progression remains somewhat generic and would benefit from more scene-specific details for NotebookLM execution.'>"
+            }},
+            {{
+              "criterion": "Logical Correctness",
+              "weight": "20%",
+              "evaluation_focus": "Check whether the puzzle logic, answer, reasoning steps, and explanation are correct. Penalize mathematical mistakes, conceptual errors, contradictions, missing conditions, or mismatch between the question and answer.",
+              "max_score": 20,
+              "score": <integer 0-20>,
+              "llm_score": "<score>/20",
+              "llm_comment": "<Be specific about logic quality>"
+            }},
+            {{
+              "criterion": "NotebookLM Usability",
+              "weight": "15%",
+              "evaluation_focus": "Check whether the prompt is suitable as NotebookLM Copied Text input. It should be clear, structured, executable, and free from irrelevant engineering metadata, database paths, internal comments, or debugging information.",
+              "max_score": 15,
+              "score": <integer 0-15>,
+              "llm_score": "<score>/15",
+              "llm_comment": "<Be specific about usability>"
+            }},
+            {{
+              "criterion": "Visual Directability",
+              "weight": "10%",
+              "evaluation_focus": "Check whether the prompt gives enough visual direction, including clean white-background line-art style, clear diagrams, subtitles, scene progression, visual consistency, and restrictions against irrelevant decorative visuals.",
+              "max_score": 10,
+              "score": <integer 0-10>,
+              "llm_score": "<score>/10",
+              "llm_comment": "<Be specific about visual direction>"
+            }},
+            {{
+              "criterion": "Short-video Suitability",
+              "weight": "10%",
+              "evaluation_focus": "Check whether the prompt is suitable for TikTok, YouTube Shorts, and Instagram Reels. It should have a strong hook, compact pacing, short-video structure, and a clear ending.",
+              "max_score": 10,
+              "score": <integer 0-10>,
+              "llm_score": "<score>/10",
+              "llm_comment": "<Be specific about short-video fit>"
+            }},
+            {{
+              "criterion": "Single-narrator Compliance",
+              "weight": "10%",
+              "evaluation_focus": "Check whether the prompt clearly requires single narrator / monologue narration and avoids dialogue, interview, podcast, two-host conversation, multiple speakers, or back-and-forth discussion.",
+              "max_score": 10,
+              "score": <integer 0-10>,
+              "llm_score": "<score>/10",
+              "llm_comment": "<Be specific about narrator requirements>"
+            }},
+            {{
+              "criterion": "Educational Clarity",
+              "weight": "10%",
+              "evaluation_focus": "Check whether the prompt explains the core idea clearly for students, parents, and general short-video viewers. It should be easy to follow and avoid unnecessary complexity.",
+              "max_score": 10,
+              "score": <integer 0-10>,
+              "llm_score": "<score>/10",
+              "llm_comment": "<Be specific about clarity>"
+            }},
+            {{
+              "criterion": "Risk & Error Control",
+              "weight": "10%",
+              "evaluation_focus": "Check whether the prompt includes safeguards against wrong answers, altered puzzle conditions, visual contradictions, irrelevant scenes, excessive decoration, inconsistent diagrams, or misleading explanations.",
+              "max_score": 10,
+              "score": <integer 0-10>,
+              "llm_score": "<score>/10",
+              "llm_comment": "<Be specific about risk controls>"
+            }}
+          ],
+          "total_score": <sum of all scores, integer 0-100>,
+          "overall_review": "<2-3 sentence overall evaluation. If total_score is 100, explicitly state why no improvements are needed. Otherwise, summarize main strengths and 1-2 key improvement areas.>"
+        }}
+
+        **CRITICAL REMINDERS**:
+        - Each score must be an integer, not exceeding max_score
+        - total_score must equal the sum of all individual scores
+        - llm_score must be in "score/max_score" format
+        - All comments and reviews must be in English
+        - Comments must be SPECIFIC, not generic praise
+        - Do NOT give full score by default
+        - Return ONLY the JSON object, no markdown, no extra text
+        - Begin response with {{ and end with }}
+        """).strip()
