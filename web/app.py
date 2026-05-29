@@ -33,6 +33,16 @@ if env_path.exists():
 # Import database components
 from web.db import init_db, get_db, PromptHistory, PromptHistoryRepository
 
+# Video Mode (v0.5.1) - independent SQLite database, fully isolated from
+# Prompt Mode. The Video Mode session/repository must never touch
+# prompt_history / prompt_reviews tables.
+from web.db import (
+    init_video_db,
+    get_video_db,
+    VideoHistory,
+    VideoHistoryRepository,
+)
+
 app = FastAPI(title="AI Video Prompt Generator")
 
 # Initialize database on startup
@@ -40,6 +50,10 @@ app = FastAPI(title="AI Video Prompt Generator")
 async def startup_event():
     """Initialize database tables on startup"""
     init_db()
+    # v0.5.1: initialize the independent Video Mode database. This only
+    # creates tables in data/video_history.db; it never modifies the
+    # Prompt Mode database (data/prompt_history.db).
+    init_video_db()
 
 # Mount static files
 static_dir = Path(__file__).parent / "static"
@@ -2061,6 +2075,698 @@ async def generate_review(
         )
 
 
+# =============================================================================
+# Video Mode endpoints (v0.5.1)
+# =============================================================================
+# All endpoints below operate exclusively on the Video Mode database
+# (data/video_history.db) via get_video_db(). They do NOT call any video
+# generation provider, do NOT enqueue any video task, and do NOT populate
+# real video URLs / mp4 / mov. The video player on the frontend is a UI
+# framework only.
+# =============================================================================
+
+
+class VideoGenerateRequest(BaseModel):
+    """Request body for Video Mode generation."""
+    title: str = Field(..., min_length=1, max_length=200, description="Video topic")
+
+
+class VideoUpdateContentRequest(BaseModel):
+    """Request body for updating Video Mode content."""
+    view: str = Field(..., pattern='^(raw|preview|overview|web_copy)$')
+    content: str = Field(..., min_length=0)
+
+
+class VideoRegenerateRequest(BaseModel):
+    feedback: str = Field(..., min_length=1, max_length=2000)
+
+
+@app.post("/api/video/generate")
+async def video_generate(
+    request: VideoGenerateRequest,
+    db: Session = Depends(get_video_db),
+) -> JSONResponse:
+    """
+    Generate a Video Mode entry.
+
+    v0.5.1 reuses the existing Prompt generation script
+    (scripts/generate_video_package.py) so the underlying NotebookLM-style
+    Prompt is identical. The result is saved to the Video Mode database
+    (data/video_history.db) only. No real video provider is invoked.
+    """
+    title = request.title.strip()
+    if not title:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Title cannot be empty"},
+        )
+
+    slug = generate_unique_slug(title)
+    script_path = project_root / "scripts" / "generate_video_package.py"
+    if not script_path.exists():
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Script not found: {script_path}"},
+        )
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--title", title,
+        "--mode", "llm",
+        "--output-slug", slug,
+        "--overwrite",
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": f"Command failed with exit code {result.returncode}",
+                    "stdout": result.stdout[-2000:] if result.stdout else "",
+                    "stderr": result.stderr[-2000:] if result.stderr else "",
+                },
+            )
+
+        output_dir = project_root / "outputs" / slug
+        prompt_file = output_dir / "notebooklm_clean_source.txt"
+        if not prompt_file.exists():
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": f"Prompt file not found: {prompt_file}",
+                },
+            )
+
+        with open(prompt_file, 'r', encoding='utf-8') as f:
+            prompt_content = f.read()
+
+        overview_cn = None
+        topic_json_file = output_dir / "topic.json"
+        if topic_json_file.exists():
+            try:
+                with open(topic_json_file, 'r', encoding='utf-8') as f:
+                    topic_data = json.load(f)
+                    overview_cn = topic_data.get('overview_cn')
+            except Exception as e:
+                print(f"[Video Mode] Warning: failed to read overview_cn: {e}")
+
+        model = os.getenv('AI_VIDEO_LLM_MODEL', 'gpt-5-chat')
+        mode = 'video'
+
+        try:
+            record = VideoHistoryRepository.create_history_record(
+                db=db,
+                title=title,
+                slug=slug,
+                prompt_text=prompt_content,
+                output_dir=str(output_dir),
+                model=model,
+                mode=mode,
+                status='success',
+                overview_cn=overview_cn,
+                web_copy_text=None,
+            )
+            # v0.5.1.2: return the full field set so the frontend can hydrate
+            # currentTopicGroupId / version selector / 6-tab content without a
+            # follow-up GET. Mirrors Prompt Mode /api/generate's frontend
+            # contract; field names preserve backwards compatibility.
+            return JSONResponse(content={
+                'success': True,
+                'id': record.id,
+                'history_id': record.id,
+                'title': title,
+                'slug': slug,
+                'topic_group_id': record.topic_group_id,
+                'version_number': record.version_number,
+                'prompt': prompt_content,
+                'raw_text': prompt_content,
+                'prompt_text': prompt_content,
+                'preview_text': record.preview_text,
+                'overview_cn': overview_cn,
+                'change_summary_cn': record.change_summary_cn,
+                'web_copy_text': record.web_copy_text,
+                'output_dir': str(output_dir),
+                'model': model,
+                'mode': mode,
+                'status': record.status,
+                'video_status': record.video_status,
+                'video_file_path': record.video_file_path,
+                'video_url': record.video_url,
+                'video_thumbnail_path': record.video_thumbnail_path,
+                'video_duration_seconds': record.video_duration_seconds,
+                'created_at': record.created_at.isoformat() if record.created_at else None,
+                'updated_at': record.updated_at.isoformat() if record.updated_at else None,
+                'item': record.to_dict(include_prompt=True),
+            })
+        except Exception as e:
+            print(f"[Video Mode] Warning: failed to save: {e}")
+            return JSONResponse(content={
+                'success': True,
+                'slug': slug,
+                'prompt': prompt_content,
+                'raw_text': prompt_content,
+                'output_dir': str(output_dir),
+            })
+
+    except subprocess.TimeoutExpired:
+        return JSONResponse(
+            status_code=504,
+            content={"success": False, "error": "Generation timed out (> 10 minutes)"},
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Unexpected error: {e}"},
+        )
+
+
+@app.get("/api/video/history")
+async def video_get_history(
+    limit: int = 100,
+    q: Optional[str] = None,
+    date_filter: Optional[str] = None,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    try:
+        records = VideoHistoryRepository.list_history_records(
+            db, limit=limit, q=q, date_filter=date_filter,
+        )
+        items = []
+        for r in records:
+            item = r.to_dict(include_prompt=False)
+            item['version_count'] = VideoHistoryRepository.get_version_count(db, r.topic_group_id)
+            items.append(item)
+        return {"success": True, "items": items}
+    except Exception as e:
+        return {"success": False, "error": str(e), "items": []}
+
+
+@app.get("/api/video/history/{history_id}")
+async def video_get_history_by_id(
+    history_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    try:
+        record = VideoHistoryRepository.get_history_record(db, history_id)
+        if not record:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": f"Video history record {history_id} not found"},
+            )
+        item = record.to_dict(include_prompt=True)
+        item['version_count'] = VideoHistoryRepository.get_version_count(db, record.topic_group_id)
+        return {"success": True, "item": item}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.patch("/api/video/history/{history_id}")
+async def video_update_content(
+    history_id: int,
+    request: VideoUpdateContentRequest,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    """
+    Update editable content for a Video Mode record.
+
+    Allowed views: raw / preview / overview / web_copy.
+    Same Raw-Text protections as Prompt Mode are mirrored here.
+    """
+    view = request.view
+    content = request.content
+
+    if view not in ('raw', 'preview', 'overview', 'web_copy'):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": f"Invalid view: {view}"},
+        )
+
+    if view == 'raw':
+        trimmed = content.strip()
+        if not trimmed:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Raw Text cannot be empty."},
+            )
+        if len(trimmed) < 500:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": f"Raw Text is too short ({len(trimmed)} characters). Save rejected.",
+                },
+            )
+
+    try:
+        record = VideoHistoryRepository.update_prompt_content(
+            db, history_id=history_id, view=view, content=content,
+        )
+        if not record:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": f"Video history record {history_id} not found"},
+            )
+        return {"success": True, "item": record.to_dict(include_prompt=True)}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.get("/api/video/history/group/{topic_group_id}/versions")
+async def video_get_versions_by_group(
+    topic_group_id: str,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    """v0.5.1.2: return ``versions`` (matching Prompt Mode's contract) so the
+    frontend version dropdown works for Video Mode. ``items`` is preserved
+    for older callers that may still consume the original v0.5.1 shape."""
+    try:
+        versions = VideoHistoryRepository.get_versions_by_group(db, topic_group_id)
+        if not versions:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "error": f"Topic group {topic_group_id} not found",
+                },
+            )
+        version_list = [
+            {
+                'id': v.id,
+                'version_number': v.version_number,
+                'created_at': v.created_at.isoformat() if v.created_at else None,
+                'slug': v.slug,
+                'deleted_at': v.deleted_at.isoformat() if v.deleted_at else None,
+            }
+            for v in versions
+        ]
+        items = [v.to_dict(include_prompt=False) for v in versions]
+        return {
+            "success": True,
+            "versions": version_list,
+            "items": items,
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.post("/api/video/history/{history_id}/regenerate")
+async def video_regenerate(
+    history_id: int,
+    request: VideoRegenerateRequest,
+    db: Session = Depends(get_video_db),
+) -> JSONResponse:
+    """
+    Regenerate a Video Mode version using the same script as the original
+    generate flow. Saves to Video Mode database only.
+    """
+    record = VideoHistoryRepository.get_history_record(db, history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Video history record {history_id} not found"},
+        )
+
+    feedback = request.feedback.strip()
+    if not feedback:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Feedback cannot be empty"},
+        )
+
+    new_slug = generate_unique_slug(record.title)
+    script_path = project_root / "scripts" / "generate_video_package.py"
+    if not script_path.exists():
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Script not found: {script_path}"},
+        )
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--title", record.title,
+        "--mode", "llm",
+        "--output-slug", new_slug,
+        "--overwrite",
+        "--feedback", feedback,
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd, cwd=str(project_root), capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode != 0:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": f"Command failed with exit code {result.returncode}",
+                    "stdout": result.stdout[-2000:] if result.stdout else "",
+                    "stderr": result.stderr[-2000:] if result.stderr else "",
+                },
+            )
+
+        output_dir = project_root / "outputs" / new_slug
+        prompt_file = output_dir / "notebooklm_clean_source.txt"
+        if not prompt_file.exists():
+            return JSONResponse(
+                status_code=500,
+                content={"success": False, "error": f"Prompt file not found: {prompt_file}"},
+            )
+
+        with open(prompt_file, 'r', encoding='utf-8') as f:
+            new_prompt = f.read()
+
+        new_overview_cn = None
+        change_summary_cn = None
+        topic_json_file = output_dir / "topic.json"
+        if topic_json_file.exists():
+            try:
+                with open(topic_json_file, 'r', encoding='utf-8') as f:
+                    topic_data = json.load(f)
+                    new_overview_cn = topic_data.get('overview_cn')
+                    change_summary_cn = topic_data.get('change_summary_cn')
+            except Exception as e:
+                print(f"[Video Mode] regenerate: failed to read topic.json: {e}")
+
+        model = os.getenv('AI_VIDEO_LLM_MODEL', 'gpt-5-chat')
+        new_record = VideoHistoryRepository.create_regenerated_version(
+            db=db,
+            from_history_id=history_id,
+            feedback=feedback,
+            new_prompt_text=new_prompt,
+            new_overview_cn=new_overview_cn,
+            change_summary_cn=change_summary_cn,
+            slug=new_slug,
+            output_dir=str(output_dir),
+            model=model,
+        )
+        if not new_record:
+            return JSONResponse(
+                status_code=500,
+                content={"success": False, "error": "Failed to create regenerated version"},
+            )
+
+        # v0.5.1.2: regenerate must return the same flat field set as
+        # /api/video/generate so the frontend's triggerRegenerate() can build
+        # an item from data.* fields without a refetch.
+        return JSONResponse(content={
+            "success": True,
+            "id": new_record.id,
+            "history_id": new_record.id,
+            "title": new_record.title,
+            "slug": new_record.slug,
+            "topic_group_id": new_record.topic_group_id,
+            "version_number": new_record.version_number,
+            "prompt": new_record.prompt_text,
+            "raw_text": new_record.prompt_text,
+            "prompt_text": new_record.prompt_text,
+            "preview_text": new_record.preview_text,
+            "overview_cn": new_record.overview_cn,
+            "change_summary_cn": new_record.change_summary_cn,
+            "web_copy_text": new_record.web_copy_text,
+            "output_dir": new_record.output_dir,
+            "model": new_record.model,
+            "mode": new_record.mode,
+            "status": new_record.status,
+            "video_status": new_record.video_status,
+            "video_file_path": new_record.video_file_path,
+            "video_url": new_record.video_url,
+            "video_thumbnail_path": new_record.video_thumbnail_path,
+            "video_duration_seconds": new_record.video_duration_seconds,
+            "created_at": new_record.created_at.isoformat() if new_record.created_at else None,
+            "updated_at": new_record.updated_at.isoformat() if new_record.updated_at else None,
+            "item": new_record.to_dict(include_prompt=True),
+        })
+
+    except subprocess.TimeoutExpired:
+        return JSONResponse(
+            status_code=504,
+            content={"success": False, "error": "Regeneration timed out"},
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.post("/api/video/history/{history_id}/pin")
+async def video_pin(history_id: int, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
+    record = VideoHistoryRepository.pin_history_record(db, history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Video history record {history_id} not found"},
+        )
+    return {"success": True, "item": record.to_dict(include_prompt=False)}
+
+
+@app.post("/api/video/history/{history_id}/unpin")
+async def video_unpin(history_id: int, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
+    record = VideoHistoryRepository.unpin_history_record(db, history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Video history record {history_id} not found"},
+        )
+    return {"success": True, "item": record.to_dict(include_prompt=False)}
+
+
+@app.patch("/api/video/history/group/{topic_group_id}/rename")
+async def video_rename_history_group(
+    topic_group_id: str,
+    request: RenameRequest,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    """
+    v0.5.1.2: Rename a Video Mode topic group.
+
+    Independent from Prompt Mode rename: this endpoint only writes to
+    data/video_history.db (via Depends(get_video_db)) and never touches
+    Prompt Mode tables. Mirrors the Prompt Mode rename response shape.
+    """
+    try:
+        ok = VideoHistoryRepository.rename_topic_group(db, topic_group_id, request.title)
+        if not ok:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "error": f"Video topic group {topic_group_id} not found",
+                },
+            )
+        # Return latest version as the canonical updated item.
+        versions = VideoHistoryRepository.get_versions_by_group(db, topic_group_id)
+        latest = max(versions, key=lambda r: r.version_number) if versions else None
+        item = latest.to_dict(include_prompt=False) if latest else {}
+        if latest:
+            item['version_count'] = VideoHistoryRepository.get_version_count(db, topic_group_id)
+        return {"success": True, "item": item}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+
+
+@app.post("/api/video/history/group/{topic_group_id}/trash")
+async def video_trash_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
+    ok = VideoHistoryRepository.soft_delete_history_group(db, topic_group_id)
+    if not ok:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "Group not found or already deleted"},
+        )
+    return {"success": True}
+
+
+@app.post("/api/video/history/group/{topic_group_id}/restore")
+async def video_restore_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
+    ok = VideoHistoryRepository.restore_history_group(db, topic_group_id)
+    if not ok:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "Group not found in trash"},
+        )
+    return {"success": True}
+
+
+@app.delete("/api/video/history/group/{topic_group_id}/permanent")
+async def video_permanent_delete_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
+    ok = VideoHistoryRepository.permanently_delete_history_group(db, topic_group_id)
+    if not ok:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "Group not found"},
+        )
+    return {"success": True}
+
+
+@app.get("/api/video/trash")
+async def video_list_trash(
+    limit: int = 100,
+    q: Optional[str] = None,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    try:
+        records = VideoHistoryRepository.list_trash_records(db, limit=limit, q=q)
+        return {
+            "success": True,
+            "items": [r.to_dict(include_prompt=False) for r in records],
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "items": []}
+
+
+@app.post("/api/video/history/group/{topic_group_id}/favorite")
+async def video_favorite_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
+    record = VideoHistoryRepository.favorite_history_group(db, topic_group_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "Group not found"},
+        )
+    return {"success": True, "item": record.to_dict(include_prompt=False)}
+
+
+@app.post("/api/video/history/group/{topic_group_id}/unfavorite")
+async def video_unfavorite_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
+    record = VideoHistoryRepository.unfavorite_history_group(db, topic_group_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "Group not found"},
+        )
+    return {"success": True, "item": record.to_dict(include_prompt=False)}
+
+
+@app.get("/api/video/favorites")
+async def video_list_favorites(
+    limit: int = 100,
+    q: Optional[str] = None,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    try:
+        records = VideoHistoryRepository.list_favorite_records(db, limit=limit, q=q)
+        return {
+            "success": True,
+            "items": [r.to_dict(include_prompt=False) for r in records],
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e), "items": []}
+
+
+@app.get("/api/video/history/{history_id}/download-all")
+async def video_download_all(
+    history_id: int,
+    db: Session = Depends(get_video_db),
+) -> Any:
+    """
+    Read-only Download All for Video Mode.
+
+    Mirrors the v0.4.10 contract for Prompt Mode: package raw_text.txt /
+    preview.txt / overview.txt / web_copy.txt / metadata.json. Does NOT touch
+    any DB writes; does NOT download/produce any video file. The bundle never
+    includes mp4 / mov / video URL or token.
+    """
+    import io
+    import zipfile
+    from fastapi.responses import StreamingResponse
+
+    record = VideoHistoryRepository.get_history_record(db, history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Video history record {history_id} not found"},
+        )
+
+    raw_text = record.prompt_text or ""
+    preview_text = record.preview_text or ""
+    overview_text = record.overview_cn or ""
+    change_summary = record.change_summary_cn or ""
+    web_copy_text = record.web_copy_text or ""
+
+    overview_full_parts: List[str] = []
+    if overview_text.strip():
+        overview_full_parts.append(overview_text.rstrip())
+    if change_summary.strip():
+        overview_full_parts.append("本次生成新增或改动的内容")
+        overview_full_parts.append(change_summary.strip())
+    overview_bundle = "\n\n".join(overview_full_parts)
+
+    if not web_copy_text.strip():
+        web_copy_text = (
+            "Web Copy is not generated yet. This tab will later contain "
+            "YouTube/TikTok titles, descriptions, captions, and posting copy."
+        )
+
+    metadata = {
+        "id": record.id,
+        "title": record.title,
+        "slug": record.slug,
+        "output_dir": record.output_dir,
+        "model": record.model,
+        "mode": record.mode,
+        "status": record.status,
+        "topic_group_id": record.topic_group_id,
+        "version_number": record.version_number,
+        "created_at": record.created_at.isoformat() if record.created_at else None,
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+        "has_preview_text": bool(preview_text.strip()),
+        "has_overview_cn": bool(overview_text.strip()),
+        "has_change_summary_cn": bool(change_summary.strip()),
+        "has_web_copy_text": bool(record.web_copy_text and record.web_copy_text.strip()),
+        "regenerate_from_history_id": record.regenerate_from_history_id,
+        "regenerate_feedback": record.regenerate_feedback,
+        "video_status": record.video_status,
+        "video_duration_seconds": record.video_duration_seconds,
+        "export_schema_version": "video_v0.5.1",
+    }
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("raw_text.txt", raw_text)
+        zf.writestr("preview.txt", preview_text)
+        zf.writestr("overview.txt", overview_bundle)
+        zf.writestr("web_copy.txt", web_copy_text)
+        zf.writestr("metadata.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+    buf.seek(0)
+
+    safe_slug = record.slug or f"video_{record.id}"
+    filename = f"{safe_slug}_video_package.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# =============================================================================
+# Health
+# =============================================================================
+
+
 @app.get("/api/health")
 async def health_check(db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Health check endpoint"""
@@ -2073,11 +2779,24 @@ async def health_check(db: Session = Depends(get_db)) -> Dict[str, Any]:
     except Exception:
         database_status = "error"
 
+    # v0.5.1: also report Video Mode database health, with its own session.
+    video_database_status = "ok"
+    try:
+        from web.db import VideoSessionLocal
+        vdb = VideoSessionLocal()
+        try:
+            vdb.execute(text("SELECT 1"))
+        finally:
+            vdb.close()
+    except Exception:
+        video_database_status = "error"
+
     return {
         "status": "ok",
         "project_root": str(project_root),
         "env_loaded": env_path.exists(),
-        "database": database_status
+        "database": database_status,
+        "video_database": video_database_status,
     }
 
 

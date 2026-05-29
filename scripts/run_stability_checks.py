@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Prompt Mode Stability Checks Script (v0.4.10)
+Prompt Mode + Video Mode Stability Checks Script (v0.5.2)
 
 Runs read-only checks for code and database integrity. Does not call
-external APIs and does not modify the database.
+external APIs and does not modify any database.
 
 Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.4.10"
+STABILITY_CHECKS_VERSION = "v0.5.2"
 
 import sys
 import os
@@ -37,6 +37,9 @@ class StabilityChecker:
             "web/db/repository_review.py",
             "web/db/database.py",
             "web/db/models.py",
+            "web/db/video_database.py",
+            "web/db/video_models.py",
+            "web/db/video_repository.py",
             "scripts/llm_topic_enhancer.py",
             "scripts/audit_and_repair_prompt_history.py",
             "scripts/run_stability_checks.py",
@@ -459,6 +462,986 @@ class StabilityChecker:
             print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} fix sanity checks failed")
             self.checks_failed += 1
 
+    def check_v051_fixes(self):
+        """v0.5.1-specific source-level checks (read-only).
+
+        Validates Video Mode framework wiring without touching any database,
+        invoking any LLM, downloading anything, or starting a server.
+        """
+        print("\n" + "="*80)
+        print("v0.5.1 Fix Sanity Checks")
+        print("="*80)
+
+        all_passed = True
+
+        # 1) Frontend Mode Selector DOM elements present in index.html.
+        try:
+            with open("web/static/index.html", "r", encoding="utf-8") as f:
+                html_src = f.read()
+            for needle, label in (
+                ("mode-selector", "mode-selector container"),
+                ("mode-selector-btn", "mode-selector-btn"),
+                ("mode-dropdown", "mode-dropdown"),
+                ("mode-option", "mode-option"),
+            ):
+                if needle in html_src:
+                    print(f"  [OK] index.html has {label}")
+                else:
+                    print(f"  [FAIL] index.html missing {label}")
+                    all_passed = False
+
+            # 1b) Prompt Mode 4 view-mode tabs (raw/preview/overview/review)
+            # buttons must be preserved.
+            for tab in ('data-mode="raw"', 'data-mode="preview"',
+                        'data-mode="overview"', 'data-mode="review"'):
+                if tab in html_src:
+                    print(f"  [OK] index.html preserves Prompt Mode tab {tab}")
+                else:
+                    print(f"  [FAIL] index.html missing Prompt Mode tab {tab}")
+                    all_passed = False
+        except Exception as e:
+            print(f"  [WARN] Could not inspect web/static/index.html: {e}")
+            self.warnings += 1
+
+        # 2) Frontend mode-aware helpers in main.js.
+        try:
+            with open("web/static/main.js", "r", encoding="utf-8") as f:
+                main_src = f.read()
+            for needle, label in (
+                ("currentAppMode", "currentAppMode state"),
+                ("switchAppMode", "switchAppMode() function"),
+                ("getApiPrefix", "getApiPrefix() helper"),
+            ):
+                if needle in main_src:
+                    print(f"  [OK] main.js defines {label}")
+                else:
+                    print(f"  [FAIL] main.js missing {label}")
+                    all_passed = False
+
+            # 2b) No hardcoded real video URL / file references in frontend
+            # (the v0.5.1 player must remain src-less).
+            import re as _re
+            forbidden_video = _re.search(
+                r'https?://[^\s"\'`]+\.(?:mp4|mov|m3u8|webm)',
+                main_src,
+                flags=_re.IGNORECASE,
+            )
+            if forbidden_video:
+                print(f"  [FAIL] main.js contains hardcoded video URL: "
+                      f"{forbidden_video.group(0)}")
+                all_passed = False
+            else:
+                print("  [OK] main.js has no hardcoded video URL")
+        except Exception as e:
+            print(f"  [WARN] Could not inspect web/static/main.js: {e}")
+            self.warnings += 1
+
+        # 3) Backend /api/video/* endpoints registered in app.py.
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src = f.read()
+            for endpoint in ('"/api/video/generate"', '"/api/video/history"'):
+                if endpoint in app_src:
+                    print(f"  [OK] app.py registers {endpoint}")
+                else:
+                    print(f"  [FAIL] app.py missing endpoint {endpoint}")
+                    all_passed = False
+
+            # 3b) /api/health must report video_database field.
+            if "video_database" in app_src:
+                print("  [OK] /api/health exposes video_database field")
+            else:
+                print("  [FAIL] /api/health missing video_database field")
+                all_passed = False
+
+            # 3c) init_video_db must be wired into startup.
+            if "init_video_db" in app_src:
+                print("  [OK] app.py wires init_video_db()")
+            else:
+                print("  [FAIL] app.py missing init_video_db() wiring")
+                all_passed = False
+        except Exception as e:
+            print(f"  [WARN] Could not inspect web/app.py: {e}")
+            self.warnings += 1
+
+        # 4) Video Mode DB layer files exist.
+        for path in (
+            "web/db/video_database.py",
+            "web/db/video_models.py",
+            "web/db/video_repository.py",
+        ):
+            if os.path.exists(path):
+                print(f"  [OK] {path} present")
+            else:
+                print(f"  [FAIL] {path} missing")
+                all_passed = False
+
+        # 5) Prompt Mode freeze spec preserved.
+        if os.path.exists("docs/prompt_mode_freeze_spec.md"):
+            print("  [OK] docs/prompt_mode_freeze_spec.md preserved")
+        else:
+            print("  [FAIL] docs/prompt_mode_freeze_spec.md missing")
+            all_passed = False
+
+        # 6) v0.5.2 design doc exists (collapsed v0.5.1 / v0.5.1.2 docs into
+        #    a single v0.5.2 release-note doc).
+        if os.path.exists("docs/v0.5.2_video_mode_framework.md"):
+            print("  [OK] docs/v0.5.2_video_mode_framework.md present")
+        else:
+            print("  [WARN] docs/v0.5.2_video_mode_framework.md missing")
+            self.warnings += 1
+
+        # 7) .gitignore must keep data/video_history.db (and other video DB
+        # artifacts) out of Git.
+        try:
+            if os.path.exists(".gitignore"):
+                with open(".gitignore", "r", encoding="utf-8") as f:
+                    gi_src = f.read()
+                gi_lines = [ln.strip() for ln in gi_src.splitlines()
+                            if ln.strip() and not ln.strip().startswith("#")]
+                covered = any(
+                    pat in gi_lines
+                    for pat in (
+                        "data/video_history.db",
+                        "data/*.db",
+                        "data/**/*.db",
+                        "*.db",
+                    )
+                )
+                if covered:
+                    print("  [OK] .gitignore covers data/video_history.db")
+                else:
+                    print("  [FAIL] .gitignore does not cover "
+                          "data/video_history.db (must not be committed)")
+                    all_passed = False
+            else:
+                print("  [WARN] .gitignore not found")
+                self.warnings += 1
+        except Exception as e:
+            print(f"  [WARN] Could not inspect .gitignore: {e}")
+            self.warnings += 1
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} fix sanity checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} fix sanity checks failed")
+            self.checks_failed += 1
+
+    def check_v0512_fixes(self):
+        """v0.5.1.2-specific source-level checks (read-only).
+
+        Verifies the 12 Video Mode framework fixes wired without touching
+        any database, invoking any LLM, or starting a server.
+        """
+        print("\n" + "="*80)
+        print("v0.5.1.2 Fix Sanity Checks")
+        print("="*80)
+
+        all_passed = True
+
+        try:
+            with open("web/static/main.js", "r", encoding="utf-8") as f:
+                main_src = f.read()
+        except Exception as e:
+            print(f"  [WARN] Could not read web/static/main.js: {e}")
+            self.warnings += 1
+            main_src = ""
+
+        try:
+            with open("web/static/ai_review.js", "r", encoding="utf-8") as f:
+                ai_review_src = f.read()
+        except Exception as e:
+            print(f"  [WARN] Could not read web/static/ai_review.js: {e}")
+            self.warnings += 1
+            ai_review_src = ""
+
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src = f.read()
+        except Exception as e:
+            print(f"  [WARN] Could not read web/app.py: {e}")
+            self.warnings += 1
+            app_src = ""
+
+        try:
+            with open("web/db/video_repository.py", "r", encoding="utf-8") as f:
+                video_repo_src = f.read()
+        except Exception as e:
+            print(f"  [WARN] Could not read web/db/video_repository.py: {e}")
+            self.warnings += 1
+            video_repo_src = ""
+
+        try:
+            with open("web/static/index.html", "r", encoding="utf-8") as f:
+                html_src = f.read()
+        except Exception as e:
+            print(f"  [WARN] Could not read web/static/index.html: {e}")
+            self.warnings += 1
+            html_src = ""
+
+        # 1) main.js has currentAppMode/switchAppMode (regression check).
+        for needle, label in (
+            ("currentAppMode", "currentAppMode state"),
+            ("switchAppMode", "switchAppMode() function"),
+            ("getApiPrefix", "getApiPrefix() helper"),
+            ("apiUrl(", "apiUrl() helper used"),
+        ):
+            if needle in main_src:
+                print(f"  [OK] main.js has {label}")
+            else:
+                print(f"  [FAIL] main.js missing {label}")
+                all_passed = False
+
+        # 2) Default-tab logic uses currentAppMode (Fixes #1, #2).
+        if "getDefaultViewMode" in main_src and "currentAppMode === 'video'" in main_src:
+            print("  [OK] main.js getDefaultViewMode() branches on currentAppMode")
+        else:
+            print("  [FAIL] main.js missing mode-aware default tab logic")
+            all_passed = False
+
+        # 3) Web Copy support (Fix #7).
+        for needle, label in (
+            ("'web_copy'", "web_copy mode literal"),
+            ("currentWebCopyText", "currentWebCopyText state"),
+        ):
+            if needle in main_src:
+                print(f"  [OK] main.js references {label}")
+            else:
+                print(f"  [FAIL] main.js missing {label}")
+                all_passed = False
+        # Web Copy Download writes a {slug}_web_copy.txt file via the
+        # filenameSuffix = 'web_copy' branch in downloadPrompt(). Accept
+        # either literal filename or the filenameSuffix assignment.
+        if "filenameSuffix = 'web_copy'" in main_src or "web_copy.txt" in main_src:
+            print("  [OK] main.js downloads web_copy as web_copy.txt")
+        else:
+            print("  [FAIL] main.js missing web_copy download wiring")
+            all_passed = False
+
+        # 4) Video tab unavailable strings (Fix #8, #10).
+        for needle in (
+            "Video tab cannot be edited.",
+            "Video content cannot be copied.",
+            "Video file is not available yet.",
+            "Video source is not available yet.",
+        ):
+            if needle in main_src:
+                print(f"  [OK] main.js has tooltip/toast string: {needle!r}")
+            else:
+                print(f"  [FAIL] main.js missing string: {needle!r}")
+                all_passed = False
+
+        # 5) Rename uses /api/video/ via apiUrl (Fix #9).
+        if "apiUrl(`/history/group/${topicGroupId}/rename`)" in main_src:
+            print("  [OK] main.js finishRenameMode uses apiUrl() for rename")
+        else:
+            print("  [FAIL] main.js finishRenameMode does not route via apiUrl()")
+            all_passed = False
+
+        # 6) Backend Video rename endpoint registered (Fix #9).
+        if '"/api/video/history/group/{topic_group_id}/rename"' in app_src:
+            print("  [OK] app.py registers /api/video/history/group/{id}/rename")
+        else:
+            print("  [FAIL] app.py missing /api/video/history/group/{id}/rename endpoint")
+            all_passed = False
+        if "rename_topic_group" in video_repo_src:
+            print("  [OK] video_repository defines rename_topic_group()")
+        else:
+            print("  [FAIL] video_repository missing rename_topic_group()")
+            all_passed = False
+
+        # 7) Video versions endpoint returns "versions" key (Fix #3).
+        if '"versions"' in app_src and 'video_get_versions' in app_src:
+            print("  [OK] app.py video versions endpoint references 'versions'")
+        elif '"versions":' in app_src or "'versions':" in app_src:
+            print("  [OK] app.py exposes 'versions' key")
+        else:
+            print("  [FAIL] app.py /api/video/history/group/{id}/versions missing 'versions' key")
+            all_passed = False
+
+        # 8) /api/video/generate and /regenerate return topic_group_id and version_number (Fixes #4, #5).
+        for needle in (
+            '"topic_group_id"',
+            '"version_number"',
+            '"web_copy_text"',
+        ):
+            if needle in app_src:
+                print(f"  [OK] app.py returns {needle}")
+            else:
+                print(f"  [FAIL] app.py missing field {needle} in video responses")
+                all_passed = False
+
+        # 9) AI Review placeholder + mode guard (Fix #6).
+        if "AI Review for Video Mode is not connected in v0.5.1.2." in ai_review_src:
+            print("  [OK] ai_review.js has Video Mode placeholder text")
+        else:
+            print("  [FAIL] ai_review.js missing Video Mode placeholder text")
+            all_passed = False
+        if "renderVideoReviewPlaceholder" in ai_review_src and "isVideoModeForReview" in ai_review_src:
+            print("  [OK] ai_review.js defines mode guard helpers")
+        else:
+            print("  [FAIL] ai_review.js missing mode guard helpers")
+            all_passed = False
+        # window.getCurrentAppMode export must exist in main.js.
+        if "window.getCurrentAppMode" in main_src:
+            print("  [OK] main.js exports window.getCurrentAppMode")
+        else:
+            print("  [FAIL] main.js missing window.getCurrentAppMode export")
+            all_passed = False
+
+        # 10) ai_review.js must NOT call /api/history/{id}/review unguarded.
+        # Check: every fetch to that path must be inside a function whose
+        # prologue contains the mode guard. We approximate by checking that
+        # the file does not have a top-level fetch outside the guarded
+        # functions — instead require that loadReview/regenerateReview/
+        # startReviewPolling each contain isVideoModeForReview() before any
+        # fetch( call.
+        guard_failures = []
+        for fn_name in ("loadReview", "regenerateReview", "startReviewPolling"):
+            # Locate function block
+            idx = ai_review_src.find(f"function {fn_name}")
+            if idx == -1:
+                idx = ai_review_src.find(f"async function {fn_name}")
+            if idx == -1:
+                guard_failures.append(f"{fn_name} not found")
+                continue
+            # Slice to the next top-level function definition (rough)
+            tail = ai_review_src[idx:idx + 4000]
+            fetch_idx = tail.find("fetch(")
+            guard_idx = tail.find("isVideoModeForReview")
+            if fetch_idx == -1:
+                # No fetch in this slice; nothing to guard.
+                continue
+            if guard_idx == -1 or guard_idx > fetch_idx:
+                guard_failures.append(f"{fn_name} fetch() not guarded")
+        if not guard_failures:
+            print("  [OK] ai_review.js guards every Prompt Mode review fetch in Video Mode")
+        else:
+            print(f"  [FAIL] ai_review.js mode guard incomplete: {guard_failures}")
+            all_passed = False
+
+        # 11) No video_review table introduced.
+        for src_name, src in (
+            ("web/app.py", app_src),
+            ("web/db/video_repository.py", video_repo_src),
+        ):
+            if "video_review" in src.lower():
+                print(f"  [FAIL] {src_name} introduces video_review (forbidden)")
+                all_passed = False
+            else:
+                print(f"  [OK] {src_name} has no video_review table")
+
+        # 12) No Seedance / real video provider strings introduced.
+        forbidden_provider_terms = ("seedance", "Seedance", "SEEDANCE")
+        any_provider = False
+        combined = main_src + ai_review_src + app_src + video_repo_src + html_src
+        for term in forbidden_provider_terms:
+            if term in combined:
+                any_provider = True
+                print(f"  [FAIL] forbidden provider keyword {term!r} appears in source")
+                all_passed = False
+        if not any_provider:
+            print("  [OK] no Seedance / real provider keywords introduced")
+
+        # 13) .gitignore covers data/*.db (regression check).
+        try:
+            if os.path.exists(".gitignore"):
+                with open(".gitignore", "r", encoding="utf-8") as f:
+                    gi_src = f.read()
+                gi_lines = [ln.strip() for ln in gi_src.splitlines()
+                            if ln.strip() and not ln.strip().startswith("#")]
+                covered = any(
+                    pat in gi_lines
+                    for pat in (
+                        "data/video_history.db",
+                        "data/*.db",
+                        "data/**/*.db",
+                        "*.db",
+                    )
+                )
+                if covered:
+                    print("  [OK] .gitignore still covers data/*.db")
+                else:
+                    print("  [FAIL] .gitignore no longer covers data/*.db")
+                    all_passed = False
+        except Exception as e:
+            print(f"  [WARN] Could not inspect .gitignore: {e}")
+            self.warnings += 1
+
+        # 14) Prompt Mode freeze spec + v0.5.2 video framework doc preserved.
+        for path in (
+            "docs/prompt_mode_freeze_spec.md",
+            "docs/v0.5.2_video_mode_framework.md",
+        ):
+            if os.path.exists(path):
+                print(f"  [OK] {path} preserved")
+            else:
+                print(f"  [FAIL] {path} missing")
+                all_passed = False
+
+        # 15) Video Mode loading + empty-state copy strings (Fix #11).
+        for needle in (
+            "Generating your video assets...",
+            "No video topics yet.",
+        ):
+            if needle in main_src:
+                print(f"  [OK] main.js has copy: {needle!r}")
+            else:
+                print(f"  [FAIL] main.js missing copy: {needle!r}")
+                all_passed = False
+
+        # 16) Loading element id present in HTML.
+        if 'id="loading-text"' in html_src:
+            print("  [OK] index.html exposes #loading-text for mode-aware copy")
+        else:
+            print("  [FAIL] index.html missing #loading-text id")
+            all_passed = False
+
+        # 17) Web Copy edit textarea wired.
+        if 'id="web-copy-edit-textarea"' in html_src:
+            print("  [OK] index.html has #web-copy-edit-textarea")
+        else:
+            print("  [FAIL] index.html missing #web-copy-edit-textarea")
+            all_passed = False
+
+        # 18) showAppToast helper defined.
+        if "function showAppToast" in main_src and "window.showAppToast" in main_src:
+            print("  [OK] main.js defines showAppToast and exports it")
+        else:
+            print("  [FAIL] main.js missing showAppToast helper or window export")
+            all_passed = False
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} fix sanity checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} fix sanity checks failed")
+            self.checks_failed += 1
+
+    def check_v0512_ui_hotfix(self):
+        """v0.5.1.2 UI hotfix-round source-level checks (read-only).
+
+        Verifies the in-frame video toast, unified custom-tooltip wiring,
+        per-button unavailable-message routing, and exitEditMode re-entrance
+        guard are all in place. Does not touch any DB, LLM, or server.
+        """
+        print("\n" + "="*80)
+        print("v0.5.1.2 UI Hotfix Sanity Checks")
+        print("="*80)
+
+        all_passed = True
+
+        try:
+            with open("web/static/main.js", "r", encoding="utf-8") as f:
+                main_src = f.read()
+        except Exception as e:
+            print(f"  [WARN] Could not read web/static/main.js: {e}")
+            self.warnings += 1
+            main_src = ""
+
+        try:
+            with open("web/static/style.css", "r", encoding="utf-8") as f:
+                css_src = f.read()
+        except Exception as e:
+            print(f"  [WARN] Could not read web/static/style.css: {e}")
+            self.warnings += 1
+            css_src = ""
+
+        # 1) main.js defines showVideoPlayerToast helper.
+        if "function showVideoPlayerToast" in main_src:
+            print("  [OK] main.js defines showVideoPlayerToast()")
+        else:
+            print("  [FAIL] main.js missing showVideoPlayerToast() helper")
+            all_passed = False
+
+        # 2) togglePlay routes the no-source toast through showVideoPlayerToast
+        #    with the exact in-frame copy.
+        if "showVideoPlayerToast('Video source is not available yet.')" in main_src \
+                or 'showVideoPlayerToast("Video source is not available yet.")' in main_src:
+            print("  [OK] main.js no-source path uses showVideoPlayerToast()")
+        else:
+            print("  [FAIL] main.js no-source toast does not use showVideoPlayerToast()")
+            all_passed = False
+
+        # 3) style.css defines .video-player-toast positioning.
+        if ".video-player-toast" in css_src:
+            print("  [OK] style.css defines .video-player-toast")
+        else:
+            print("  [FAIL] style.css missing .video-player-toast rule")
+            all_passed = False
+
+        # 4) updateActionButtonsForCurrentView / setBtnState must NOT call
+        #    btn.setAttribute('title', ...) — native browser tooltip is
+        #    forbidden in v0.5.1.2 UI hotfix round.
+        import re as _re
+        forbidden_title_patterns = [
+            r"setAttribute\(\s*['\"]title['\"]\s*,",
+            r"\.title\s*=\s*tooltipText",
+        ]
+        title_violations = []
+        for pat in forbidden_title_patterns:
+            for m in _re.finditer(pat, main_src):
+                # Determine 1-based line number for actionable diagnostics.
+                line_no = main_src.count("\n", 0, m.start()) + 1
+                title_violations.append((line_no, m.group(0)))
+        if title_violations:
+            print(f"  [FAIL] main.js still sets native title attribute "
+                  f"({len(title_violations)} occurrences):")
+            for ln, frag in title_violations[:5]:
+                print(f"    line {ln}: {frag}")
+            all_passed = False
+        else:
+            print("  [OK] main.js does not set native title attribute on disabled buttons")
+
+        # 5) main.js uses data-unavailable-message as the disabled-state carrier.
+        if "data-unavailable-message" in main_src:
+            print("  [OK] main.js uses data-unavailable-message")
+        else:
+            print("  [FAIL] main.js does not use data-unavailable-message")
+            all_passed = False
+
+        # 6) Copy button's tooltip text must NOT contain the Download phrase.
+        #    The single source of truth is the literal "Video content cannot
+        #    be copied." (no Download mention).
+        if "Video content cannot be copied." in main_src:
+            print("  [OK] main.js Copy tooltip string present")
+        else:
+            print("  [FAIL] main.js missing Copy tooltip string "
+                  "'Video content cannot be copied.'")
+            all_passed = False
+
+        # The Copy branch in updateActionButtonsForCurrentView must not also
+        # mention the Download phrase. Locate the function and inspect only
+        # its copy-button assignment.
+        copy_branch_violations = []
+        fn_idx = main_src.find("function updateActionButtonsForCurrentView")
+        if fn_idx == -1:
+            fn_idx = main_src.find("updateActionButtonsForCurrentView = function")
+        if fn_idx != -1:
+            fn_slice = main_src[fn_idx:fn_idx + 8000]
+            # Heuristic: any line in the slice that mentions copyBtn AND
+            # references the Download phrase is a violation.
+            for line in fn_slice.splitlines():
+                if "copy" in line.lower() and \
+                        "Download will be available when a video file exists." in line:
+                    copy_branch_violations.append(line.strip())
+        if copy_branch_violations:
+            print("  [FAIL] Copy branch leaks Download phrase:")
+            for line in copy_branch_violations[:3]:
+                print(f"    {line[:120]}")
+            all_passed = False
+        else:
+            print("  [OK] Copy branch does not mention the Download phrase")
+
+        # 7) Download button's tooltip text combines both sentences.
+        download_combined = (
+            "Video file is not available yet. "
+            "Download will be available when a video file exists."
+        )
+        if download_combined in main_src:
+            print("  [OK] main.js Download tooltip combined sentence present")
+        else:
+            print("  [FAIL] main.js missing Download tooltip combined sentence")
+            all_passed = False
+
+        # 8) No two consecutive exitEditMode() calls.
+        consec_exit = _re.search(
+            r"exitEditMode\s*\(\s*\)\s*;\s*exitEditMode\s*\(\s*\)\s*;",
+            main_src,
+        )
+        if consec_exit:
+            line_no = main_src.count("\n", 0, consec_exit.start()) + 1
+            print(f"  [FAIL] main.js has consecutive exitEditMode() calls at line {line_no}")
+            all_passed = False
+        else:
+            print("  [OK] main.js has no consecutive exitEditMode() calls")
+
+        # 9) No two consecutive <span class="icon-tooltip">Save</span> markers
+        #    in editBtn.innerHTML assignments.
+        save_span = '<span class="icon-tooltip">Save</span>'
+        save_dup = _re.search(
+            _re.escape(save_span) + r"\s*" + _re.escape(save_span),
+            main_src,
+        )
+        if save_dup:
+            line_no = main_src.count("\n", 0, save_dup.start()) + 1
+            print(f"  [FAIL] main.js has duplicated Save tooltip span at line {line_no}")
+            all_passed = False
+        else:
+            print("  [OK] main.js has no duplicated Save tooltip span")
+
+        # 10) exitEditMode re-entrance guard wired.
+        if "_exitEditModeInFlight" in main_src and "_exitEditModeImpl" in main_src:
+            print("  [OK] main.js wraps exitEditMode with re-entrance guard")
+        else:
+            print("  [FAIL] main.js missing exitEditMode re-entrance guard "
+                  "(_exitEditModeInFlight / _exitEditModeImpl)")
+            all_passed = False
+
+        # ---- Round 2 (tooltip wrap + Web Copy empty download) ----
+
+        try:
+            with open("web/static/index.html", "r", encoding="utf-8") as f:
+                html_src = f.read()
+        except Exception as e:
+            print(f"  [WARN] Could not read web/static/index.html: {e}")
+            self.warnings += 1
+            html_src = ""
+
+        # 11) Round 4: tooltip rendering moved to a global portal
+        #     (.global-icon-tooltip). The legacy in-button .icon-tooltip is
+        #     kept as a data source only and must NOT render visually
+        #     anymore — we verify it has display:none enforced and that
+        #     the global tooltip carries the wrap/max-width/break rules.
+        global_idx = css_src.find(".global-icon-tooltip")
+        wrap_ok = False
+        maxw_ok = False
+        breakword_ok = False
+        fixed_ok = False
+        zindex_ok = False
+        if global_idx != -1:
+            block = css_src[global_idx:global_idx + 1200]
+            if "white-space: normal" in block:
+                wrap_ok = True
+            if "max-width" in block:
+                maxw_ok = True
+            if "overflow-wrap" in block or "word-wrap" in block:
+                breakword_ok = True
+            if "position: fixed" in block:
+                fixed_ok = True
+            if "z-index:" in block or "z-index :" in block:
+                zindex_ok = True
+        if wrap_ok:
+            print("  [OK] .global-icon-tooltip uses white-space: normal (wraps long copy)")
+        else:
+            print("  [FAIL] .global-icon-tooltip missing white-space: normal")
+            all_passed = False
+        if maxw_ok:
+            print("  [OK] .global-icon-tooltip has max-width set")
+        else:
+            print("  [FAIL] .global-icon-tooltip missing max-width")
+            all_passed = False
+        if breakword_ok:
+            print("  [OK] .global-icon-tooltip has overflow-wrap/word-wrap")
+        else:
+            print("  [FAIL] .global-icon-tooltip missing overflow-wrap/word-wrap")
+            all_passed = False
+        if fixed_ok:
+            print("  [OK] .global-icon-tooltip uses position: fixed")
+        else:
+            print("  [FAIL] .global-icon-tooltip is not position: fixed "
+                  "(would be subject to ancestor stacking contexts)")
+            all_passed = False
+        if zindex_ok:
+            print("  [OK] .global-icon-tooltip declares a z-index")
+        else:
+            print("  [FAIL] .global-icon-tooltip missing z-index "
+                  "(would be hidden by other stacking contexts)")
+            all_passed = False
+
+        # 11b) Legacy .icon-tooltip must be visually disabled (no hover-driven
+        #      display rule that would surface a second tooltip).
+        legacy_hover_present = False
+        # Treat any non-commented `.icon-button:hover .icon-tooltip { ... display: ... }`
+        # as a violation. We approximate by searching for the hover selector
+        # paired with a display-changing block in css_src.
+        for sel in (".icon-button:hover .icon-tooltip",
+                    ".copy-button.copied .icon-tooltip",
+                    ".icon-button.copied .icon-tooltip"):
+            sel_idx = css_src.find(sel)
+            if sel_idx == -1:
+                continue
+            # Look for the matching block opener and inspect its body.
+            brace_open = css_src.find("{", sel_idx, sel_idx + 200)
+            brace_close = css_src.find("}", brace_open, brace_open + 400) if brace_open != -1 else -1
+            if brace_open == -1 or brace_close == -1:
+                continue
+            body = css_src[brace_open + 1:brace_close]
+            # If display is set to anything except none, the legacy tooltip
+            # would still render.
+            import re as _re_legacy
+            disp_match = _re_legacy.search(r"display\s*:\s*([^;}\n]+)", body)
+            if disp_match and "none" not in disp_match.group(1).lower():
+                legacy_hover_present = True
+                print(f"  [FAIL] legacy '{sel}' still surfaces tooltip via "
+                      f"display: {disp_match.group(1).strip()}")
+        if not legacy_hover_present:
+            print("  [OK] legacy .icon-tooltip hover rules do not surface a second tooltip")
+        else:
+            all_passed = False
+        # And the .icon-tooltip rule itself should explicitly hide the span.
+        # Look for the rule body (with `{`), not the first textual mention
+        # (which may live inside a /* ... */ comment).
+        ict_idx = css_src.find(".icon-tooltip {")
+        if ict_idx == -1:
+            ict_idx = css_src.find(".icon-tooltip{")
+        if ict_idx != -1:
+            ict_block = css_src[ict_idx:ict_idx + 400]
+            if "display: none" in ict_block or "display:none" in ict_block:
+                print("  [OK] .icon-tooltip span is hidden (data-source only)")
+            else:
+                print("  [FAIL] .icon-tooltip span is not hidden — would render alongside global tooltip")
+                all_passed = False
+        else:
+            print("  [FAIL] no .icon-tooltip rule body found in style.css")
+            all_passed = False
+
+        # 13) Round 3: right-align tooltip variant must be GONE everywhere.
+        right_align_violations = []
+        if 'data-tooltip-align="right"' in css_src \
+                or "data-tooltip-align='right'" in css_src \
+                or "[data-tooltip-align=\"right\"]" in css_src \
+                or "[data-tooltip-align='right']" in css_src:
+            right_align_violations.append("style.css")
+        if 'data-tooltip-align="right"' in html_src \
+                or "data-tooltip-align='right'" in html_src:
+            right_align_violations.append("index.html")
+        if "setAttribute('data-tooltip-align'" in main_src \
+                or 'setAttribute("data-tooltip-align"' in main_src \
+                or "data-tooltip-align', 'right'" in main_src \
+                or 'data-tooltip-align", "right"' in main_src:
+            right_align_violations.append("main.js")
+        if right_align_violations:
+            print(f"  [FAIL] right-align tooltip mechanism still present in: "
+                  f"{', '.join(right_align_violations)}")
+            all_passed = False
+        else:
+            print("  [OK] right-align tooltip mechanism is fully removed")
+
+        # 14) Round 4: .tooltip-below is now a *marker class* consulted by
+        #     the JS placement helper getIconTooltipPlacement (CSS no longer
+        #     drives the placement). Verify the helper honors the marker.
+        place_idx = main_src.find("function getIconTooltipPlacement")
+        if place_idx != -1:
+            place_body = main_src[place_idx:place_idx + 400]
+            if ("classList.contains('tooltip-below')" in place_body
+                    or 'classList.contains("tooltip-below")' in place_body) \
+                    and "'below'" in place_body:
+                print("  [OK] getIconTooltipPlacement honors .tooltip-below marker (returns 'below')")
+            else:
+                print("  [FAIL] getIconTooltipPlacement does not branch on "
+                      ".tooltip-below — long Download tooltip will not render below")
+                all_passed = False
+        else:
+            print("  [FAIL] getIconTooltipPlacement not defined; cannot verify "
+                  ".tooltip-below behavior")
+            all_passed = False
+
+        # 15) main.js must add tooltip-below to the Video tab Download button
+        #     and clear it when leaving Video tab.
+        if "downloadBtnEl.classList.add('tooltip-below')" in main_src \
+                or 'downloadBtnEl.classList.add("tooltip-below")' in main_src:
+            print("  [OK] main.js adds tooltip-below to Video tab Download button")
+        else:
+            print("  [FAIL] main.js does not add tooltip-below to Video tab Download button")
+            all_passed = False
+        # The cleanup must remove tooltip-below from edit/copy/download on
+        # every tab change.
+        if "classList.remove('tooltip-below')" in main_src \
+                or 'classList.remove("tooltip-below")' in main_src:
+            print("  [OK] main.js clears tooltip-below on tab change")
+        else:
+            print("  [FAIL] main.js never clears tooltip-below "
+                  "(Prompt Mode would inherit Video tab placement)")
+            all_passed = False
+
+        # 16) Round 3: copy/edit/preview/overview must NOT carry tooltip-below
+        #     in source. We approximate this by ensuring tooltip-below is only
+        #     added once in the Video branch — i.e. there is exactly one
+        #     classList.add('tooltip-below') call on a *Btn variable, and it
+        #     is on downloadBtnEl. Multiple adds mean someone leaked the
+        #     variant onto Edit/Copy.
+        import re as _re
+        below_adds = _re.findall(
+            r"(\w+)\.classList\.add\(\s*['\"]tooltip-below['\"]\s*\)",
+            main_src,
+        )
+        if not below_adds:
+            print("  [FAIL] no tooltip-below add call found in main.js")
+            all_passed = False
+        else:
+            non_download = [v for v in below_adds if v != "downloadBtnEl"]
+            if non_download:
+                print(f"  [FAIL] tooltip-below leaked onto non-Download buttons: {non_download}")
+                all_passed = False
+            else:
+                print("  [OK] tooltip-below is only applied to downloadBtnEl")
+
+        # 14) main.js defines getWebCopyPlainText (or equivalent helper).
+        if "function getWebCopyPlainText" in main_src \
+                or "getWebCopyPlainText =" in main_src:
+            print("  [OK] main.js defines getWebCopyPlainText() helper")
+        else:
+            print("  [FAIL] main.js missing getWebCopyPlainText() helper")
+            all_passed = False
+
+        # 15) downloadPrompt() web_copy branch uses getWebCopyPlainText (not the
+        #     bare currentWebCopyText fallback that bails out on empty).
+        dl_idx = main_src.find("function downloadPrompt")
+        if dl_idx == -1:
+            print("  [WARN] could not locate downloadPrompt() in main.js")
+            self.warnings += 1
+        else:
+            dl_body = main_src[dl_idx:dl_idx + 4000]
+            web_copy_branch_idx = dl_body.find("'web_copy'")
+            if web_copy_branch_idx == -1:
+                web_copy_branch_idx = dl_body.find('"web_copy"')
+            if web_copy_branch_idx == -1:
+                print("  [WARN] downloadPrompt() has no web_copy branch")
+                self.warnings += 1
+            else:
+                # Inspect a small window after the branch marker.
+                branch_window = dl_body[web_copy_branch_idx:web_copy_branch_idx + 400]
+                if "getWebCopyPlainText(" in branch_window:
+                    print("  [OK] downloadPrompt() web_copy branch uses getWebCopyPlainText()")
+                else:
+                    print("  [FAIL] downloadPrompt() web_copy branch does not call "
+                          "getWebCopyPlainText() (empty Web Copy will silently fail to download)")
+                    all_passed = False
+
+        # 16) copyPrompt() web_copy branch must also use getWebCopyPlainText
+        #     (so Copy is never silently a no-op when the text is empty).
+        cp_idx = main_src.find("async function copyPrompt")
+        if cp_idx == -1:
+            cp_idx = main_src.find("function copyPrompt")
+        if cp_idx == -1:
+            print("  [WARN] could not locate copyPrompt() in main.js")
+            self.warnings += 1
+        else:
+            cp_body = main_src[cp_idx:cp_idx + 4000]
+            wc_idx = cp_body.find("'web_copy'")
+            if wc_idx == -1:
+                wc_idx = cp_body.find('"web_copy"')
+            if wc_idx != -1:
+                window = cp_body[wc_idx:wc_idx + 400]
+                if "getWebCopyPlainText(" in window:
+                    print("  [OK] copyPrompt() web_copy branch uses getWebCopyPlainText()")
+                else:
+                    print("  [FAIL] copyPrompt() web_copy branch does not call "
+                          "getWebCopyPlainText() (Copy on empty Web Copy is silent)")
+                    all_passed = False
+
+        # 17) Round-2 regression: AI Review placeholder still present, and
+        #     Video Mode does not call Prompt Review API unguarded.
+        try:
+            with open("web/static/ai_review.js", "r", encoding="utf-8") as f:
+                ai_review_src = f.read()
+        except Exception:
+            ai_review_src = ""
+        if "AI Review for Video Mode is not connected in v0.5.1.2." in ai_review_src:
+            print("  [OK] ai_review.js still carries Video Mode placeholder")
+        else:
+            print("  [FAIL] ai_review.js Video Mode placeholder missing")
+            all_passed = False
+        # Sanity: no new video_review table introduced anywhere.
+        for src_name, src in (
+            ("web/static/main.js", main_src),
+            ("web/static/ai_review.js", ai_review_src),
+        ):
+            if "video_review" in src.lower():
+                print(f"  [FAIL] {src_name} introduces video_review (forbidden)")
+                all_passed = False
+
+        # 18) Round 4: main.js must define the global tooltip portal helpers.
+        #     Each missing helper is a FAIL (not a WARN) — they are the whole
+        #     point of round 4.
+        portal_helpers = (
+            "ensureGlobalIconTooltip",
+            "showGlobalIconTooltip",
+            "hideGlobalIconTooltip",
+            "bindGlobalIconTooltips",
+            "getIconTooltipMessage",
+            "getIconTooltipPlacement",
+        )
+        for fn in portal_helpers:
+            if f"function {fn}" in main_src or f"{fn} = function" in main_src:
+                print(f"  [OK] main.js defines {fn}()")
+            else:
+                print(f"  [FAIL] main.js missing global tooltip portal helper {fn}()")
+                all_passed = False
+
+        # 19) Round 4: showGlobalIconTooltip must position the portal using
+        #     viewport coordinates (getBoundingClientRect + window.innerWidth)
+        #     so it is unaffected by parent stacking contexts / overflow.
+        show_idx = main_src.find("function showGlobalIconTooltip")
+        if show_idx == -1:
+            show_idx = main_src.find("showGlobalIconTooltip = function")
+        if show_idx != -1:
+            show_body = main_src[show_idx:show_idx + 4000]
+            if "getBoundingClientRect()" in show_body:
+                print("  [OK] showGlobalIconTooltip uses getBoundingClientRect()")
+            else:
+                print("  [FAIL] showGlobalIconTooltip does not call "
+                      "getBoundingClientRect() (cannot position the portal)")
+                all_passed = False
+            if "window.innerWidth" in show_body:
+                print("  [OK] showGlobalIconTooltip clamps to window.innerWidth")
+            else:
+                print("  [FAIL] showGlobalIconTooltip never reads window.innerWidth "
+                      "(would let tooltip clip past the viewport edge)")
+                all_passed = False
+        else:
+            print("  [FAIL] could not locate showGlobalIconTooltip in main.js "
+                  "(round-4 positioning audit cannot run)")
+            all_passed = False
+
+        # 20) Round 4: ensureGlobalIconTooltip must mount the node onto
+        #     document.body so it escapes ancestor stacking contexts.
+        ensure_idx = main_src.find("function ensureGlobalIconTooltip")
+        if ensure_idx == -1:
+            ensure_idx = main_src.find("ensureGlobalIconTooltip = function")
+        if ensure_idx != -1:
+            ensure_body = main_src[ensure_idx:ensure_idx + 2000]
+            if "document.body.appendChild" in ensure_body:
+                print("  [OK] ensureGlobalIconTooltip mounts the portal onto document.body")
+            else:
+                print("  [FAIL] ensureGlobalIconTooltip does not append to document.body "
+                      "(portal would still be inside a clipped/stacking-context parent)")
+                all_passed = False
+        else:
+            print("  [FAIL] could not locate ensureGlobalIconTooltip in main.js")
+            all_passed = False
+
+        # 21) Round 4: DOMContentLoaded must wire the portal up at startup —
+        #     ensureGlobalIconTooltip + bindGlobalIconTooltips both fire.
+        dom_idx = main_src.find("DOMContentLoaded")
+        if dom_idx != -1:
+            dom_body = main_src[dom_idx:dom_idx + 6000]
+            if "ensureGlobalIconTooltip(" in dom_body \
+                    and "bindGlobalIconTooltips(" in dom_body:
+                print("  [OK] DOMContentLoaded wires up global tooltip portal")
+            else:
+                print("  [FAIL] DOMContentLoaded does not initialise the global "
+                      "tooltip portal (ensureGlobalIconTooltip/bindGlobalIconTooltips)")
+                all_passed = False
+        else:
+            print("  [WARN] could not find DOMContentLoaded handler in main.js")
+            self.warnings += 1
+
+        # 22) Round 4: viewport scroll/resize must dismiss the tooltip so it
+        #     never floats at stale coordinates.
+        if ("addEventListener('scroll', hideGlobalIconTooltip" in main_src
+                or 'addEventListener("scroll", hideGlobalIconTooltip' in main_src):
+            print("  [OK] scroll dismisses the global tooltip")
+        else:
+            print("  [FAIL] scroll handler does not dismiss the global tooltip "
+                  "(tooltip would float at stale coordinates)")
+            all_passed = False
+        if ("addEventListener('resize', hideGlobalIconTooltip" in main_src
+                or 'addEventListener("resize", hideGlobalIconTooltip' in main_src):
+            print("  [OK] resize dismisses the global tooltip")
+        else:
+            print("  [FAIL] resize handler does not dismiss the global tooltip")
+            all_passed = False
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} UI hotfix checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} UI hotfix checks failed")
+            self.checks_failed += 1
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -536,7 +1519,7 @@ class StabilityChecker:
 
 def main():
     print("\n" + "="*80)
-    print(f"Prompt Mode Stability Checks - {STABILITY_CHECKS_VERSION}")
+    print(f"Prompt Mode + Video Mode Stability Checks - {STABILITY_CHECKS_VERSION}")
     print("="*80)
 
     checker = StabilityChecker()
@@ -547,6 +1530,9 @@ def main():
         checker.check_js_syntax()
         checker.check_v049_fixes()
         checker.check_v0410_fixes()
+        checker.check_v051_fixes()
+        checker.check_v0512_fixes()
+        checker.check_v0512_ui_hotfix()
         checker.check_database_integrity()
     except Exception as e:
         print(f"\n[ERROR] Stability check failed: {e}")

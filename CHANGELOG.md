@@ -2,6 +2,106 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.5.2 - Video Mode 独立框架与播放器界面稳定版
+
+> 本版本是 v0.5.x 在「框架 + 播放器界面 + UI 稳定性」上的收口版本，统一取代
+> v0.5.1 / v0.5.1.2 等临时小版本。本版本**不接 Seedance、不接真实视频生成 API、
+> 不生成真实视频文件**。
+
+### 新增
+- **Mode Selector**：页面右上角新增 `mode-selector-btn` 下拉，
+  Prompt Mode / Video Mode 两个选项。当前模式 active 高亮，点击页面其它区域关闭；
+  默认进入 Prompt Mode。编辑态 / 生成中切换会先弹确认；切换会清空当前选中状态、
+  重新加载目标模式的 sidebar 历史，并将 `<video>` 元素暂停卸载。
+- **Video Mode 独立页面状态**：与 Prompt Mode 并列运行，UI 风格一致，数据完全隔离。
+  Video Mode sidebar 不显示 Prompt Mode 历史，Prompt Mode 也不显示 Video Mode 历史。
+- **Video Mode 独立数据库与历史模型**：`data/video_history.db`（与
+  `data/prompt_history.db` 完全隔离）。新增 `web/db/video_database.py`
+  （独立 engine / `VideoSessionLocal` / `VideoBase`）、`web/db/video_models.py`
+  （`VideoHistory` ORM）、`web/db/video_repository.py`（`VideoHistoryRepository` CRUD）。
+  `init_video_db()` 仅在 Video Mode 库中 `Base.metadata.create_all`，不触碰
+  Prompt Mode 表，也不修改 Prompt Mode 任何 schema。
+- **`/api/video/*` 后端接口骨架**：`web/app.py` 注册
+  `/api/video/generate` / `/api/video/history` / `/api/video/history/{id}` (GET/PATCH) /
+  `/api/video/history/group/{topic_group_id}/versions` /
+  `/api/video/history/{id}/regenerate` /
+  `/api/video/history/group/{topic_group_id}/rename` /
+  pin / unpin / favorite / unfavorite / trash / restore / permanent /
+  `/api/video/trash` / `/api/video/favorites` /
+  `/api/video/history/{id}/download-all`。Download All 与 Prompt Mode 同款只读
+  契约，包内只含 `raw_text.txt` / `preview.txt` / `overview.txt` / `web_copy.txt` /
+  `metadata.json`，对数据库零写入；不含任何 mp4 / mov / 视频 URL / token / API key。
+- **Video Mode 六个内容 tab**：Video（默认）/ Web Copy / Raw Text / Preview /
+  Overview / AI Review。Prompt Mode 仍保持 4 个 tab（Raw / Preview / Overview /
+  AI Review），Video / Web Copy 在 Prompt Mode 下通过 `[hidden]` 隐藏。
+- **视频播放器占位界面**：`video-player-shell` 内嵌 `<video>` + 中央
+  `video-center-play` 三角播放按钮 + 底部 `video-controls`（播放 / 暂停、进度条、
+  时间 `mm:ss/mm:ss`、音量控件、倍速 `0.5×/1×/1.5×/2×/3×/5×`、全屏 Fullscreen API）。
+  Video Mode 默认进入 Video tab。当 `<video>` 无 src 时 `togglePlay()` no-op，
+  并在播放器作用域内提示「Video file is not available yet.」；切换 tab 或
+  App Mode 时暂停并卸载视频元素。**v0.5.2 不会给播放器赋任何真实视频 URL，也不
+  生成真实视频文件。**
+- **Web Copy tab**：用于未来 YouTube / TikTok / Instagram 等平台的标题、
+  description、caption、posting copy。当前支持编辑（`#web-copy-edit-textarea`）、
+  保存（PATCH `web_copy` 字段）、复制（`getWebCopyPlainText()`）、下载
+  （`web_copy.txt`）；**空内容时也可下载 placeholder `web_copy.txt`**，
+  避免按钮无响应。
+- **Video Mode AI Review placeholder**：Video Mode AI Review tab 仅展示
+  placeholder 文案，**不调用** Prompt Mode `/api/history/{id}/review` 接口，
+  避免误调用 Prompt Mode AI Review。后续真实视频生成接入后再单独设计 Video
+  Review / 视频质检 prompt。
+- **`/api/health` 增加 video DB 健康字段**：返回 `video_database: ok|error`。
+- **全局 tooltip portal**：所有 `.icon-button` hover tooltip 改用单例
+  `#global-icon-tooltip` 节点，由 `document.body.appendChild` 挂载到 body，
+  `position: fixed; z-index: 2147483647`，基于 `getBoundingClientRect()` +
+  `window.innerWidth` 在视口坐标系定位，`scroll` / `resize` 时统一隐藏。
+  Tooltip 不再被视频框、内容卡片、结果区、footer 或 header 遮挡。
+- **设计文档** `docs/v0.5.2_video_mode_framework.md`：v0.5.2 收口说明书，
+  含 12 个章节（版本定位、Prompt/Video Mode 关系、Mode Selector、Video Mode
+  数据隔离、Video Mode API、6 个 tab、Video tab、Web Copy tab、AI Review tab、
+  Tooltip / UI 修复、Prompt Mode 保护边界、后续计划）。
+
+### 修复
+- **Video Mode 与 Prompt Mode 接口隔离**：历史、版本、AI Review、重命名等
+  接口前缀通过 `apiUrl()` / `getApiPrefix()` 动态切换，确保 Video Mode 不会
+  误调用 Prompt Mode endpoint，反之亦然。
+- **Video tab 下 Edit / Copy / Download 不可用提示**：通过
+  `data-unavailable-message` 给出明确文案——「Video tab cannot be edited.」/
+  「Video content cannot be copied.」/「Video file is not available yet.
+  Video source is not available yet.」；不再使用浏览器原生 `title` 属性，
+  避免与自定义 tooltip 同时出现两层提示。
+- **tooltip 层级与定位问题**：旧版按钮内 `position: absolute` tooltip 会被
+  祖先 `overflow` / stacking context 遮挡或剪裁；改用全局 portal 后彻底消除
+  该类问题，并在 textContent 变化点（Save↔Edit、Copy↔Copied!、退出编辑等）
+  调用 `refreshActiveGlobalIconTooltip()` 实时刷新。
+- **`exitEditMode` 重入与重复 Save tooltip**：用 `_exitEditModeInFlight` 守卫
+  防止重入；移除重复 Save tooltip span 与多余的 `title` 设置。
+
+### 调整
+- **稳定性检查脚本升级到 v0.5.2**：`scripts/run_stability_checks.py` 标题更新为
+  `Prompt Mode + Video Mode Stability Checks - v0.5.2`，docs 检查指向
+  `docs/v0.5.2_video_mode_framework.md`，不再依赖已删除的
+  `docs/v0.5.1_video_mode_framework.md`。原 v0.5.1 / v0.5.1.2 检查函数保留为
+  内部 helper，继续覆盖 Mode Selector DOM、`/api/video/*` 注册、Video Mode 文件
+  存在性、Prompt Mode 4 tab 不变、`.gitignore` 仍覆盖 `data/*.db`、全局
+  tooltip portal 六个 helper（`ensureGlobalIconTooltip` / `showGlobalIconTooltip` /
+  `hideGlobalIconTooltip` / `bindGlobalIconTooltips` / `getIconTooltipMessage` /
+  `getIconTooltipPlacement`）、`getBoundingClientRect()` 与 `window.innerWidth`
+  引用、portal `document.body.appendChild` 挂载、DOMContentLoaded 启动调用、
+  `scroll/resize` 全局隐藏等审计。脚本继续保持 read-only：不调用 LLM、
+  不修改任何数据库、不触发任何下载、不启动服务。
+
+### 注意
+- 本版本保留 Prompt Mode v0.4.10 全部既有能力：不修改 Prompt 生成主提示词、
+  AI Review 评分标准、NotebookLM 输出结构、Prompt Mode Download All 只读契约、
+  Prompt Mode Raw Text 数据保护逻辑、Prompt Mode Regenerate / 版本管理 /
+  收藏 / 置顶 / 回收站逻辑、`prompt_history` / `prompt_reviews` schema。
+- 本版本未引入：Seedance API、真实视频生成 provider、真实视频任务队列、
+  外部视频链接、`video_review` 表、React/Vue 重构、用户登录系统、大型新依赖。
+- 本版本未提交：`.env`、`data/*.db`、`data/*.db-shm`、`data/*.db-wal`、
+  `data/backups/*.db`、`data/video_history.db`、`outputs/`、`__MACOSX/`、
+  `.DS_Store`、任何 API key 或真实密钥。
+
 ## v0.4.10 - Prompt Mode 导出一致性与冻结说明书
 
 ### 二次热修（v0.4.10 hotfix）

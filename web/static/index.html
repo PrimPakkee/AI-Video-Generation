@@ -104,7 +104,29 @@
                             <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
                         </svg>
                     </button>
-                    <span class="header-badge">Prompt Mode</span>
+                    <!-- Mode Selector (v0.5.1) -->
+                    <div class="mode-selector" id="mode-selector">
+                        <button type="button" class="mode-selector-btn" id="mode-selector-btn" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="mode-selector-label" id="mode-selector-label">Prompt Mode</span>
+                            <svg class="mode-selector-caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                                <polyline points="6 9 12 15 18 9"/>
+                            </svg>
+                        </button>
+                        <ul class="mode-dropdown hidden" id="mode-dropdown" role="listbox">
+                            <li>
+                                <button type="button" class="mode-option active" data-mode="prompt" role="option" aria-selected="true">
+                                    <span class="mode-option-title">Prompt Mode</span>
+                                    <span class="mode-option-desc">Generate NotebookLM educational video prompts</span>
+                                </button>
+                            </li>
+                            <li>
+                                <button type="button" class="mode-option" data-mode="video" role="option" aria-selected="false">
+                                    <span class="mode-option-title">Video Mode</span>
+                                    <span class="mode-option-desc">Educational video framework + companion prompt assets</span>
+                                </button>
+                            </li>
+                        </ul>
+                    </div>
                 </div>
             </header>
 
@@ -112,8 +134,8 @@
             <main class="main-content">
                 <!-- Initial State -->
                 <div id="initial-section" class="initial-state">
-                    <h1 class="welcome-title">Hi, Video Designer!</h1>
-                    <p class="welcome-subtitle">输入视频题目，生成 NotebookLM 教育视频 Prompt</p>
+                    <h1 class="welcome-title" id="welcome-title">Hi, Video Designer!</h1>
+                    <p class="welcome-subtitle" id="welcome-subtitle">输入视频题目，生成 NotebookLM 教育视频 Prompt</p>
 
                     <div class="input-container">
                         <div class="composer">
@@ -138,7 +160,7 @@
                 <!-- Loading State -->
                 <div id="loading-section" class="loading-state hidden">
                     <div class="spinner"></div>
-                    <p class="loading-text">Generating your prompt...</p>
+                    <p class="loading-text" id="loading-text">Generating your prompt...</p>
                 </div>
 
                 <!-- Error State -->
@@ -194,7 +216,10 @@
                             <div class="prompt-header">
                                 <h3 class="prompt-title" id="prompt-view-title">NotebookLM Prompt</h3>
                                 <div class="prompt-header-actions">
-                                    <div class="prompt-view-modes">
+                                    <div class="prompt-view-modes" id="prompt-view-modes">
+                                        <!-- Video Mode-only tabs (hidden in Prompt Mode) -->
+                                        <button class="view-mode-btn video-only-tab" data-mode="video" hidden>Video</button>
+                                        <button class="view-mode-btn video-only-tab" data-mode="web_copy" hidden>Web Copy</button>
                                         <button class="view-mode-btn active" data-mode="raw">Raw Text</button>
                                         <button class="view-mode-btn" data-mode="preview">Preview</button>
                                         <button class="view-mode-btn" data-mode="overview">Overview</button>
@@ -232,6 +257,78 @@
                                 <div id="prompt-preview" class="prompt-preview hidden"></div>
                                 <div id="prompt-overview" class="prompt-overview hidden"></div>
                                 <div id="prompt-review" class="prompt-review hidden"></div>
+
+                                <!-- Video Mode panels (v0.5.1) -->
+                                <div id="prompt-video" class="prompt-video hidden">
+                                    <div class="video-player-panel">
+                                        <div class="video-player-shell" id="video-player-shell">
+                                            <video id="video-element" class="video-element" preload="metadata" playsinline></video>
+                                            <div class="video-placeholder" id="video-placeholder">
+                                                <button type="button" class="video-center-play" id="video-center-play" aria-label="Play video">
+                                                    <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                                        <polygon points="6 4 20 12 6 20 6 4"/>
+                                                    </svg>
+                                                </button>
+                                                <p class="video-placeholder-text">Video preview is not available yet. The Video Mode generation pipeline will arrive in a future version.</p>
+                                            </div>
+                                            <div class="video-controls" id="video-controls" hidden>
+                                                <button type="button" class="video-control-btn" id="video-play-btn" aria-label="Play / pause">
+                                                    <svg class="icon-play" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                                        <polygon points="6 4 20 12 6 20 6 4"/>
+                                                    </svg>
+                                                    <svg class="icon-pause hidden" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                                        <rect x="6" y="4" width="4" height="16"/>
+                                                        <rect x="14" y="4" width="4" height="16"/>
+                                                    </svg>
+                                                </button>
+                                                <span class="video-time" id="video-time">00:00 / 00:00</span>
+                                                <input type="range" class="video-progress" id="video-progress" min="0" max="100" value="0" step="0.1" aria-label="Progress" />
+                                                <div class="video-volume-wrap">
+                                                    <button type="button" class="video-control-btn" id="video-volume-btn" aria-label="Volume">
+                                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                                                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                                                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                                                        </svg>
+                                                    </button>
+                                                    <div class="video-volume-popover hidden" id="video-volume-popover">
+                                                        <input type="range" id="video-volume" min="0" max="1" step="0.01" value="1" aria-label="Volume" />
+                                                    </div>
+                                                </div>
+                                                <div class="video-speed-wrap">
+                                                    <button type="button" class="video-control-btn video-speed-btn" id="video-speed-btn" aria-haspopup="listbox" aria-expanded="false">
+                                                        <span id="video-speed-label">1×</span>
+                                                    </button>
+                                                    <ul class="video-speed-menu hidden" id="video-speed-menu" role="listbox">
+                                                        <li><button type="button" class="video-speed-option" data-speed="0.5" role="option">0.5×</button></li>
+                                                        <li><button type="button" class="video-speed-option active" data-speed="1" role="option">1×</button></li>
+                                                        <li><button type="button" class="video-speed-option" data-speed="1.5" role="option">1.5×</button></li>
+                                                        <li><button type="button" class="video-speed-option" data-speed="2" role="option">2×</button></li>
+                                                        <li><button type="button" class="video-speed-option" data-speed="3" role="option">3×</button></li>
+                                                        <li><button type="button" class="video-speed-option" data-speed="5" role="option">5×</button></li>
+                                                    </ul>
+                                                </div>
+                                                <button type="button" class="video-control-btn" id="video-fullscreen-btn" aria-label="Fullscreen">
+                                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                                        <path d="M3 9V3h6"/>
+                                                        <path d="M21 9V3h-6"/>
+                                                        <path d="M3 15v6h6"/>
+                                                        <path d="M21 15v6h-6"/>
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div id="prompt-web-copy" class="prompt-web-copy hidden">
+                                    <div class="web-copy-empty-state" id="web-copy-empty-state">
+                                        <p class="web-copy-empty-title">Web Copy is not generated yet.</p>
+                                        <p class="web-copy-empty-desc">This tab will later contain YouTube/TikTok titles, descriptions, captions, and posting copy.</p>
+                                    </div>
+                                    <div class="web-copy-content hidden" id="web-copy-content"></div>
+                                    <textarea id="web-copy-edit-textarea" class="web-copy-edit-textarea hidden" rows="12" placeholder="Web copy text..."></textarea>
+                                </div>
                             </div>
                         </div>
 

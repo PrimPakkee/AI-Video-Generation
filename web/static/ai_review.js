@@ -12,11 +12,49 @@ const reviewInFlight = new Map();
 let reviewPollingTimer = null;
 
 /**
+ * Render Video Mode AI Review placeholder.
+ * v0.5.1.2: Video Mode does NOT call any Prompt Mode AI Review API.
+ * This tab will later evaluate the generated video assets independently.
+ */
+function renderVideoReviewPlaceholder() {
+    const reviewEl = document.getElementById('prompt-review');
+    if (!reviewEl) return;
+    reviewEl.innerHTML = `
+        <div class="review-empty-state">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 6v6l4 2"/>
+            </svg>
+            <p><strong>AI Review for Video Mode is not connected in v0.5.1.2.</strong></p>
+            <p style="font-size: 14px; color: #666; margin-top: 8px;">This tab will later evaluate the generated video assets independently from Prompt Mode.</p>
+        </div>
+    `;
+}
+
+/**
+ * Returns true when the page is in Video Mode and AI Review must NOT call Prompt Mode API.
+ */
+function isVideoModeForReview() {
+    try {
+        return typeof window !== 'undefined' && window.getCurrentAppMode && window.getCurrentAppMode() === 'video';
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
  * Load AI Review for current history record (READ ONLY)
  * Does NOT automatically generate review
  * Only renders existing data or empty/stale state
  */
 async function loadReview() {
+    // v0.5.1.2: Video Mode shows a placeholder and never calls Prompt Mode review API
+    if (isVideoModeForReview()) {
+        stopReviewPolling();
+        renderVideoReviewPlaceholder();
+        return;
+    }
+
     if (!currentHistoryId) {
         console.error('No current history ID');
         return;
@@ -106,6 +144,13 @@ async function loadReview() {
  * This is the ONLY function that can POST to generate review
  */
 async function regenerateReview() {
+    // v0.5.1.2: Video Mode shows a placeholder and never calls Prompt Mode review API
+    if (isVideoModeForReview()) {
+        stopReviewPolling();
+        renderVideoReviewPlaceholder();
+        return;
+    }
+
     if (!currentHistoryId) {
         console.error('No current history ID');
         return;
@@ -342,6 +387,12 @@ function renderReview(reviewData) {
 function startReviewPolling(historyId) {
     stopReviewPolling(); // Clear any existing timer
 
+    // v0.5.1.2: Video Mode never polls Prompt Mode review API
+    if (isVideoModeForReview()) {
+        renderVideoReviewPlaceholder();
+        return;
+    }
+
     if (!historyId) {
         console.error('startReviewPolling: historyId is required');
         return;
@@ -351,6 +402,13 @@ function startReviewPolling(historyId) {
     const maxPolls = 150; // 150 polls * 2 seconds = 5 minutes max
 
     reviewPollingTimer = setInterval(async () => {
+        // v0.5.1.2: bail immediately if mode switched to Video mid-polling
+        if (isVideoModeForReview()) {
+            stopReviewPolling();
+            renderVideoReviewPlaceholder();
+            return;
+        }
+
         pollCount++;
 
         if (pollCount > maxPolls) {

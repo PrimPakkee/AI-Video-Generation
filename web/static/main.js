@@ -43,6 +43,350 @@ let historyItems = [];
 let trashItems = [];
 let favoriteItems = [];
 let currentMode = 'history'; // 'history' | 'trash' | 'favorites'
+
+// v0.5.1 - Top-level app mode (Prompt Mode vs Video Mode).
+// 'prompt' routes API calls to `/api/...`, 'video' routes them to `/api/video/...`.
+// All Prompt Mode v0.4.10 protections continue to apply when this is 'prompt'.
+let currentAppMode = 'prompt';
+
+/**
+ * Build the API URL for the active app mode.
+ *   apiUrl('/history')           -> '/api/history'  (prompt mode)
+ *                                  -> '/api/video/history' (video mode)
+ *   apiUrl(`/history/${id}`)     -> same pattern
+ * The suffix MUST start with '/'.
+ */
+function apiUrl(suffix) {
+    const base = currentAppMode === 'video' ? '/api/video' : '/api';
+    return base + suffix;
+}
+
+/** Backwards-compatible alias used in stability checks. */
+function getApiPrefix() {
+    return currentAppMode === 'video' ? '/api/video' : '/api';
+}
+
+/**
+ * v0.5.1.2 — pick the default view-mode tab for the current app mode.
+ * Video Mode lands on the Video tab; Prompt Mode keeps Raw Text.
+ */
+function getDefaultViewMode() {
+    return currentAppMode === 'video' ? 'video' : 'raw';
+}
+
+/**
+ * v0.5.1.2 hotfix: Reflect tab capabilities on Edit / Copy / Download buttons.
+ *
+ * Each button has its own .icon-tooltip child — that is the ONLY visible
+ * tooltip we want. Native browser `title` is intentionally NOT set on these
+ * three buttons (it would render a second, misplaced tooltip). The
+ * unavailable hint is stored on `data-unavailable-message` for the click
+ * handler to read when the button is disabled.
+ */
+function updateActionButtonsForCurrentView() {
+    try {
+        const editBtnEl = document.getElementById('edit-btn');
+        const copyBtnEl = document.getElementById('copy-btn');
+        const downloadBtnEl = document.getElementById('download-btn');
+
+        // v0.5.1.2 round 3: every tab-switch resets tooltip placement so the
+        // default center-above-icon rule wins. tooltip-below is only added
+        // back below for the Video tab Download button (the single tooltip
+        // that is too long to fit above without colliding with the toolbar).
+        // The legacy data-tooltip-align attribute is also cleared in case
+        // any earlier markup still has it.
+        [editBtnEl, copyBtnEl, downloadBtnEl].forEach(btn => {
+            if (!btn) return;
+            btn.classList.remove('tooltip-below');
+            if (btn.hasAttribute('data-tooltip-align')) {
+                btn.removeAttribute('data-tooltip-align');
+            }
+            if (btn.hasAttribute('title')) {
+                btn.removeAttribute('title');
+            }
+        });
+
+        const setBtnState = (btn, disabled, tooltipText) => {
+            if (!btn) return;
+            if (disabled) {
+                btn.setAttribute('data-disabled', 'true');
+                btn.setAttribute('data-unavailable-message', tooltipText || '');
+            } else {
+                btn.removeAttribute('data-disabled');
+                btn.removeAttribute('data-unavailable-message');
+            }
+            const tip = btn.querySelector('.icon-tooltip');
+            if (tip && tooltipText) {
+                tip.textContent = tooltipText;
+            }
+            if (tooltipText) {
+                btn.setAttribute('aria-label', tooltipText);
+            }
+            // Always strip native title so the browser tooltip doesn't fight
+            // the project's .icon-tooltip.
+            if (btn.hasAttribute('title')) {
+                btn.removeAttribute('title');
+            }
+        };
+        if (currentPromptViewMode === 'video') {
+            setBtnState(editBtnEl, true, 'Video tab cannot be edited.');
+            setBtnState(copyBtnEl, true, 'Video content cannot be copied.');
+            setBtnState(downloadBtnEl, true, 'Video file is not available yet. Download will be available when a video file exists.');
+            // Long Download tooltip: drop it below the icon, still
+            // center-axis aligned (left:50% + translateX(-50%)).
+            if (downloadBtnEl) {
+                downloadBtnEl.classList.add('tooltip-below');
+            }
+        } else if (currentPromptViewMode === 'review') {
+            setBtnState(editBtnEl, true, 'AI Review cannot be edited.');
+            setBtnState(copyBtnEl, false, 'Copy');
+            setBtnState(downloadBtnEl, false, 'Download');
+        } else {
+            setBtnState(editBtnEl, false, 'Edit');
+            setBtnState(copyBtnEl, false, 'Copy');
+            setBtnState(downloadBtnEl, false, 'Download');
+        }
+        // Make sure newly added .icon-button nodes (or freshly mutated
+        // tooltip text) are picked up by the global tooltip portal, and
+        // refresh the active tooltip if a hovered button's text changed.
+        if (typeof bindGlobalIconTooltips === 'function') {
+            bindGlobalIconTooltips();
+        }
+        if (typeof refreshActiveGlobalIconTooltip === 'function') {
+            refreshActiveGlobalIconTooltip();
+        }
+    } catch (e) {
+        // Non-fatal — buttons will simply use their default tooltips.
+    }
+}
+
+// =====================================================================
+// Global tooltip portal (v0.5.1.2 UI hotfix round 4)
+//
+// All `.icon-button` tooltips render through a single fixed-positioned
+// node appended to document.body. This avoids overflow / z-index /
+// stacking-context clipping by ancestor containers (video frame,
+// result card, dark panels, etc.). Tooltip text is sourced live from
+// each button's inner `.icon-tooltip` span (default state) or from
+// `data-unavailable-message` (disabled state). Placement defaults to
+// "above center"; long-tooltip buttons opt in to "below center" via
+// the `.tooltip-below` marker class. Native browser `title` is never
+// used.
+// =====================================================================
+
+let _activeTooltipAnchor = null;
+
+function ensureGlobalIconTooltip() {
+    let tooltip = document.getElementById('global-icon-tooltip');
+    if (!tooltip) {
+        tooltip = document.createElement('div');
+        tooltip.id = 'global-icon-tooltip';
+        tooltip.className = 'global-icon-tooltip hidden';
+        document.body.appendChild(tooltip);
+    }
+    return tooltip;
+}
+
+function getIconTooltipMessage(button) {
+    if (!button) return '';
+    const disabledMessage = button.getAttribute('data-unavailable-message');
+    if (button.getAttribute('data-disabled') === 'true' && disabledMessage) {
+        return disabledMessage;
+    }
+    const tooltipEl = button.querySelector('.icon-tooltip');
+    return tooltipEl ? (tooltipEl.textContent || '').trim() : '';
+}
+
+function getIconTooltipPlacement(button) {
+    if (!button) return 'top';
+    return button.classList.contains('tooltip-below') ? 'below' : 'top';
+}
+
+function showGlobalIconTooltip(anchorEl, message, options) {
+    if (!anchorEl || !message) return;
+    const opts = options || {};
+    const tooltip = ensureGlobalIconTooltip();
+    tooltip.textContent = String(message);
+    tooltip.classList.remove('hidden');
+    // Measure off-screen first so we can compute centered placement
+    // without the tooltip flashing in the wrong spot.
+    tooltip.style.visibility = 'hidden';
+    tooltip.style.left = '0px';
+    tooltip.style.top = '0px';
+    // Force a reflow so width/height reflect the new textContent.
+    // eslint-disable-next-line no-unused-expressions
+    tooltip.offsetHeight;
+
+    const anchorRect = anchorEl.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const gap = 8;
+    const viewportPadding = 8;
+
+    // Center the tooltip horizontally on the anchor (clamped to viewport).
+    let left = anchorRect.left + anchorRect.width / 2 - tooltipRect.width / 2;
+    // Default placement: above the icon.
+    let top = anchorRect.top - tooltipRect.height - gap;
+
+    const preferBelow = opts.placement === 'below';
+    if (preferBelow || top < viewportPadding) {
+        top = anchorRect.bottom + gap;
+    }
+
+    if (left < viewportPadding) left = viewportPadding;
+    const maxLeft = window.innerWidth - tooltipRect.width - viewportPadding;
+    if (left > maxLeft) left = maxLeft;
+
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+    tooltip.style.visibility = 'visible';
+    // Trigger fade-in.
+    // eslint-disable-next-line no-unused-expressions
+    tooltip.offsetHeight;
+    tooltip.classList.add('show');
+    _activeTooltipAnchor = anchorEl;
+}
+
+function hideGlobalIconTooltip() {
+    const tooltip = document.getElementById('global-icon-tooltip');
+    if (!tooltip) return;
+    tooltip.classList.remove('show');
+    tooltip.classList.add('hidden');
+    _activeTooltipAnchor = null;
+}
+
+function refreshActiveGlobalIconTooltip() {
+    if (!_activeTooltipAnchor || !document.body.contains(_activeTooltipAnchor)) {
+        _activeTooltipAnchor = null;
+        return;
+    }
+    const message = getIconTooltipMessage(_activeTooltipAnchor);
+    if (!message) {
+        hideGlobalIconTooltip();
+        return;
+    }
+    showGlobalIconTooltip(_activeTooltipAnchor, message, {
+        placement: getIconTooltipPlacement(_activeTooltipAnchor),
+    });
+}
+
+function bindGlobalIconTooltips(root) {
+    const scope = root || document;
+    const buttons = scope.querySelectorAll('.icon-button');
+    buttons.forEach((btn) => {
+        if (btn.dataset.globalTooltipBound === 'true') return;
+        btn.dataset.globalTooltipBound = 'true';
+        if (btn.hasAttribute('title')) btn.removeAttribute('title');
+
+        btn.addEventListener('mouseenter', () => {
+            const message = getIconTooltipMessage(btn);
+            if (!message) return;
+            showGlobalIconTooltip(btn, message, {
+                placement: getIconTooltipPlacement(btn),
+            });
+        });
+        btn.addEventListener('mouseleave', () => {
+            if (_activeTooltipAnchor === btn) hideGlobalIconTooltip();
+        });
+        btn.addEventListener('focus', () => {
+            const message = getIconTooltipMessage(btn);
+            if (!message) return;
+            showGlobalIconTooltip(btn, message, {
+                placement: getIconTooltipPlacement(btn),
+            });
+        });
+        btn.addEventListener('blur', () => {
+            if (_activeTooltipAnchor === btn) hideGlobalIconTooltip();
+        });
+    });
+}
+
+window.addEventListener('scroll', hideGlobalIconTooltip, true);
+window.addEventListener('resize', hideGlobalIconTooltip);
+
+/**
+ * v0.5.1.2 — lightweight non-blocking toast for short status messages.
+ *
+ * Falls back to alert() if for any reason the DOM cannot host a toast.
+ * Used by Video Mode unavailable-action hints, the no-source player
+ * notice, and a few edge cases where alert() would feel too heavy.
+ */
+function showAppToast(message, opts) {
+    if (!message) return;
+    try {
+        const ttl = (opts && typeof opts.ttl === 'number') ? opts.ttl : 2400;
+        let host = document.getElementById('app-toast-host');
+        if (!host) {
+            host = document.createElement('div');
+            host.id = 'app-toast-host';
+            host.className = 'app-toast-host';
+            document.body.appendChild(host);
+        }
+        const el = document.createElement('div');
+        el.className = 'app-toast';
+        el.textContent = String(message);
+        host.appendChild(el);
+        // Force a reflow so the transition picks up the entrance.
+        // eslint-disable-next-line no-unused-expressions
+        el.offsetHeight;
+        el.classList.add('show');
+        setTimeout(() => {
+            el.classList.remove('show');
+            setTimeout(() => {
+                if (el.parentNode) el.parentNode.removeChild(el);
+            }, 250);
+        }, ttl);
+    } catch (e) {
+        try { alert(message); } catch (_) { /* noop */ }
+    }
+}
+window.showAppToast = showAppToast;
+window.getCurrentAppMode = function() { return currentAppMode; };
+
+/**
+ * v0.5.1.2 hotfix: Player-scoped toast.
+ *
+ * Mounts a transient message inside #video-player-shell so the cue
+ * appears inside the video frame instead of at the page bottom.
+ * Used exclusively for the no-source player click hint. Falls back
+ * to showAppToast() only if the player shell cannot be located.
+ */
+function showVideoPlayerToast(message, opts) {
+    if (!message) return;
+    try {
+        const shell = document.getElementById('video-player-shell');
+        if (!shell) {
+            if (typeof showAppToast === 'function') showAppToast(message);
+            return;
+        }
+        const ttl = (opts && typeof opts.ttl === 'number') ? opts.ttl : 1800;
+        // Reuse / replace prior toast so rapid clicks don't stack.
+        const prior = shell.querySelector('.video-player-toast');
+        if (prior && prior.parentNode) {
+            prior.parentNode.removeChild(prior);
+        }
+        const el = document.createElement('div');
+        el.className = 'video-player-toast';
+        el.textContent = String(message);
+        // Ensure shell can host an absolutely-positioned child.
+        const computed = window.getComputedStyle(shell);
+        if (computed && computed.position === 'static') {
+            shell.style.position = 'relative';
+        }
+        shell.appendChild(el);
+        // Force reflow so the transition runs.
+        el.offsetHeight;
+        el.classList.add('show');
+        setTimeout(() => {
+            el.classList.remove('show');
+            setTimeout(() => {
+                if (el.parentNode) el.parentNode.removeChild(el);
+            }, 220);
+        }, ttl);
+    } catch (e) {
+        if (typeof showAppToast === 'function') showAppToast(message);
+    }
+}
+window.showVideoPlayerToast = showVideoPlayerToast;
 let currentSearchQuery = '';
 let currentDateFilter = 'all';
 let currentVersions = [];
@@ -55,6 +399,7 @@ let currentPreviewText = '';
 let currentPreviewTextEdited = ''; // User-edited preview text
 let currentOverviewText = '';
 let currentChangeSummaryText = ''; // Change summary for regenerated versions
+let currentWebCopyText = ''; // v0.5.1.2: Video Mode Web Copy plain text (YouTube/TikTok titles/descriptions/captions/posts)
 let currentReviewData = null; // AI Review data
 let isEditingPrompt = false; // Whether in editing mode
 let isRegenerating = false; // Whether regenerating
@@ -82,6 +427,7 @@ function renderHistoryRecord(item) {
     currentRawText = item.prompt || '';
     currentPreviewTextEdited = item.preview_text || '';
     currentChangeSummaryText = item.change_summary_cn || '';
+    currentWebCopyText = item.web_copy_text || '';
     currentReviewData = null; // Reset review data for new version
 
     // Generate preview - use preview_text if available
@@ -165,7 +511,7 @@ async function loadHistory(searchQuery = '', dateFilter = 'all') {
             params.append('date_filter', dateFilter);
         }
 
-        const url = params.toString() ? `/api/history?${params}` : '/api/history';
+        const url = params.toString() ? `${apiUrl('/history')}?${params}` : apiUrl('/history');
         const response = await fetch(url);
         const data = await response.json();
 
@@ -184,8 +530,8 @@ async function loadHistory(searchQuery = '', dateFilter = 'all') {
 async function loadTrash(searchQuery = '') {
     try {
         const url = searchQuery
-            ? `/api/trash?q=${encodeURIComponent(searchQuery)}`
-            : '/api/trash';
+            ? `${apiUrl('/trash')}?q=${encodeURIComponent(searchQuery)}`
+            : apiUrl('/trash');
 
         const response = await fetch(url);
         const data = await response.json();
@@ -205,8 +551,8 @@ async function loadTrash(searchQuery = '') {
 async function loadFavorites(searchQuery = '') {
     try {
         const url = searchQuery
-            ? `/api/favorites?q=${encodeURIComponent(searchQuery)}`
-            : '/api/favorites';
+            ? `${apiUrl('/favorites')}?q=${encodeURIComponent(searchQuery)}`
+            : apiUrl('/favorites');
 
         const response = await fetch(url);
         const data = await response.json();
@@ -231,7 +577,9 @@ function renderHistoryList(items) {
     }
 
     if (items.length === 0) {
-        historyList.innerHTML = '<div class="no-history">No history yet</div>';
+        // v0.5.1.2: mode-aware sidebar empty state
+        const emptyText = currentAppMode === 'video' ? 'No video topics yet.' : 'No history yet';
+        historyList.innerHTML = `<div class="no-history">${emptyText}</div>`;
         return;
     }
 
@@ -449,7 +797,7 @@ async function handleHistoryItemClick(event) {
     }
 
     try {
-        const response = await fetch(`/api/history/${historyId}`);
+        const response = await fetch(apiUrl(`/history/${historyId}`));
         const data = await response.json();
 
         if (data.success && data.item) {
@@ -462,8 +810,8 @@ async function handleHistoryItemClick(event) {
             titleInput.value = item.title;
             autoResizeTextarea();
 
-            // Reset to Raw Text mode
-            switchPromptViewMode('raw');
+            // v0.5.1.2: Video Mode lands on Video tab; Prompt Mode keeps Raw Text.
+            switchPromptViewMode(getDefaultViewMode());
 
             showSection(resultSection);
 
@@ -622,7 +970,7 @@ async function handleMenuItemClick(event) {
  */
 async function pinHistory(historyId) {
     try {
-        const response = await fetch(`/api/history/${historyId}/pin`, {
+        const response = await fetch(apiUrl(`/history/${historyId}/pin`), {
             method: 'POST',
         });
 
@@ -645,7 +993,7 @@ async function pinHistory(historyId) {
  */
 async function unpinHistory(historyId) {
     try {
-        const response = await fetch(`/api/history/${historyId}/unpin`, {
+        const response = await fetch(apiUrl(`/history/${historyId}/unpin`), {
             method: 'POST',
         });
 
@@ -668,7 +1016,7 @@ async function unpinHistory(historyId) {
  */
 async function favoriteHistory(topicGroupId) {
     try {
-        const response = await fetch(`/api/history/group/${topicGroupId}/favorite`, {
+        const response = await fetch(apiUrl(`/history/group/${topicGroupId}/favorite`), {
             method: 'POST',
         });
 
@@ -695,7 +1043,7 @@ async function favoriteHistory(topicGroupId) {
  */
 async function unfavoriteHistory(topicGroupId) {
     try {
-        const response = await fetch(`/api/history/group/${topicGroupId}/unfavorite`, {
+        const response = await fetch(apiUrl(`/history/group/${topicGroupId}/unfavorite`), {
             method: 'POST',
         });
 
@@ -770,7 +1118,7 @@ async function finishRenameMode(topicGroupId, input, oldTitle) {
     }
 
     try {
-        const response = await fetch(`/api/history/group/${topicGroupId}/rename`, {
+        const response = await fetch(apiUrl(`/history/group/${topicGroupId}/rename`), {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/json',
@@ -865,7 +1213,7 @@ async function handleSoftDeleteConfirm(event) {
     closeDeleteConfirmation();
 
     try {
-        const response = await fetch(`/api/history/group/${topicGroupId}/trash`, {
+        const response = await fetch(apiUrl(`/history/group/${topicGroupId}/trash`), {
             method: 'POST',
         });
 
@@ -944,7 +1292,7 @@ async function handlePermanentDeleteConfirm(event) {
     closeDeleteConfirmation();
 
     try {
-        const response = await fetch(`/api/history/group/${topicGroupId}/permanent`, {
+        const response = await fetch(apiUrl(`/history/group/${topicGroupId}/permanent`), {
             method: 'DELETE',
         });
 
@@ -1018,7 +1366,7 @@ async function handleDeleteConfirm(event) {
     closeDeleteConfirmation();
 
     try {
-        const response = await fetch(`/api/history/${historyId}`, {
+        const response = await fetch(apiUrl(`/history/${historyId}`), {
             method: 'DELETE',
         });
 
@@ -1170,17 +1518,25 @@ function renderCurrentPromptView() {
     const previewEl = document.getElementById('prompt-preview');
     const overviewEl = document.getElementById('prompt-overview');
     const reviewEl = document.getElementById('prompt-review');
+    const videoEl = document.getElementById('prompt-video');
+    const webCopyEl = document.getElementById('prompt-web-copy');
 
     // Update title
+    // v0.5.1.2: Video Mode uses "Educational Video" / "Video Output" framing
+    // for video-related tabs to make the mode contextually clear.
     const titleEl = document.getElementById('prompt-view-title');
     if (mode === 'raw') {
-        titleEl.textContent = 'NotebookLM Prompt';
+        titleEl.textContent = currentAppMode === 'video' ? 'Educational Video' : 'NotebookLM Prompt';
     } else if (mode === 'preview') {
         titleEl.textContent = 'Prompt Preview';
     } else if (mode === 'overview') {
         titleEl.textContent = 'Content Overview';
     } else if (mode === 'review') {
         titleEl.textContent = 'AI Review';
+    } else if (mode === 'video') {
+        titleEl.textContent = 'Video Output';
+    } else if (mode === 'web_copy') {
+        titleEl.textContent = 'Web Copy';
     }
 
     // Update active button
@@ -1192,30 +1548,32 @@ function renderCurrentPromptView() {
         }
     });
 
-    // Render content based on mode
+    // v0.5.1.2: Reflect Video tab unavailability on Edit / Copy / Download buttons.
+    // The buttons stay visible but render as disabled with explanatory tooltips.
+    updateActionButtonsForCurrentView();
+
+    // Hide all panels first, then show the active one. Keeps the v0.4.10
+    // contract: only one panel visible at a time, and Raw textarea is the
+    // only place that holds the clean Prompt text.
+    rawEl.classList.add('hidden');
+    previewEl.classList.add('hidden');
+    overviewEl.classList.add('hidden');
+    reviewEl.classList.add('hidden');
+    if (videoEl) videoEl.classList.add('hidden');
+    if (webCopyEl) webCopyEl.classList.add('hidden');
+
     if (mode === 'raw') {
         // CRITICAL: Always hydrate from currentRawText
         rawEl.value = currentRawText || '';
         rawEl.setAttribute('readonly', 'readonly');
         rawEl.classList.remove('editing');
         rawEl.classList.remove('hidden');
-        previewEl.classList.add('hidden');
-        overviewEl.classList.add('hidden');
-        reviewEl.classList.add('hidden');
 
     } else if (mode === 'preview') {
-        // CRITICAL: Never touch currentRawText or promptContent.value
-        rawEl.classList.add('hidden');
         previewEl.innerHTML = currentPreviewText || '';
         previewEl.classList.remove('hidden');
-        overviewEl.classList.add('hidden');
-        reviewEl.classList.add('hidden');
 
     } else if (mode === 'overview') {
-        // CRITICAL: Never touch currentRawText
-        rawEl.classList.add('hidden');
-        previewEl.classList.add('hidden');
-
         let overviewHTML = `<div class="overview-content">${escapeHtml(currentOverviewText || '').replace(/\n/g, '<br>')}</div>`;
         if (currentChangeSummaryText) {
             overviewHTML += `
@@ -1227,18 +1585,41 @@ function renderCurrentPromptView() {
         }
         overviewEl.innerHTML = overviewHTML;
         overviewEl.classList.remove('hidden');
-        reviewEl.classList.add('hidden');
 
     } else if (mode === 'review') {
-        // CRITICAL: Never touch currentRawText
-        rawEl.classList.add('hidden');
-        previewEl.classList.add('hidden');
-        overviewEl.classList.add('hidden');
         reviewEl.classList.remove('hidden');
-
-        // Load review if not already loaded
         if (!currentReviewData) {
             loadReview();
+        }
+
+    } else if (mode === 'video' && videoEl) {
+        // v0.5.1: framework-only video panel. No real video URL is ever set.
+        videoEl.classList.remove('hidden');
+
+    } else if (mode === 'web_copy' && webCopyEl) {
+        // v0.5.1.2: hydrate Web Copy from currentWebCopyText. Empty-state placeholder
+        // shows only when no web copy is present; otherwise show plain content view.
+        webCopyEl.classList.remove('hidden');
+        const emptyEl = document.getElementById('web-copy-empty-state');
+        const contentEl = document.getElementById('web-copy-content');
+        const textareaEl = document.getElementById('web-copy-edit-textarea');
+        if (textareaEl) textareaEl.classList.add('hidden');
+        const hasText = !!(currentWebCopyText && String(currentWebCopyText).trim());
+        if (contentEl) {
+            if (hasText) {
+                contentEl.textContent = currentWebCopyText;
+                contentEl.classList.remove('hidden');
+            } else {
+                contentEl.textContent = '';
+                contentEl.classList.add('hidden');
+            }
+        }
+        if (emptyEl) {
+            if (hasText) {
+                emptyEl.classList.add('hidden');
+            } else {
+                emptyEl.classList.remove('hidden');
+            }
         }
     }
 }
@@ -1281,10 +1662,18 @@ async function triggerGenerate() {
     isGenerating = true;
     generateBtn.disabled = true;
     titleInput.disabled = true;
+    // v0.5.1.2: mode-aware loading copy
+    const loadingTextEl = document.getElementById('loading-text');
+    if (loadingTextEl) {
+        loadingTextEl.textContent = currentAppMode === 'video'
+            ? 'Generating your video assets...'
+            : 'Generating your prompt...';
+    }
     showSection(loadingSection);
 
     try {
-        const response = await fetch('/api/generate', {
+        const generateEndpoint = currentAppMode === 'video' ? '/api/video/generate' : '/api/generate';
+        const response = await fetch(generateEndpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1327,8 +1716,8 @@ async function triggerGenerate() {
             let overviewHTML = `<div class="overview-content">${escapeHtml(currentOverviewText).replace(/\n/g, '<br>')}</div>`;
             document.getElementById('prompt-overview').innerHTML = overviewHTML;
 
-            // Reset to Raw Text mode
-            switchPromptViewMode('raw');
+            // v0.5.1.2: Video Mode lands on Video tab; Prompt Mode keeps Raw Text.
+            switchPromptViewMode(getDefaultViewMode());
 
             showSection(resultSection);
 
@@ -1407,6 +1796,25 @@ function getOverviewPlainText() {
     return parts.join('\n\n');
 }
 
+/**
+ * v0.5.1.2 UI hotfix round 2: return Web Copy text suitable for Copy/Download.
+ *
+ * If currentWebCopyText is non-empty, return it as-is. Otherwise fall back to
+ * the placeholder copy shown in the Web Copy tab so that Download still
+ * produces a usable web_copy.txt and Copy still has something to put on the
+ * clipboard. Keep this string in sync with the empty-state placeholder
+ * rendered by switchPromptView() for the 'web_copy' branch.
+ */
+function getWebCopyPlainText() {
+    const text = (typeof currentWebCopyText === 'string' ? currentWebCopyText : '') || '';
+    if (text.trim()) return text;
+    return [
+        'Web Copy is not generated yet.',
+        '',
+        'This tab will later contain YouTube/TikTok titles, descriptions, captions, and posting copy.'
+    ].join('\n');
+}
+
 async function copyPrompt() {
     let text = '';
 
@@ -1426,6 +1834,21 @@ async function copyPrompt() {
             return;
         }
         text = getReviewContent();
+    } else if (currentPromptViewMode === 'web_copy') {
+        text = getWebCopyPlainText();
+    } else if (currentPromptViewMode === 'video') {
+        // v0.5.1.2 hotfix: video tab cannot be copied. Read tooltip text
+        // from data-unavailable-message so the toast string matches the
+        // hover tooltip exactly.
+        const copyBtnEl = document.getElementById('copy-btn');
+        const msg = (copyBtnEl && copyBtnEl.getAttribute('data-unavailable-message'))
+            || 'Video content cannot be copied.';
+        if (typeof showAppToast === 'function') {
+            showAppToast(msg);
+        } else {
+            alert(msg);
+        }
+        return;
     }
 
     if (!text || !String(text).trim()) {
@@ -1442,9 +1865,17 @@ async function copyPrompt() {
         if (tooltip) {
             const originalText = tooltip.textContent;
             tooltip.textContent = 'Copied!';
+            // Refresh global tooltip so the swapped label shows immediately
+            // if the user is still hovering the Copy button.
+            if (typeof refreshActiveGlobalIconTooltip === 'function') {
+                refreshActiveGlobalIconTooltip();
+            }
             setTimeout(() => {
                 copyBtn.classList.remove('copied');
                 tooltip.textContent = originalText;
+                if (typeof refreshActiveGlobalIconTooltip === 'function') {
+                    refreshActiveGlobalIconTooltip();
+                }
             }, 1500);
         }
     } catch (error) {
@@ -1482,6 +1913,22 @@ function downloadPrompt() {
         filenameSuffix = 'ai_review';
         extension = 'md';
         mimeType = 'text/markdown;charset=utf-8';
+    } else if (currentPromptViewMode === 'web_copy') {
+        text = getWebCopyPlainText();
+        filenameSuffix = 'web_copy';
+    } else if (currentPromptViewMode === 'video') {
+        // v0.5.1.2 hotfix: video tab has no downloadable file yet. Read
+        // tooltip text from data-unavailable-message so the toast string
+        // matches the hover tooltip exactly.
+        const downloadBtnEl = document.getElementById('download-btn');
+        const msg = (downloadBtnEl && downloadBtnEl.getAttribute('data-unavailable-message'))
+            || 'Video file is not available yet. Download will be available when a video file exists.';
+        if (typeof showAppToast === 'function') {
+            showAppToast(msg);
+        } else {
+            alert(msg);
+        }
+        return;
     }
 
     if (!text || !String(text).trim()) {
@@ -1743,7 +2190,7 @@ function closeDateFilterDropdownOnOutsideClick(event) {
  */
 async function loadAndShowVersionSelector(topicGroupId, currentHistoryId) {
     try {
-        const response = await fetch(`/api/history/group/${topicGroupId}/versions`);
+        const response = await fetch(apiUrl(`/history/group/${topicGroupId}/versions`));
         const data = await response.json();
 
         if (data.success && data.versions) {
@@ -1827,7 +2274,7 @@ async function handleVersionSelect(event) {
     }
 
     try {
-        const response = await fetch(`/api/history/${historyId}`);
+        const response = await fetch(apiUrl(`/history/${historyId}`));
         const data = await response.json();
 
         if (data.success && data.item) {
@@ -1867,7 +2314,7 @@ async function downloadAllPrompts() {
     }
 
     try {
-        const response = await fetch(`/api/history/${currentHistoryId}/download-all`);
+        const response = await fetch(apiUrl(`/history/${currentHistoryId}/download-all`));
 
         if (!response.ok) {
             throw new Error('Download failed');
@@ -1969,6 +2416,17 @@ if (searchInput) {
 // Load history on page load
 window.addEventListener('DOMContentLoaded', () => {
     loadHistory();
+
+    // v0.5.1.2 round 4: install the global tooltip portal once the DOM is
+    // ready and bind every existing .icon-button to it. Subsequent calls
+    // from updateActionButtonsForCurrentView()/enterEditMode/exitEditMode
+    // pick up any new icon-buttons via dataset.globalTooltipBound guards.
+    if (typeof ensureGlobalIconTooltip === 'function') {
+        ensureGlobalIconTooltip();
+    }
+    if (typeof bindGlobalIconTooltips === 'function') {
+        bindGlobalIconTooltips();
+    }
 
     // Initialize action buttons
     const favoriteBtn = document.getElementById('favoriteBtn');
@@ -2140,8 +2598,18 @@ function enterEditMode() {
         return;
     }
 
-    // Only allow editing raw, preview, or overview
-    if (currentPromptViewMode !== 'raw' && currentPromptViewMode !== 'preview' && currentPromptViewMode !== 'overview') {
+    // v0.5.1.2: Video tab cannot be edited
+    if (currentPromptViewMode === 'video') {
+        if (typeof showAppToast === 'function') {
+            showAppToast('Video tab cannot be edited.');
+        } else {
+            alert('Video tab cannot be edited.');
+        }
+        return;
+    }
+
+    // Only allow editing raw, preview, overview, or web_copy
+    if (currentPromptViewMode !== 'raw' && currentPromptViewMode !== 'preview' && currentPromptViewMode !== 'overview' && currentPromptViewMode !== 'web_copy') {
         console.error('Invalid edit mode:', currentPromptViewMode);
         return;
     }
@@ -2180,12 +2648,15 @@ function enterEditMode() {
         }
     } else if (editingViewMode === 'overview') {
         contentToEdit = currentOverviewText || '';
+    } else if (editingViewMode === 'web_copy') {
+        contentToEdit = currentWebCopyText || '';
     }
 
     // CRITICAL: Store original content for cancel
     originalEditContent = contentToEdit;
 
-    // Update edit button to save icon
+    // Update edit button to save icon. innerHTML replacement is exclusive,
+    // so the Save tooltip span exists exactly once.
     editBtn.innerHTML = `
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="20 6 9 17 4 12"/>
@@ -2193,6 +2664,14 @@ function enterEditMode() {
         <span class="icon-tooltip">Save</span>
     `;
     editBtn.classList.add('editing');
+    // While saving, the button is active; clear any prior unavailable state.
+    editBtn.removeAttribute('data-disabled');
+    editBtn.removeAttribute('data-unavailable-message');
+    if (editBtn.hasAttribute('title')) editBtn.removeAttribute('title');
+    // Refresh global tooltip so it picks up the new "Save" label, and
+    // bind the freshly-created Cancel button into the portal.
+    if (typeof bindGlobalIconTooltips === 'function') bindGlobalIconTooltips();
+    if (typeof refreshActiveGlobalIconTooltip === 'function') refreshActiveGlobalIconTooltip();
 
     // Add cancel button next to save button
     let cancelBtn = document.getElementById('cancel-edit-btn');
@@ -2214,32 +2693,80 @@ function enterEditMode() {
     }
     cancelBtn.style.display = 'inline-flex';
 
-    // Show textarea with content, hide preview/overview/review
-    promptContent.value = contentToEdit;
-    promptContent.removeAttribute('readonly');
-    promptContent.classList.add('editing');
-    promptContent.classList.remove('hidden');
-    document.getElementById('prompt-preview').classList.add('hidden');
-    document.getElementById('prompt-overview').classList.add('hidden');
-    document.getElementById('prompt-review').classList.add('hidden');
-    promptContent.focus({ preventScroll: true });
+    // v0.5.1.2: Web Copy uses its own dedicated textarea so we never pollute
+    // the Raw Text textarea (promptContent), preserving the v0.4.x data
+    // protection for Raw Text.
+    if (editingViewMode === 'web_copy') {
+        const webCopyEl = document.getElementById('prompt-web-copy');
+        const webCopyTextarea = document.getElementById('web-copy-edit-textarea');
+        const emptyEl = document.getElementById('web-copy-empty-state');
+        const contentEl = document.getElementById('web-copy-content');
+        if (webCopyEl) webCopyEl.classList.remove('hidden');
+        if (emptyEl) emptyEl.classList.add('hidden');
+        if (contentEl) contentEl.classList.add('hidden');
+        if (webCopyTextarea) {
+            webCopyTextarea.value = contentToEdit;
+            webCopyTextarea.classList.remove('hidden');
+            webCopyTextarea.focus({ preventScroll: true });
+        }
+        // Hide other panels
+        promptContent.classList.add('hidden');
+        document.getElementById('prompt-preview').classList.add('hidden');
+        document.getElementById('prompt-overview').classList.add('hidden');
+        document.getElementById('prompt-review').classList.add('hidden');
+        const videoEl = document.getElementById('prompt-video');
+        if (videoEl) videoEl.classList.add('hidden');
+    } else {
+        // Show textarea with content, hide preview/overview/review
+        promptContent.value = contentToEdit;
+        promptContent.removeAttribute('readonly');
+        promptContent.classList.add('editing');
+        promptContent.classList.remove('hidden');
+        document.getElementById('prompt-preview').classList.add('hidden');
+        document.getElementById('prompt-overview').classList.add('hidden');
+        document.getElementById('prompt-review').classList.add('hidden');
+        promptContent.focus({ preventScroll: true });
+    }
 }
 
 /**
  * Exit edit mode and save changes
  */
+// v0.5.1.2 hotfix: re-entrance guard for exitEditMode().
+// Click-outside autosave can fire while a save is in flight; guarantee
+// only one save attempt per edit session.
+let _exitEditModeInFlight = false;
+
 async function exitEditMode() {
     if (!isEditingPrompt) {
         return;
     }
+    if (_exitEditModeInFlight) {
+        return;
+    }
+    _exitEditModeInFlight = true;
+    try {
+        await _exitEditModeImpl();
+    } finally {
+        _exitEditModeInFlight = false;
+    }
+}
+
+async function _exitEditModeImpl() {
 
     // CRITICAL: Use editingViewMode, NOT currentPromptViewMode
     // This prevents pollution if user somehow switched tabs during editing
     const view = editingViewMode;
-    const editedContent = promptContent.value;
+    let editedContent;
+    if (view === 'web_copy') {
+        const webCopyTextarea = document.getElementById('web-copy-edit-textarea');
+        editedContent = webCopyTextarea ? webCopyTextarea.value : '';
+    } else {
+        editedContent = promptContent.value;
+    }
 
     // Validate view
-    if (!view || (view !== 'raw' && view !== 'preview' && view !== 'overview')) {
+    if (!view || (view !== 'raw' && view !== 'preview' && view !== 'overview' && view !== 'web_copy')) {
         alert('Cannot save: Invalid edit mode. Please cancel and try again.');
         return;
     }
@@ -2276,7 +2803,7 @@ async function exitEditMode() {
 
     // Save to backend
     try {
-        const response = await fetch(`/api/history/${currentHistoryId}`, {
+        const response = await fetch(apiUrl(`/history/${currentHistoryId}`), {
             method: 'PATCH',
             headers: {
                 'Content-Type': 'application/json',
@@ -2313,6 +2840,8 @@ async function exitEditMode() {
                 currentPreviewText = `<div class="preview-content">${escapeHtml(editedContent).replace(/\n/g, '<br>')}</div>`;
             } else if (view === 'overview') {
                 currentOverviewText = editedContent;
+            } else if (view === 'web_copy') {
+                currentWebCopyText = editedContent;
             }
         } else {
             const errorMsg = data.error || data.detail || 'Unknown error';
@@ -2338,6 +2867,8 @@ async function exitEditMode() {
         <span class="icon-tooltip">Edit</span>
     `;
     editBtn.classList.remove('editing');
+    // Refresh global tooltip so it picks up the restored "Edit" label.
+    if (typeof refreshActiveGlobalIconTooltip === 'function') refreshActiveGlobalIconTooltip();
 
     // Hide cancel button
     const cancelBtn = document.getElementById('cancel-edit-btn');
@@ -2365,6 +2896,8 @@ function cancelEditMode() {
         currentPreviewText = `<div class="preview-content">${escapeHtml(originalEditContent).replace(/\n/g, '<br>')}</div>`;
     } else if (editingViewMode === 'overview') {
         currentOverviewText = originalEditContent;
+    } else if (editingViewMode === 'web_copy') {
+        currentWebCopyText = originalEditContent;
     }
 
     // Clear editing state
@@ -2380,6 +2913,8 @@ function cancelEditMode() {
         <span class="icon-tooltip">Edit</span>
     `;
     editBtn.classList.remove('editing');
+    // Refresh global tooltip so it picks up the restored "Edit" label.
+    if (typeof refreshActiveGlobalIconTooltip === 'function') refreshActiveGlobalIconTooltip();
 
     // Hide cancel button
     const cancelBtn = document.getElementById('cancel-edit-btn');
@@ -2435,7 +2970,7 @@ async function triggerRegenerate() {
     errorEl.classList.add('hidden');
 
     try {
-        const response = await fetch(`/api/history/${currentHistoryId}/regenerate`, {
+        const response = await fetch(apiUrl(`/history/${currentHistoryId}/regenerate`), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -2446,16 +2981,19 @@ async function triggerRegenerate() {
         const data = await response.json();
 
         if (data.success) {
-            // Convert data to item format for renderHistoryRecord
+            // Convert data to item format for renderHistoryRecord. v0.5.1.2:
+            // include web_copy_text so the Web Copy tab hydrates correctly
+            // when regenerate runs in Video Mode.
             const item = {
                 id: data.history_id,
                 topic_group_id: data.topic_group_id,
                 slug: data.slug,
                 version_number: data.version_number,
-                prompt: data.raw_text,
+                prompt: data.raw_text || data.prompt || data.prompt_text || '',
                 preview_text: data.preview_text,
                 overview_cn: data.overview_cn,
                 change_summary_cn: data.change_summary_cn,
+                web_copy_text: data.web_copy_text || '',
                 output_dir: data.output_dir,
                 title: titleInput.value  // Keep current title
             };
@@ -2473,8 +3011,13 @@ async function triggerRegenerate() {
             // Load and show version selector
             await loadAndShowVersionSelector(item.topic_group_id, item.id);
 
-            // Switch to the current view mode
-            switchPromptViewMode(currentPromptViewMode);
+            // v0.5.1.2: Video Mode lands on Video tab after regenerate; Prompt
+            // Mode keeps whichever tab the user was viewing.
+            if (currentAppMode === 'video') {
+                switchPromptViewMode('video');
+            } else {
+                switchPromptViewMode(currentPromptViewMode);
+            }
 
             // Hide loading
             loadingEl.classList.add('hidden');
@@ -2502,6 +3045,15 @@ if (editBtn) {
     editBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
+
+        // v0.5.1.2: Honor data-disabled on uneditable tabs (Video, AI Review).
+        if (editBtn.getAttribute('data-disabled') === 'true' && !isEditingPrompt) {
+            const msg = editBtn.getAttribute('data-unavailable-message') || 'This tab cannot be edited.';
+            if (typeof showAppToast === 'function') {
+                showAppToast(msg);
+            }
+            return;
+        }
 
         if (isEditingPrompt) {
             exitEditMode();
@@ -2576,3 +3128,365 @@ window.__APP_DEBUG_STATE__ = function() {
 };
 
 console.log('[Debug] __APP_DEBUG_STATE__() function is available in console');
+
+// ============================================================
+// v0.5.1 - Mode Selector (Prompt Mode <-> Video Mode)
+// ============================================================
+//
+// Top-level app mode is held in `currentAppMode` (declared above). The
+// switchAppMode() routine performs full state isolation between the two
+// modes: history list, current selection, content panels, version state,
+// and AI Review state are all reset when crossing the boundary.
+//
+// Prompt Mode v0.4.10 protections continue to apply when currentAppMode
+// is 'prompt' (Raw must stay clean, schema frozen, etc.).
+
+const MODE_LABELS = {
+    prompt: 'Prompt Mode',
+    video: 'Video Mode',
+};
+
+const MODE_WELCOME = {
+    prompt: {
+        title: 'Hi, Video Designer!',
+        subtitle: '输入视频题目，生成 NotebookLM 教育视频 Prompt',
+        placeholder: '请输入视频题目，例如：为什么盲盒越到最后越难集齐',
+    },
+    video: {
+        title: 'Hi, Video Designer!',
+        subtitle: '输入视频题目，生成教育视频与配套 Prompt 资产',
+        placeholder: '请输入视频题目，例如：为什么指数会爆炸？',
+    },
+};
+
+function applyModeChrome(mode) {
+    const label = document.getElementById('mode-selector-label');
+    if (label) label.textContent = MODE_LABELS[mode] || MODE_LABELS.prompt;
+
+    const welcomeTitle = document.getElementById('welcome-title');
+    const welcomeSubtitle = document.getElementById('welcome-subtitle');
+    const titleInputEl = document.getElementById('title-input');
+    const w = MODE_WELCOME[mode] || MODE_WELCOME.prompt;
+    if (welcomeTitle) welcomeTitle.textContent = w.title;
+    if (welcomeSubtitle) welcomeSubtitle.textContent = w.subtitle;
+    if (titleInputEl) titleInputEl.placeholder = w.placeholder;
+
+    // Toggle Video-Mode-only tabs.
+    document.querySelectorAll('.view-mode-btn.video-only-tab').forEach((btn) => {
+        if (mode === 'video') {
+            btn.removeAttribute('hidden');
+        } else {
+            btn.setAttribute('hidden', '');
+        }
+    });
+
+    // Update mode-option active state.
+    document.querySelectorAll('.mode-option').forEach((btn) => {
+        const isActive = btn.dataset.mode === mode;
+        btn.classList.toggle('active', isActive);
+        btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+}
+
+function clearActiveSelectionState() {
+    currentSlug = '';
+    currentHistoryId = null;
+    currentTopicGroupId = null;
+    currentVersionNumber = null;
+    currentVersions = [];
+    currentRawText = '';
+    currentPreviewText = '';
+    currentPreviewTextEdited = '';
+    currentOverviewText = '';
+    currentChangeSummaryText = '';
+    currentReviewData = null;
+    historyItems = [];
+    trashItems = [];
+    favoriteItems = [];
+    currentSearchQuery = '';
+    currentDateFilter = 'all';
+    isEditingPrompt = false;
+    isRegenerating = false;
+
+    const titleInputEl = document.getElementById('title-input');
+    if (titleInputEl) titleInputEl.value = '';
+
+    const promptContentEl = document.getElementById('prompt-content');
+    if (promptContentEl) promptContentEl.value = '';
+
+    const previewEl = document.getElementById('prompt-preview');
+    if (previewEl) previewEl.innerHTML = '';
+
+    const overviewEl = document.getElementById('prompt-overview');
+    if (overviewEl) overviewEl.innerHTML = '';
+
+    const reviewEl = document.getElementById('prompt-review');
+    if (reviewEl) reviewEl.innerHTML = '';
+}
+
+function switchAppMode(nextMode) {
+    if (nextMode !== 'prompt' && nextMode !== 'video') return;
+    if (nextMode === currentAppMode) {
+        closeModeDropdown();
+        return;
+    }
+
+    if (isEditingPrompt) {
+        const ok = confirm('You are currently editing. Switching mode will discard your changes. Continue?');
+        if (!ok) {
+            closeModeDropdown();
+            return;
+        }
+    }
+
+    if (isGenerating || isRegenerating) {
+        const ok = confirm('A generation is in progress. Switching mode will not cancel it but will hide its output. Continue?');
+        if (!ok) {
+            closeModeDropdown();
+            return;
+        }
+    }
+
+    // Stop any playing video before tearing down panels.
+    try {
+        const v = document.getElementById('video-element');
+        if (v) {
+            v.pause();
+            v.removeAttribute('src');
+            v.load();
+        }
+    } catch (e) { /* ignore */ }
+
+    currentAppMode = nextMode;
+    currentMode = 'history';
+
+    clearActiveSelectionState();
+    applyModeChrome(nextMode);
+
+    // Default Video Mode tab is "video"; Prompt Mode keeps "raw" default.
+    currentPromptViewMode = (nextMode === 'video') ? 'video' : 'raw';
+
+    // Reset to initial / welcome state.
+    showSection(document.getElementById('initial-section'));
+
+    // Reload sidebar history list against the new mode's database.
+    loadHistory('', 'all');
+
+    closeModeDropdown();
+}
+
+function openModeDropdown() {
+    const dd = document.getElementById('mode-dropdown');
+    const btn = document.getElementById('mode-selector-btn');
+    if (!dd || !btn) return;
+    dd.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+    setTimeout(() => {
+        document.addEventListener('click', closeModeDropdownOnOutsideClick);
+    }, 0);
+}
+
+function closeModeDropdown() {
+    const dd = document.getElementById('mode-dropdown');
+    const btn = document.getElementById('mode-selector-btn');
+    if (dd) dd.classList.add('hidden');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', closeModeDropdownOnOutsideClick);
+}
+
+function closeModeDropdownOnOutsideClick(e) {
+    const selector = document.getElementById('mode-selector');
+    if (selector && !selector.contains(e.target)) {
+        closeModeDropdown();
+    }
+}
+
+(function wireModeSelector() {
+    const btn = document.getElementById('mode-selector-btn');
+    if (btn) {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const dd = document.getElementById('mode-dropdown');
+            if (dd && dd.classList.contains('hidden')) {
+                openModeDropdown();
+            } else {
+                closeModeDropdown();
+            }
+        });
+    }
+    document.querySelectorAll('.mode-option').forEach((opt) => {
+        opt.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const next = e.currentTarget.dataset.mode;
+            switchAppMode(next);
+        });
+    });
+})();
+
+// ============================================================
+// v0.5.1 - Video Player wiring (framework only — no real video URL)
+// ============================================================
+
+function formatVideoTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) return '00:00';
+    const total = Math.floor(seconds);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(m)}:${pad(s)}`;
+}
+
+function refreshVideoPlayPauseIcons(isPlaying) {
+    const btn = document.getElementById('video-play-btn');
+    const center = document.getElementById('video-center-play');
+    if (btn) {
+        const playIcon = btn.querySelector('.icon-play');
+        const pauseIcon = btn.querySelector('.icon-pause');
+        if (playIcon && pauseIcon) {
+            playIcon.classList.toggle('hidden', isPlaying);
+            pauseIcon.classList.toggle('hidden', !isPlaying);
+        }
+    }
+    if (center) {
+        center.style.display = isPlaying ? 'none' : '';
+    }
+}
+
+(function wireVideoPlayer() {
+    const video = document.getElementById('video-element');
+    const placeholder = document.getElementById('video-placeholder');
+    const controls = document.getElementById('video-controls');
+    const playBtn = document.getElementById('video-play-btn');
+    const centerPlay = document.getElementById('video-center-play');
+    const progress = document.getElementById('video-progress');
+    const timeEl = document.getElementById('video-time');
+    const fullscreenBtn = document.getElementById('video-fullscreen-btn');
+    const speedBtn = document.getElementById('video-speed-btn');
+    const speedMenu = document.getElementById('video-speed-menu');
+    const speedLabel = document.getElementById('video-speed-label');
+    const volumeBtn = document.getElementById('video-volume-btn');
+    const volumePopover = document.getElementById('video-volume-popover');
+    const volumeInput = document.getElementById('video-volume');
+    const shell = document.getElementById('video-player-shell');
+
+    if (!video) return;
+
+    const hasSource = () => !!(video.currentSrc || video.src);
+
+    const togglePlay = () => {
+        if (!hasSource()) {
+            // v0.5.1.2 hotfix: scope the cue to the player frame so it
+            // doesn't pop at the page bottom. Falls back to global toast
+            // only if the player shell is missing.
+            if (typeof showVideoPlayerToast === 'function') {
+                showVideoPlayerToast('Video source is not available yet.');
+            } else if (typeof showAppToast === 'function') {
+                showAppToast('Video source is not available yet.');
+            }
+            return;
+        }
+        if (video.paused) {
+            video.play().catch(() => { /* user activation may be required */ });
+        } else {
+            video.pause();
+        }
+    };
+
+    if (playBtn) playBtn.addEventListener('click', togglePlay);
+    if (centerPlay) centerPlay.addEventListener('click', togglePlay);
+
+    video.addEventListener('play', () => {
+        if (placeholder) placeholder.style.display = 'none';
+        if (controls) controls.removeAttribute('hidden');
+        refreshVideoPlayPauseIcons(true);
+    });
+    video.addEventListener('pause', () => refreshVideoPlayPauseIcons(false));
+    video.addEventListener('ended', () => refreshVideoPlayPauseIcons(false));
+
+    video.addEventListener('loadedmetadata', () => {
+        if (controls) controls.removeAttribute('hidden');
+        if (timeEl) timeEl.textContent = `${formatVideoTime(0)} / ${formatVideoTime(video.duration)}`;
+    });
+
+    video.addEventListener('timeupdate', () => {
+        if (!isFinite(video.duration) || video.duration <= 0) return;
+        const pct = (video.currentTime / video.duration) * 100;
+        if (progress && document.activeElement !== progress) {
+            progress.value = String(pct);
+        }
+        if (timeEl) {
+            timeEl.textContent = `${formatVideoTime(video.currentTime)} / ${formatVideoTime(video.duration)}`;
+        }
+    });
+
+    if (progress) {
+        progress.addEventListener('input', () => {
+            if (!isFinite(video.duration) || video.duration <= 0) return;
+            const pct = parseFloat(progress.value || '0');
+            video.currentTime = (pct / 100) * video.duration;
+        });
+    }
+
+    if (fullscreenBtn && shell) {
+        fullscreenBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                if (shell.requestFullscreen) shell.requestFullscreen();
+            } else {
+                if (document.exitFullscreen) document.exitFullscreen();
+            }
+        });
+    }
+
+    if (speedBtn && speedMenu) {
+        speedBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isHidden = speedMenu.classList.toggle('hidden');
+            speedBtn.setAttribute('aria-expanded', isHidden ? 'false' : 'true');
+        });
+        document.addEventListener('click', (e) => {
+            if (!speedMenu.classList.contains('hidden') && !speedMenu.contains(e.target) && e.target !== speedBtn) {
+                speedMenu.classList.add('hidden');
+                speedBtn.setAttribute('aria-expanded', 'false');
+            }
+        });
+        speedMenu.querySelectorAll('.video-speed-option').forEach((opt) => {
+            opt.addEventListener('click', (e) => {
+                const speed = parseFloat(e.currentTarget.dataset.speed || '1');
+                if (isFinite(speed) && speed > 0) {
+                    video.playbackRate = speed;
+                    if (speedLabel) speedLabel.textContent = `${speed}×`;
+                    speedMenu.querySelectorAll('.video-speed-option').forEach((o) => {
+                        o.classList.toggle('active', o === e.currentTarget);
+                    });
+                }
+                speedMenu.classList.add('hidden');
+                speedBtn.setAttribute('aria-expanded', 'false');
+            });
+        });
+    }
+
+    if (volumeBtn && volumePopover) {
+        volumeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            volumePopover.classList.toggle('hidden');
+        });
+        document.addEventListener('click', (e) => {
+            if (!volumePopover.classList.contains('hidden') &&
+                !volumePopover.contains(e.target) &&
+                e.target !== volumeBtn) {
+                volumePopover.classList.add('hidden');
+            }
+        });
+    }
+
+    if (volumeInput) {
+        volumeInput.addEventListener('input', () => {
+            const v = parseFloat(volumeInput.value || '1');
+            video.volume = Math.max(0, Math.min(1, v));
+            video.muted = video.volume === 0;
+        });
+    }
+})();
+
+// Apply initial mode chrome on first paint.
+applyModeChrome(currentAppMode);
