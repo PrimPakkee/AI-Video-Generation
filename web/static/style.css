@@ -2873,3 +2873,183 @@ body.dark-mode .web-copy-empty-state {
 .video-player-toast.show {
     opacity: 1;
 }
+
+/* ============================================================
+ * v0.5.3 - Video Mode multi-stage progress panel
+ * ============================================================ */
+.video-progress-panel {
+    margin: 16px auto 0;
+    width: 100%;
+    max-width: 480px;
+    text-align: left;
+}
+
+.video-progress-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.video-progress-step {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #555;
+    background: #f5f6f8;
+}
+
+.video-progress-step-marker {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #c8c8ce;
+    flex-shrink: 0;
+}
+
+.video-progress-step.active {
+    background: #eef3ff;
+    color: #1f4ea1;
+}
+.video-progress-step.active .video-progress-step-marker {
+    background: #1f4ea1;
+    box-shadow: 0 0 0 3px rgba(31, 78, 161, 0.18);
+}
+
+.video-progress-step.done {
+    color: #2c7a3a;
+}
+.video-progress-step.done .video-progress-step-marker {
+    background: #2c7a3a;
+}
+
+.video-progress-step.failed {
+    color: #b3261e;
+    background: #fdecec;
+}
+.video-progress-step.failed .video-progress-step-marker {
+    background: #b3261e;
+}
+
+.video-progress-step.not-configured {
+    color: #8a6d00;
+    background: #fff7e1;
+}
+.video-progress-step.not-configured .video-progress-step-marker {
+    background: #d39e00;
+}
+
+.video-progress-message {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #666;
+    text-align: left;
+}
+
+/* ============================================================
+ * v0.5.3 - Video Job compact status strip (inside Video tab)
+ * Auxiliary status info; intentionally low-key so it does not
+ * compete with the player as the main visual.
+ * ============================================================ */
+.video-job-compact {
+    width: 100%;
+    margin: 0 0 12px 0;
+    padding: 10px 14px;
+    border: 1px solid #e3e4ea;
+    border-radius: 12px;
+    background: #fafbfd;
+    box-sizing: border-box;
+    color: #444;
+}
+
+.video-job-compact-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.video-job-compact-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #222;
+}
+
+.video-job-compact-sep {
+    color: #b9bcc4;
+    font-size: 12px;
+}
+
+.video-job-compact-provider,
+.video-job-compact-progress {
+    font-size: 12px;
+    color: #666;
+}
+
+.video-job-compact-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-top: 6px;
+    font-size: 12px;
+    color: #777;
+    line-height: 1.4;
+}
+
+.video-job-compact-meta span {
+    word-break: break-word;
+}
+
+.video-job-compact-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.video-job-compact-message {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #777;
+    line-height: 1.45;
+}
+.video-job-compact-message:empty {
+    display: none;
+}
+
+.video-job-status-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    background: #eef0f4;
+    color: #555;
+    text-transform: lowercase;
+    letter-spacing: 0.02em;
+}
+.video-job-status-pill[data-status="provider_not_configured"] {
+    background: #fff7e1;
+    color: #8a6d00;
+}
+.video-job-status-pill[data-status="succeeded"] {
+    background: #e6f5ea;
+    color: #2c7a3a;
+}
+.video-job-status-pill[data-status="failed"],
+.video-job-status-pill[data-status="cancelled"] {
+    background: #fdecec;
+    color: #b3261e;
+}
+
+.video-job-compact.empty {
+    font-size: 12px;
+    color: #888;
+    text-align: center;
+    padding: 8px 14px;
+}

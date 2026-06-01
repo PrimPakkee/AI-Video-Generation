@@ -13,7 +13,7 @@ let reviewPollingTimer = null;
 
 /**
  * Render Video Mode AI Review placeholder.
- * v0.5.1.2: Video Mode does NOT call any Prompt Mode AI Review API.
+ * Video Mode does NOT call any Prompt Mode AI Review API.
  * This tab will later evaluate the generated video assets independently.
  */
 function renderVideoReviewPlaceholder() {
@@ -25,8 +25,8 @@ function renderVideoReviewPlaceholder() {
                 <circle cx="12" cy="12" r="10"/>
                 <path d="M12 6v6l4 2"/>
             </svg>
-            <p><strong>AI Review for Video Mode is not connected in v0.5.1.2.</strong></p>
-            <p style="font-size: 14px; color: #666; margin-top: 8px;">This tab will later evaluate the generated video assets independently from Prompt Mode.</p>
+            <p><strong>AI Review for Video Mode is not connected yet.</strong></p>
+            <p style="font-size: 14px; color: #666; margin-top: 8px;">This tab will later evaluate generated video assets independently from Prompt Mode.</p>
         </div>
     `;
 }

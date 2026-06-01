@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prompt Mode + Video Mode Stability Checks Script (v0.5.2)
+Prompt Mode + Video Mode Stability Checks Script (v0.5.3)
 
 Runs read-only checks for code and database integrity. Does not call
 external APIs and does not modify any database.
@@ -9,7 +9,7 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.5.2"
+STABILITY_CHECKS_VERSION = "v0.5.3"
 
 import sys
 import os
@@ -40,6 +40,10 @@ class StabilityChecker:
             "web/db/video_database.py",
             "web/db/video_models.py",
             "web/db/video_repository.py",
+            "web/db/video_job_repository.py",
+            "web/video_providers/__init__.py",
+            "web/video_providers/base.py",
+            "web/video_providers/mock_provider.py",
             "scripts/llm_topic_enhancer.py",
             "scripts/audit_and_repair_prompt_history.py",
             "scripts/run_stability_checks.py",
@@ -773,7 +777,9 @@ class StabilityChecker:
                 all_passed = False
 
         # 9) AI Review placeholder + mode guard (Fix #6).
-        if "AI Review for Video Mode is not connected in v0.5.1.2." in ai_review_src:
+        # In v0.5.3 the v0.5.1.2-specific phrasing was replaced with a neutral
+        # "AI Review for Video Mode is not connected yet." line.
+        if "AI Review for Video Mode is not connected yet." in ai_review_src:
             print("  [OK] ai_review.js has Video Mode placeholder text")
         else:
             print("  [FAIL] ai_review.js missing Video Mode placeholder text")
@@ -1329,7 +1335,7 @@ class StabilityChecker:
                 ai_review_src = f.read()
         except Exception:
             ai_review_src = ""
-        if "AI Review for Video Mode is not connected in v0.5.1.2." in ai_review_src:
+        if "AI Review for Video Mode is not connected yet." in ai_review_src:
             print("  [OK] ai_review.js still carries Video Mode placeholder")
         else:
             print("  [FAIL] ai_review.js Video Mode placeholder missing")
@@ -1442,6 +1448,334 @@ class StabilityChecker:
             print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} UI hotfix checks failed")
             self.checks_failed += 1
 
+    def check_v053_fixes(self):
+        """v0.5.3-specific source-level checks (read-only).
+
+        Audits the Video Mode Job/Provider/Asset base layer added in v0.5.3.
+        No service start, no LLM call, no DB write.
+        """
+        print("\n" + "="*80)
+        print("v0.5.3 Fix Sanity Checks")
+        print("="*80)
+
+        all_passed = True
+
+        # 1. VideoJob ORM class + table name
+        try:
+            with open("web/db/video_models.py", "r", encoding="utf-8") as f:
+                vm_src = f.read()
+            if "class VideoJob(VideoBase)" in vm_src:
+                print("  [OK] VideoJob class declared on VideoBase")
+            else:
+                print("  [FAIL] VideoJob class missing in web/db/video_models.py")
+                all_passed = False
+            if '__tablename__ = "video_jobs"' in vm_src or "__tablename__ = 'video_jobs'" in vm_src:
+                print("  [OK] video_jobs table name set")
+            else:
+                print("  [FAIL] video_jobs __tablename__ missing")
+                all_passed = False
+            for col in ("history_id", "provider", "provider_job_id", "status", "stage",
+                        "progress", "request_json", "response_json", "error_message",
+                        "result_video_path", "result_video_url", "result_thumbnail_path",
+                        "duration_seconds", "submitted_at", "completed_at"):
+                if col not in vm_src:
+                    print(f"  [FAIL] VideoJob missing column reference: {col}")
+                    all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect web/db/video_models.py: {e}")
+            all_passed = False
+
+        # 2. web/db/__init__.py exports VideoJob and VideoJobRepository
+        try:
+            with open("web/db/__init__.py", "r", encoding="utf-8") as f:
+                init_src = f.read()
+            if "VideoJob" in init_src and "VideoJobRepository" in init_src:
+                print("  [OK] web/db/__init__.py exports VideoJob + VideoJobRepository")
+            else:
+                print("  [FAIL] web/db/__init__.py missing VideoJob/VideoJobRepository exports")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect web/db/__init__.py: {e}")
+            all_passed = False
+
+        # 3. VideoJobRepository file presence + required methods
+        try:
+            with open("web/db/video_job_repository.py", "r", encoding="utf-8") as f:
+                jr_src = f.read()
+            for fn in ("create_job", "get_job", "get_latest_job_for_history",
+                       "list_jobs_for_history", "update_job_status", "mark_cancelled"):
+                if f"def {fn}(" in jr_src:
+                    print(f"  [OK] VideoJobRepository.{fn} present")
+                else:
+                    print(f"  [FAIL] VideoJobRepository.{fn} missing")
+                    all_passed = False
+        except FileNotFoundError:
+            print("  [FAIL] web/db/video_job_repository.py is missing")
+            all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect video_job_repository.py: {e}")
+            all_passed = False
+
+        # 4. Provider abstraction layer files
+        for path in ("web/video_providers/__init__.py",
+                     "web/video_providers/base.py",
+                     "web/video_providers/mock_provider.py"):
+            if os.path.exists(path):
+                print(f"  [OK] {path} present")
+            else:
+                print(f"  [FAIL] {path} missing")
+                all_passed = False
+
+        # 5. base.py declares VideoProvider; mock_provider.py declares MockVideoProvider with provider_name='mock'
+        try:
+            with open("web/video_providers/base.py", "r", encoding="utf-8") as f:
+                base_src = f.read()
+            if "class VideoProvider" in base_src and "provider_name" in base_src:
+                print("  [OK] VideoProvider base class declared")
+            else:
+                print("  [FAIL] VideoProvider base class missing")
+                all_passed = False
+            with open("web/video_providers/mock_provider.py", "r", encoding="utf-8") as f:
+                mp_src = f.read()
+            if "class MockVideoProvider(VideoProvider)" in mp_src and (
+                "provider_name = \"mock\"" in mp_src or "provider_name = 'mock'" in mp_src
+            ):
+                print("  [OK] MockVideoProvider with provider_name='mock'")
+            else:
+                print("  [FAIL] MockVideoProvider declaration / provider_name missing")
+                all_passed = False
+            if "provider_not_configured" in mp_src:
+                print("  [OK] MockVideoProvider returns provider_not_configured shell")
+            else:
+                print("  [FAIL] MockVideoProvider missing provider_not_configured payload")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect provider sources: {e}")
+            all_passed = False
+
+        # 6. web/app.py wires VideoJob + Asset endpoints
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src = f.read()
+            for route in (
+                '@app.post("/api/video/history/{history_id}/jobs")',
+                '@app.get("/api/video/history/{history_id}/jobs/latest")',
+                '@app.get("/api/video/jobs/{job_id}")',
+                '@app.post("/api/video/jobs/{job_id}/refresh")',
+                '@app.post("/api/video/jobs/{job_id}/cancel")',
+                '@app.get("/api/video/history/{history_id}/asset/video")',
+                '@app.get("/api/video/history/{history_id}/asset/thumbnail")',
+            ):
+                if route in app_src:
+                    print(f"  [OK] route registered: {route}")
+                else:
+                    print(f"  [FAIL] route missing: {route}")
+                    all_passed = False
+
+            # 7. /api/video/generate + regenerate must include video_job in response
+            if "'video_job': video_job_dict" in app_src or '"video_job": video_job_dict' in app_src:
+                print("  [OK] /api/video/generate returns video_job in response")
+            else:
+                print("  [FAIL] /api/video/generate response missing video_job")
+                all_passed = False
+
+            # 8. Asset endpoint path-resolve safety helper
+            if "_resolve_safe_outputs_path" in app_src:
+                print("  [OK] _resolve_safe_outputs_path helper present")
+            else:
+                print("  [FAIL] _resolve_safe_outputs_path helper missing")
+                all_passed = False
+
+            # 9. Mock job creation helper
+            if "_create_mock_video_job_for_record" in app_src:
+                print("  [OK] _create_mock_video_job_for_record helper present")
+            else:
+                print("  [FAIL] _create_mock_video_job_for_record helper missing")
+                all_passed = False
+
+            # 10. export_schema_version upgraded to v0.5.3
+            if '"export_schema_version": "video_v0.5.3"' in app_src:
+                print("  [OK] download_all uses export_schema_version video_v0.5.3")
+            else:
+                print("  [FAIL] export_schema_version not upgraded to video_v0.5.3")
+                all_passed = False
+            if '"export_schema_version": "video_v0.5.1"' in app_src:
+                print("  [FAIL] legacy export_schema_version video_v0.5.1 still present")
+                all_passed = False
+
+            # 11. MockVideoProvider import wired
+            if "from web.video_providers import MockVideoProvider" in app_src:
+                print("  [OK] MockVideoProvider imported in web/app.py")
+            else:
+                print("  [FAIL] MockVideoProvider import missing in web/app.py")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect web/app.py: {e}")
+            all_passed = False
+
+        # 12. Frontend main.js: button swap + multi-stage progress + status panel
+        try:
+            with open("web/static/main.js", "r", encoding="utf-8") as f:
+                main_js = f.read()
+            for fn in (
+                "function updateGenerateButtonForCurrentMode",
+                "VIDEO_GENERATION_STEPS",
+                "function startVideoGenerationProgress",
+                "function advanceVideoGenerationProgress",
+                "function completeVideoGenerationProgress",
+                "function failVideoGenerationProgress",
+                "function resetVideoGenerationProgress",
+                "function renderVideoJobStatus",
+                "function applyVideoAssetSrc",
+                "let currentVideoJob",
+            ):
+                if fn in main_js:
+                    print(f"  [OK] main.js declares {fn}")
+                else:
+                    print(f"  [FAIL] main.js missing {fn}")
+                    all_passed = False
+            # Asset endpoint usage on the player
+            if "/api/video/history/${currentHistoryId}/asset/video" in main_js:
+                print("  [OK] main.js routes player src through asset endpoint")
+            else:
+                print("  [FAIL] main.js does not use /asset/video endpoint")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect web/static/main.js: {e}")
+            all_passed = False
+
+        # 13. ai_review.js placeholder no longer references v0.5.1.2
+        try:
+            with open("web/static/ai_review.js", "r", encoding="utf-8") as f:
+                review_js = f.read()
+            if "is not connected in v0.5.1.2" in review_js:
+                print("  [FAIL] ai_review.js still references 'is not connected in v0.5.1.2'")
+                all_passed = False
+            else:
+                print("  [OK] ai_review.js placeholder cleaned of v0.5.1.2 phrasing")
+            if "AI Review for Video Mode is not connected yet" in review_js:
+                print("  [OK] ai_review.js uses neutral Video Mode AI Review placeholder")
+            else:
+                print("  [FAIL] ai_review.js missing the expected v0.5.3 placeholder text")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect ai_review.js: {e}")
+            all_passed = False
+
+        # 14. index.html: progress panel + job status panel DOM
+        try:
+            with open("web/static/index.html", "r", encoding="utf-8") as f:
+                html = f.read()
+            for marker in (
+                'id="video-progress-panel"',
+                'id="video-progress-list"',
+                'id="video-progress-message"',
+                'id="video-job-status-panel"',
+                'id="video-job-status-pill"',
+                'id="video-job-stage"',
+                'id="video-job-provider"',
+                'id="video-job-progress"',
+                'id="video-job-provider-id"',
+                'id="video-job-updated"',
+                'id="video-job-message"',
+            ):
+                if marker in html:
+                    print(f"  [OK] index.html has {marker}")
+                else:
+                    print(f"  [FAIL] index.html missing {marker}")
+                    all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect index.html: {e}")
+            all_passed = False
+
+        # 15. Doc: v0.5.3 framework spec exists
+        if os.path.exists("docs/v0.5.3_video_job_provider_framework.md"):
+            print("  [OK] docs/v0.5.3_video_job_provider_framework.md present")
+        else:
+            print("  [FAIL] docs/v0.5.3_video_job_provider_framework.md missing")
+            all_passed = False
+
+        # 16. video_status sync helper present in app.py
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src_for_sync = f.read()
+            if "_map_job_status_to_video_status" in app_src_for_sync:
+                print("  [OK] _map_job_status_to_video_status helper present")
+            else:
+                print("  [FAIL] _map_job_status_to_video_status helper missing")
+                all_passed = False
+            # The helper must explicitly handle the v0.5.3 default state.
+            if "provider_not_configured" in app_src_for_sync and "record.video_status" in app_src_for_sync:
+                print("  [OK] app.py syncs record.video_status with provider_not_configured")
+            else:
+                print("  [FAIL] app.py missing record.video_status sync logic for provider_not_configured")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect web/app.py for video_status sync: {e}")
+            all_passed = False
+
+        # 17. CHANGELOG.md must contain a v0.5.3 section.
+        try:
+            with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+                changelog_src = f.read()
+            if "v0.5.3 - Video Job / Provider / Asset 基础层与生成流程升级" in changelog_src:
+                print("  [OK] CHANGELOG.md has v0.5.3 entry")
+            else:
+                print("  [FAIL] CHANGELOG.md missing v0.5.3 entry")
+                all_passed = False
+            for protect in (
+                "不接 Seedance",
+                "不接任何真实视频生成 API",
+                "不生成",
+                "Prompt Mode",
+            ):
+                if protect not in changelog_src:
+                    print(f"  [FAIL] CHANGELOG.md missing protection clause: {protect}")
+                    all_passed = False
+            if all(p in changelog_src for p in ("不接 Seedance", "不接任何真实视频生成 API")):
+                print("  [OK] CHANGELOG.md states no Seedance / no real video API")
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect CHANGELOG.md: {e}")
+            all_passed = False
+
+        # 18. No real provider file may be introduced in v0.5.3.
+        forbidden_provider_files = [
+            "web/video_providers/seedance_provider.py",
+            "web/video_providers/runway_provider.py",
+            "web/video_providers/pika_provider.py",
+            "web/video_providers/luma_provider.py",
+        ]
+        for path in forbidden_provider_files:
+            if os.path.exists(path):
+                print(f"  [FAIL] forbidden real provider file present: {path}")
+                all_passed = False
+        print("  [OK] no real video provider implementation files introduced")
+
+        # 19. No video_review table introduced anywhere.
+        try:
+            review_table_clean = True
+            for src_path in ("web/db/video_models.py", "web/db/video_job_repository.py", "web/app.py"):
+                if not os.path.exists(src_path):
+                    continue
+                with open(src_path, "r", encoding="utf-8") as f:
+                    src = f.read()
+                if "video_reviews" in src or '"video_review"' in src or "'video_review'" in src:
+                    print(f"  [FAIL] {src_path} introduces video_review table (forbidden in v0.5.3)")
+                    all_passed = False
+                    review_table_clean = False
+            if review_table_clean:
+                print("  [OK] no video_review table introduced in v0.5.3 surface")
+        except Exception as e:
+            print(f"  [FAIL] Could not audit for video_review table: {e}")
+            all_passed = False
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} fix sanity checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} fix sanity checks failed")
+            self.checks_failed += 1
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -1533,6 +1867,7 @@ def main():
         checker.check_v051_fixes()
         checker.check_v0512_fixes()
         checker.check_v0512_ui_hotfix()
+        checker.check_v053_fixes()
         checker.check_database_integrity()
     except Exception as e:
         print(f"\n[ERROR] Stability check failed: {e}")

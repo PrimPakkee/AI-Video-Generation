@@ -4,6 +4,20 @@
 
 本文档详细规划了从当前版本（V0）到端到端自动化（V4）的完整技术路线。每个 Phase 都有明确的技术目标、实现方案、技术栈和成功标准。
 
+## 当前里程碑（v0.5.3）
+
+- **Prompt Mode**：v0.4.10 已冻结，所有保护边界继续生效（详见
+  [`prompt_mode_freeze_spec.md`](./prompt_mode_freeze_spec.md)）。
+- **Video Mode 框架**：v0.5.2 完成独立数据库 / API / 6 tab / 播放器骨架 / 全局
+  tooltip portal（详见 [`v0.5.2_video_mode_framework.md`](./v0.5.2_video_mode_framework.md)）。
+- **Video Mode Job/Provider/Asset 基础层（当前 v0.5.3）**：新增 `video_jobs` 表、
+  `VideoProvider` 抽象层、`MockVideoProvider`、Job/Asset endpoint、首页
+  `Generate Video` 动态入口、多阶段进度面板、Video Job 状态面板（详见
+  [`v0.5.3_video_job_provider_framework.md`](./v0.5.3_video_job_provider_framework.md)）。
+  本版本不接 Seedance、不接真实视频 API、不生成真实 mp4。
+- **下一阶段（v0.6.x）**：在 `VideoProvider` 抽象层之上接入第一个真实
+  provider，引入 Job 轮询 / 真实 mp4 下载 / Video Review 独立评分协议。
+
 ---
 
 ## Phase 0: 项目文档和模板体系（已完成）

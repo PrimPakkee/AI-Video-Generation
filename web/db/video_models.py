@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Video Mode SQLAlchemy ORM models (v0.5.1)
+Video Mode SQLAlchemy ORM models (v0.5.3)
 
-Defines a single VideoHistory table for Video Mode. Strictly isolated from
-Prompt Mode tables (prompt_history / prompt_reviews). No real video provider
-is invoked from this layer; video_status is a placeholder column for the
-future Video Mode generation pipeline.
+Defines VideoHistory and VideoJob tables for Video Mode. Strictly isolated
+from Prompt Mode tables (prompt_history / prompt_reviews). No real video
+provider is invoked from this layer; VideoJob is created via a Mock provider
+in v0.5.3 and yields a `provider_not_configured` shell — no network call,
+no API key, no real mp4.
 """
 
 from datetime import datetime
@@ -138,3 +139,92 @@ class VideoHistory(VideoBase):
 Index('idx_video_created_at_desc', VideoHistory.created_at.desc())
 Index('idx_video_title_search', VideoHistory.title)
 Index('idx_video_topic_group', VideoHistory.topic_group_id)
+
+
+class VideoJob(VideoBase):
+    """
+    Video Mode job record.
+
+    A VideoJob represents one attempt to render a video for a given
+    VideoHistory record. v0.5.3 only persists jobs created by the Mock
+    provider, which never makes any network call and always returns a
+    `provider_not_configured` shell. The columns here are forward-compatible
+    with a real provider but no real provider is wired in this version.
+    """
+    __tablename__ = "video_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Foreign key to VideoHistory.id (no DB-level FK to keep migrations simple).
+    history_id = Column(Integer, nullable=False, index=True)
+
+    # Provider identification. v0.5.3 only uses 'mock'.
+    provider = Column(String(50), nullable=False, default='mock')
+    provider_job_id = Column(String(200), nullable=True)
+
+    # Status state machine:
+    #   pending / preparing / submitted / running / succeeded / failed
+    #   / cancelled / provider_not_configured
+    status = Column(String(50), nullable=False, default='pending')
+
+    # Stage finer-grained:
+    #   analyzing_topic / generating_prompt / writing_script
+    #   / preparing_provider_request / submitting_provider_job
+    #   / generating_video / saving_assets / completed
+    #   / provider_not_connected / failed
+    stage = Column(String(80), nullable=True)
+
+    # 0-100 progress hint (advisory only, not tied to a real renderer).
+    progress = Column(Integer, nullable=False, default=0)
+
+    # Snapshot of the provider request payload (JSON-encoded text).
+    request_json = Column(Text, nullable=True)
+    # Snapshot of the latest provider response (JSON-encoded text).
+    response_json = Column(Text, nullable=True)
+    # Human-readable error message when status == 'failed'.
+    error_message = Column(Text, nullable=True)
+
+    # Result asset paths / URL. v0.5.3 leaves these NULL — no real video.
+    result_video_path = Column(String(500), nullable=True)
+    result_video_url = Column(String(500), nullable=True)
+    result_thumbnail_path = Column(String(500), nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    submitted_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Reserved metadata bag for future provider-specific extensions.
+    metadata_json = Column(Text, nullable=True)
+
+    def to_dict(self) -> dict:
+        """Convert to a JSON-friendly dict for API responses."""
+        return {
+            'id': self.id,
+            'history_id': self.history_id,
+            'provider': self.provider,
+            'provider_job_id': self.provider_job_id,
+            'status': self.status,
+            'stage': self.stage,
+            'progress': self.progress,
+            'error_message': self.error_message,
+            'result_video_path': self.result_video_path,
+            'result_video_url': self.result_video_url,
+            'result_thumbnail_path': self.result_thumbnail_path,
+            'duration_seconds': self.duration_seconds,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'submitted_at': self.submitted_at.isoformat() if self.submitted_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<VideoJob(id={self.id}, history_id={self.history_id}, "
+            f"provider='{self.provider}', status='{self.status}')>"
+        )
+
+
+Index('idx_video_jobs_history_id', VideoJob.history_id)
+Index('idx_video_jobs_history_created', VideoJob.history_id, VideoJob.created_at.desc())

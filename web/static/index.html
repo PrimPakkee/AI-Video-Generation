@@ -159,8 +159,14 @@
 
                 <!-- Loading State -->
                 <div id="loading-section" class="loading-state hidden">
-                    <div class="spinner"></div>
+                    <div class="spinner" id="loading-spinner"></div>
                     <p class="loading-text" id="loading-text">Generating your prompt...</p>
+                    <!-- Video Mode v0.5.3 multi-stage progress panel.
+                         Hidden by default; shown only during Video Mode generation. -->
+                    <div id="video-progress-panel" class="video-progress-panel hidden" hidden>
+                        <ol class="video-progress-list" id="video-progress-list"></ol>
+                        <p class="video-progress-message" id="video-progress-message"></p>
+                    </div>
                 </div>
 
                 <!-- Error State -->
@@ -258,8 +264,26 @@
                                 <div id="prompt-overview" class="prompt-overview hidden"></div>
                                 <div id="prompt-review" class="prompt-review hidden"></div>
 
-                                <!-- Video Mode panels (v0.5.1) -->
+                                <!-- Video Mode panels (v0.5.3) -->
                                 <div id="prompt-video" class="prompt-video hidden">
+                                    <!-- v0.5.3 Video Job compact status strip: low-key auxiliary info above the player. -->
+                                    <div id="video-job-status-panel" class="video-job-compact hidden" hidden>
+                                        <div class="video-job-compact-main">
+                                            <span class="video-job-compact-title">Video Job</span>
+                                            <span class="video-job-compact-sep">·</span>
+                                            <span id="video-job-status-pill" class="video-job-status-pill">—</span>
+                                            <span class="video-job-compact-sep">·</span>
+                                            <span id="video-job-provider" class="video-job-compact-provider">—</span>
+                                            <span class="video-job-compact-sep">·</span>
+                                            <span id="video-job-progress" class="video-job-compact-progress">—</span>
+                                        </div>
+                                        <div class="video-job-compact-meta">
+                                            <span>Stage: <span id="video-job-stage">—</span></span>
+                                            <span>Job ID: <span id="video-job-provider-id" class="video-job-compact-mono">—</span></span>
+                                            <span>Updated: <span id="video-job-updated">—</span></span>
+                                        </div>
+                                        <div id="video-job-message" class="video-job-compact-message"></div>
+                                    </div>
                                     <div class="video-player-panel">
                                         <div class="video-player-shell" id="video-player-shell">
                                             <video id="video-element" class="video-element" preload="metadata" playsinline></video>

@@ -39,6 +39,9 @@ let isGenerating = false;
 let currentSlug = '';
 let currentHistoryId = null;
 let currentTopicGroupId = null;
+// v0.5.3 - Latest VideoJob for the active record (null in Prompt Mode or
+// when no VideoJob exists yet). Backed by /api/video/history/{id}/jobs/latest.
+let currentVideoJob = null;
 let historyItems = [];
 let trashItems = [];
 let favoriteItems = [];
@@ -463,6 +466,56 @@ function renderHistoryRecord(item) {
         `;
     }
     document.getElementById('prompt-overview').innerHTML = overviewHTML;
+
+    // v0.5.3: in Video Mode, fetch the latest VideoJob and render the
+    // status panel inside the Video tab. Prompt Mode skips this entirely.
+    if (currentAppMode === 'video' && currentHistoryId != null) {
+        currentVideoJob = null;
+        renderVideoJobStatus(null);
+        fetch(`/api/video/history/${currentHistoryId}/jobs/latest`)
+            .then(r => r.ok ? r.json() : null)
+            .then(payload => {
+                if (!payload || !payload.success) return;
+                if (currentHistoryId !== item.id) return;
+                currentVideoJob = payload.job || null;
+                renderVideoJobStatus(currentVideoJob);
+            })
+            .catch(err => console.warn('Failed to fetch latest VideoJob:', err));
+        // v0.5.3: if the record has a real video asset, route the player
+        // through the asset endpoint (never an absolute filesystem path).
+        // v0.5.3 records never set video_file_path, so this is a no-op now.
+        try {
+            applyVideoAssetSrc(item);
+        } catch (e) { /* defensive */ }
+    } else {
+        currentVideoJob = null;
+        renderVideoJobStatus(null);
+    }
+}
+
+/**
+ * v0.5.3 — If the active Video Mode record advertises a video asset,
+ * point the <video> element at the asset endpoint URL. Never assigns a
+ * local filesystem path. v0.5.3 always leaves video_file_path null, so
+ * this clears the src.
+ */
+function applyVideoAssetSrc(item) {
+    const v = document.getElementById('video-element');
+    if (!v) return;
+    const hasAsset = item && item.video_file_path && currentHistoryId != null;
+    if (!hasAsset) {
+        try {
+            v.pause();
+            v.removeAttribute('src');
+            v.load();
+        } catch (e) { /* ignore */ }
+        return;
+    }
+    const url = `/api/video/history/${currentHistoryId}/asset/video`;
+    if (v.getAttribute('src') !== url) {
+        v.setAttribute('src', url);
+        try { v.load(); } catch (e) { /* ignore */ }
+    }
 }
 
 /**
@@ -1642,6 +1695,181 @@ function switchPromptViewMode(mode) {
     renderCurrentPromptView();
 }
 
+// ============================================================
+// v0.5.3 - Video Mode multi-stage progress + Video Job status panel
+// ============================================================
+
+/**
+ * Visual stages for Video Mode generation. The actual /api/video/generate
+ * call is synchronous on the backend, so the UI advances through these
+ * stages on a timer to give the user visible feedback. The final stage
+ * resolves based on the real response (either provider_not_configured or
+ * an error). Indices correspond to the rendered list.
+ */
+const VIDEO_GENERATION_STEPS = [
+    { key: 'analyzing_topic', label: 'Analyzing topic' },
+    { key: 'generating_prompt', label: 'Generating prompt' },
+    { key: 'writing_script', label: 'Writing script' },
+    { key: 'preparing_provider_request', label: 'Preparing provider request' },
+    { key: 'submitting_provider_job', label: 'Submitting mock provider job' },
+    { key: 'generating_video', label: 'Waiting for video render' },
+    { key: 'saving_assets', label: 'Saving assets' },
+    { key: 'completed', label: 'Done' },
+];
+
+let _videoProgressTimer = null;
+let _videoProgressIndex = 0;
+
+function _videoProgressEls() {
+    return {
+        panel: document.getElementById('video-progress-panel'),
+        list: document.getElementById('video-progress-list'),
+        message: document.getElementById('video-progress-message'),
+        spinner: document.getElementById('loading-spinner'),
+        loadingText: document.getElementById('loading-text'),
+    };
+}
+
+function _renderVideoProgressList(currentIdx, finalState) {
+    const { list } = _videoProgressEls();
+    if (!list) return;
+    const html = VIDEO_GENERATION_STEPS.map((step, idx) => {
+        let cls = 'pending';
+        if (finalState === 'failed' && idx === currentIdx) {
+            cls = 'failed';
+        } else if (finalState === 'not-configured' && idx === VIDEO_GENERATION_STEPS.length - 1) {
+            cls = 'not-configured';
+        } else if (idx < currentIdx) {
+            cls = 'done';
+        } else if (idx === currentIdx) {
+            cls = 'active';
+        }
+        return `<li class="video-progress-step ${cls}" data-step="${step.key}">
+            <span class="video-progress-step-marker"></span>
+            <span class="video-progress-step-label">${step.label}</span>
+        </li>`;
+    }).join('');
+    list.innerHTML = html;
+}
+
+function startVideoGenerationProgress() {
+    const { panel, message, spinner, loadingText } = _videoProgressEls();
+    if (!panel) return;
+    panel.removeAttribute('hidden');
+    panel.classList.remove('hidden');
+    if (spinner) spinner.classList.add('hidden');
+    if (loadingText) loadingText.textContent = 'Generating your video assets...';
+    _videoProgressIndex = 0;
+    _renderVideoProgressList(0, null);
+    if (message) message.textContent = VIDEO_GENERATION_STEPS[0].label + '...';
+    if (_videoProgressTimer) clearInterval(_videoProgressTimer);
+    _videoProgressTimer = setInterval(advanceVideoGenerationProgress, 1500);
+}
+
+function advanceVideoGenerationProgress() {
+    // Auto-advance up to but not including the final 'saving_assets' step;
+    // completion / failure is driven by the actual API response.
+    const ceiling = VIDEO_GENERATION_STEPS.length - 2;
+    if (_videoProgressIndex < ceiling) {
+        _videoProgressIndex += 1;
+        _renderVideoProgressList(_videoProgressIndex, null);
+        const { message } = _videoProgressEls();
+        if (message) message.textContent = VIDEO_GENERATION_STEPS[_videoProgressIndex].label + '...';
+    }
+}
+
+function completeVideoGenerationProgress(videoJob) {
+    if (_videoProgressTimer) {
+        clearInterval(_videoProgressTimer);
+        _videoProgressTimer = null;
+    }
+    const finalState = (videoJob && videoJob.status === 'provider_not_configured') ? 'not-configured' : null;
+    _videoProgressIndex = VIDEO_GENERATION_STEPS.length - 1;
+    _renderVideoProgressList(_videoProgressIndex, finalState);
+    const { message } = _videoProgressEls();
+    if (message) {
+        if (videoJob && videoJob.status === 'provider_not_configured') {
+            message.textContent = 'Mock provider created the job shell. Real video provider is not connected in v0.5.3.';
+        } else if (videoJob && videoJob.error_message) {
+            message.textContent = videoJob.error_message;
+        } else {
+            message.textContent = 'Done.';
+        }
+    }
+}
+
+function failVideoGenerationProgress(errorText) {
+    if (_videoProgressTimer) {
+        clearInterval(_videoProgressTimer);
+        _videoProgressTimer = null;
+    }
+    _renderVideoProgressList(_videoProgressIndex, 'failed');
+    const { message } = _videoProgressEls();
+    if (message) message.textContent = errorText || 'Video generation failed.';
+}
+
+function resetVideoGenerationProgress() {
+    if (_videoProgressTimer) {
+        clearInterval(_videoProgressTimer);
+        _videoProgressTimer = null;
+    }
+    _videoProgressIndex = 0;
+    const { panel, list, message, spinner } = _videoProgressEls();
+    if (panel) {
+        panel.classList.add('hidden');
+        panel.setAttribute('hidden', '');
+    }
+    if (list) list.innerHTML = '';
+    if (message) message.textContent = '';
+    if (spinner) spinner.classList.remove('hidden');
+}
+
+/**
+ * v0.5.3 — Render the Video Job status panel inside the Video tab. Pass
+ * null to clear/hide. Safe to call when the panel DOM doesn't exist yet
+ * (Prompt Mode page render).
+ */
+function renderVideoJobStatus(job) {
+    const panel = document.getElementById('video-job-status-panel');
+    if (!panel) return;
+    if (!job) {
+        panel.classList.add('hidden');
+        panel.setAttribute('hidden', '');
+        return;
+    }
+    panel.classList.remove('hidden');
+    panel.removeAttribute('hidden');
+
+    const setText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = (value === null || value === undefined || value === '') ? '—' : String(value);
+    };
+    const pill = document.getElementById('video-job-status-pill');
+    if (pill) {
+        pill.textContent = job.status || 'unknown';
+        pill.dataset.status = job.status || '';
+    }
+    setText('video-job-stage', job.stage);
+    setText('video-job-provider', job.provider);
+    const progressVal = (job.progress === null || job.progress === undefined) ? null : `${job.progress}%`;
+    setText('video-job-progress', progressVal);
+    setText('video-job-provider-id', job.provider_job_id);
+    setText('video-job-updated', job.updated_at || job.completed_at || job.submitted_at || job.created_at);
+
+    const msgEl = document.getElementById('video-job-message');
+    if (msgEl) {
+        if (job.message) {
+            msgEl.textContent = job.message;
+        } else if (job.status === 'provider_not_configured') {
+            msgEl.textContent = 'Real video provider is not connected in v0.5.3. The Mock provider produced this job shell only.';
+        } else if (job.error_message) {
+            msgEl.textContent = job.error_message;
+        } else {
+            msgEl.textContent = '';
+        }
+    }
+}
+
 /**
  * Trigger prompt generation
  */
@@ -1671,6 +1899,14 @@ async function triggerGenerate() {
     }
     showSection(loadingSection);
 
+    // v0.5.3: in Video Mode, replace the simple spinner with a multi-stage
+    // progress panel. Prompt Mode keeps the existing spinner.
+    if (currentAppMode === 'video') {
+        startVideoGenerationProgress();
+    } else {
+        resetVideoGenerationProgress();
+    }
+
     try {
         const generateEndpoint = currentAppMode === 'video' ? '/api/video/generate' : '/api/generate';
         const response = await fetch(generateEndpoint, {
@@ -1689,6 +1925,14 @@ async function triggerGenerate() {
             currentHistoryId = data.history_id || data.id || null;
             currentTopicGroupId = data.topic_group_id || null;
             currentVersionNumber = data.version_number || 1;
+            // v0.5.3: capture the auto-created Mock VideoJob (if any) so the
+            // Video tab can show the status panel after we transition to the
+            // result section.
+            currentVideoJob = data.video_job || null;
+            if (currentAppMode === 'video') {
+                completeVideoGenerationProgress(currentVideoJob);
+            }
+            renderVideoJobStatus(currentVideoJob);
 
             // Update prompt view state
             currentRawText = data.prompt || '';
@@ -1750,12 +1994,18 @@ async function triggerGenerate() {
                 errorDetails.classList.add('hidden');
             }
 
+            if (currentAppMode === 'video') {
+                failVideoGenerationProgress(data.error || 'Video generation failed.');
+            }
             showSection(errorSection);
         }
     } catch (error) {
         // Network or other error
         errorMessage.textContent = `请求失败: ${error.message}`;
         errorDetails.classList.add('hidden');
+        if (currentAppMode === 'video') {
+            failVideoGenerationProgress(`Request failed: ${error.message}`);
+        }
         showSection(errorSection);
     } finally {
         // Reset state
@@ -3001,6 +3251,13 @@ async function triggerRegenerate() {
             // Render new version
             renderHistoryRecord(item);
 
+            // v0.5.3: Mock VideoJob is auto-created on regenerate; use it
+            // immediately rather than waiting on the latest-job fetch.
+            if (currentAppMode === 'video' && data.video_job) {
+                currentVideoJob = data.video_job;
+                renderVideoJobStatus(currentVideoJob);
+            }
+
             // Clear regenerate input
             regenerateFeedbackInput.value = '';
             autoResizeRegenerateTextarea();
@@ -3186,12 +3443,32 @@ function applyModeChrome(mode) {
         btn.classList.toggle('active', isActive);
         btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
     });
+
+    // v0.5.3: swap homepage circular generate button per mode.
+    updateGenerateButtonForCurrentMode();
+}
+
+/**
+ * v0.5.3 — Update the homepage circular generate button based on currentAppMode.
+ * Prompt Mode keeps "Generate Prompt"; Video Mode shows "Generate Video".
+ * Mutates: aria-label, .send-tooltip text. Called from applyModeChrome /
+ * switchAppMode and at startup.
+ */
+function updateGenerateButtonForCurrentMode() {
+    const btn = document.getElementById('generate-btn');
+    if (!btn) return;
+    const isVideo = currentAppMode === 'video';
+    const label = isVideo ? 'Generate Video' : 'Generate Prompt';
+    btn.setAttribute('aria-label', label);
+    const tip = btn.querySelector('.send-tooltip');
+    if (tip) tip.textContent = label;
 }
 
 function clearActiveSelectionState() {
     currentSlug = '';
     currentHistoryId = null;
     currentTopicGroupId = null;
+    currentVideoJob = null;
     currentVersionNumber = null;
     currentVersions = [];
     currentRawText = '';
@@ -3207,6 +3484,7 @@ function clearActiveSelectionState() {
     currentDateFilter = 'all';
     isEditingPrompt = false;
     isRegenerating = false;
+    renderVideoJobStatus(null);
 
     const titleInputEl = document.getElementById('title-input');
     if (titleInputEl) titleInputEl.value = '';

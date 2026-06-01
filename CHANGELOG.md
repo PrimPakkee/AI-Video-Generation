@@ -2,6 +2,88 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.5.3 - Video Job / Provider / Asset 基础层与生成流程升级
+
+> 本版本在 v0.5.2「Video Mode 独立框架」之上新增 Video Job 数据模型、Provider
+> 抽象层与 Asset endpoint，并将 Video Mode 的生成流程从「单纯写历史记录」升级为
+> 「生成历史 + 创建 Mock VideoJob + 返回组合响应」。**本版本不接 Seedance、
+> 不接任何真实视频生成 API、不生成真实 mp4、不引入真实异步任务队列**。
+
+### 新增
+- 新增 `VideoJob` 数据模型与 `video_jobs` 表，用于记录 Video Mode 的视频生成
+  任务状态（status / stage / progress / provider / provider_job_id / 请求与
+  响应快照 / 时间戳等）。仅写入 `data/video_history.db`，与 Prompt Mode 完全隔离。
+- 新增 `VideoJobRepository`（`web/db/video_job_repository.py`），管理 Video Job
+  的创建、查询、最新一条获取、状态更新与取消。
+- 新增 `web/video_providers/` provider 抽象层，包括 `VideoProvider` 基类与
+  `MockVideoProvider`。`VideoProvider` 提供 `submit / get_status / cancel`
+  接口与 `empty_response()` 标准 shell 助手。
+- 新增 Mock Provider 任务链路：不访问网络、不读取 API key、不生成真实视频，
+  仅返回 `provider_not_configured` 任务壳（status=`provider_not_configured`、
+  stage=`provider_not_connected`、progress=85）。
+- 新增 Video Job API：
+  - `POST /api/video/history/{history_id}/jobs`
+  - `GET /api/video/history/{history_id}/jobs/latest`
+  - `GET /api/video/jobs/{job_id}`
+  - `POST /api/video/jobs/{job_id}/refresh`
+  - `POST /api/video/jobs/{job_id}/cancel`
+- 新增 Video Asset API：
+  - `GET /api/video/history/{history_id}/asset/video`
+  - `GET /api/video/history/{history_id}/asset/thumbnail`
+  Asset endpoint 通过 `_resolve_safe_outputs_path()` 强约束在
+  `project_root/outputs/` 之下，任何越界路径直接 404；v0.5.3 内 VideoHistory
+  与 VideoJob 都不会写入真实视频文件路径，所以 asset endpoint 在正常使用下
+  始终返回 404。
+- Video Mode 首页右下角圆形按钮在当前模式下显示为 `Generate Video`，
+  Prompt Mode 仍显示 `Generate Prompt`。aria-label 与 tooltip 随
+  `currentAppMode` 实时切换。
+- Video Mode 首页生成过程新增多阶段进度面板（9 个步骤）：识别题目 / 生成
+  prompt / 写脚本 / 准备 provider 请求 / 提交 mock provider / 等待生成 /
+  保存资产 / 完成。最终阶段会落到 `provider_not_configured` 或失败态。
+- `/api/video/generate` 与 `/api/video/history/{id}/regenerate` 在写完历史
+  记录后自动调用 `MockVideoProvider().submit(...)` 并写入 `video_jobs`，
+  response 中新增 `video_job` 字段（`VideoJob.to_dict()`）。
+- Video tab 新增 compact Video Job 状态区，作为播放器上方的辅助状态条目，
+  展示 status pill / provider / progress / stage / provider_job_id /
+  updated 与 message。
+- 新增 `docs/v0.5.3_video_job_provider_framework.md`，详述 Video Job /
+  Provider / Asset 基础层的数据模型、API、安全约束、前端集成与稳定性检查。
+- README 与 `docs/technical_roadmap.md` 当前里程碑更新至 v0.5.3 阶段。
+
+### 修复
+- 修复 Video Mode AI Review placeholder 中 v0.5.1.2 旧版本号残留：
+  `web/static/ai_review.js` 的 placeholder 改为版本无关的中性文案
+  「AI Review for Video Mode is not connected yet.」。
+- 修复 Video Job 状态展示过重的问题，改为 compact 辅助状态区，不再做大号
+  居中 hero card，不再显示「Video Job Framework Ready」大标题。
+- 修复 Video Mode 生成中 progress steps 视觉偏左问题，
+  `.video-progress-panel` 改为 `margin: 16px auto 0`，整体居中。
+- 修复 `download_all` 中 `metadata.json` 的 `export_schema_version` 由
+  `video_v0.5.1` 升级为 `video_v0.5.3`。
+- 修复 VideoHistory.video_status 与 VideoJob.status 不一致的问题：
+  在 `_create_mock_video_job_for_record()` 中，job 创建成功后会按
+  `_map_job_status_to_video_status()` 将对应 `VideoHistory.video_status`
+  从 `not_generated` 同步为 `provider_not_configured`（v0.5.3 默认情况），
+  保证 generate / regenerate response 与 download-all metadata 的
+  `video_status` 字段一致。
+
+### 保护边界
+- 本版本**不接** Seedance。
+- 本版本**不接**任何真实视频生成 API。
+- 本版本**不生成**真实 mp4。
+- 本版本**不新增**真实异步任务队列（无 Celery / Redis / RQ）。
+- 本版本**不新增** `video_review` 表。
+- 本版本**不修改** Prompt Mode 数据库 schema（`prompt_history` /
+  `prompt_reviews` 不变）。
+- 本版本**不修改** Prompt 生成主提示词。
+- 本版本**不修改** AI Review 评分标准 / schema。
+- 本版本**不破坏** Prompt Mode v0.4.10 既有能力（Prompt 生成 / Raw Text /
+  历史 / 版本 / 收藏 / 置顶 / 回收站 / Regenerate 全部保留）。
+- 本版本**不跨库写入**：VideoJob 仅写入 `data/video_history.db`，
+  从不接触 Prompt Mode 表。
+
+---
+
 ## v0.5.2 - Video Mode 独立框架与播放器界面稳定版
 
 > 本版本是 v0.5.x 在「框架 + 播放器界面 + UI 稳定性」上的收口版本，统一取代

@@ -33,15 +33,18 @@ if env_path.exists():
 # Import database components
 from web.db import init_db, get_db, PromptHistory, PromptHistoryRepository
 
-# Video Mode (v0.5.1) - independent SQLite database, fully isolated from
+# Video Mode (v0.5.3) - independent SQLite database, fully isolated from
 # Prompt Mode. The Video Mode session/repository must never touch
 # prompt_history / prompt_reviews tables.
 from web.db import (
     init_video_db,
     get_video_db,
     VideoHistory,
+    VideoJob,
     VideoHistoryRepository,
+    VideoJobRepository,
 )
+from web.video_providers import MockVideoProvider
 
 app = FastAPI(title="AI Video Prompt Generator")
 
@@ -2101,6 +2104,86 @@ class VideoRegenerateRequest(BaseModel):
     feedback: str = Field(..., min_length=1, max_length=2000)
 
 
+def _create_mock_video_job_for_record(
+    db: Session,
+    record: VideoHistory,
+    request_title: str,
+) -> Optional[Dict[str, Any]]:
+    """v0.5.3: create a Mock VideoJob for a freshly-saved Video Mode record
+    and return its `to_dict()` payload. Returns None on failure (the caller
+    proceeds without a job rather than erroring the user-facing flow).
+
+    The Mock provider performs no network call and yields a
+    `provider_not_configured` shell. This function only writes to the Video
+    Mode database; it never touches Prompt Mode tables.
+    """
+    try:
+        provider = MockVideoProvider()
+        request_payload = {
+            "history_id": record.id,
+            "title": request_title,
+            "slug": record.slug,
+            "mode": record.mode,
+            "model": record.model,
+        }
+        response_payload = provider.submit(request_payload)
+
+        now = datetime.utcnow()
+        job = VideoJobRepository.create_job(
+            db=db,
+            history_id=record.id,
+            provider=provider.provider_name,
+            provider_job_id=response_payload.get("provider_job_id"),
+            status=response_payload.get("status", "provider_not_configured"),
+            stage=response_payload.get("stage", "provider_not_connected"),
+            progress=int(response_payload.get("progress") or 0),
+            request_payload=request_payload,
+            response_payload=response_payload,
+            error_message=None,
+            submitted_at=now,
+            completed_at=now,
+        )
+        # v0.5.3: sync VideoHistory.video_status with the freshly-created job so
+        # the record no longer reads `not_generated` once a Mock job exists.
+        # Mapping is intentionally minimal (no full state machine in v0.5.3).
+        try:
+            mapped = _map_job_status_to_video_status(job.status)
+            if mapped and record.video_status != mapped:
+                record.video_status = mapped
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+        except Exception as sync_exc:
+            print(f"[Video Mode] Warning: failed to sync video_status: {sync_exc}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return job.to_dict()
+    except Exception as exc:
+        print(f"[Video Mode] Warning: failed to create Mock VideoJob: {exc}")
+        return None
+
+
+def _map_job_status_to_video_status(job_status: Optional[str]) -> Optional[str]:
+    """v0.5.3: minimal mapping from VideoJob.status to VideoHistory.video_status.
+
+    For v0.5.3 the only status produced in practice is `provider_not_configured`
+    (Mock provider). The other branches keep the mapping forward-compatible.
+    """
+    if not job_status:
+        return None
+    if job_status == "provider_not_configured":
+        return "provider_not_configured"
+    if job_status == "succeeded":
+        return "ready"
+    if job_status == "failed":
+        return "failed"
+    if job_status == "cancelled":
+        return "cancelled"
+    return None
+
+
 @app.post("/api/video/generate")
 async def video_generate(
     request: VideoGenerateRequest,
@@ -2197,10 +2280,9 @@ async def video_generate(
                 overview_cn=overview_cn,
                 web_copy_text=None,
             )
-            # v0.5.1.2: return the full field set so the frontend can hydrate
-            # currentTopicGroupId / version selector / 6-tab content without a
-            # follow-up GET. Mirrors Prompt Mode /api/generate's frontend
-            # contract; field names preserve backwards compatibility.
+            # v0.5.3: auto-create a Mock VideoJob so the frontend can render a
+            # provider_not_configured status panel. No real provider invoked.
+            video_job_dict = _create_mock_video_job_for_record(db, record, title)
             return JSONResponse(content={
                 'success': True,
                 'id': record.id,
@@ -2228,6 +2310,7 @@ async def video_generate(
                 'created_at': record.created_at.isoformat() if record.created_at else None,
                 'updated_at': record.updated_at.isoformat() if record.updated_at else None,
                 'item': record.to_dict(include_prompt=True),
+                'video_job': video_job_dict,
             })
         except Exception as e:
             print(f"[Video Mode] Warning: failed to save: {e}")
@@ -2487,9 +2570,9 @@ async def video_regenerate(
                 content={"success": False, "error": "Failed to create regenerated version"},
             )
 
-        # v0.5.1.2: regenerate must return the same flat field set as
-        # /api/video/generate so the frontend's triggerRegenerate() can build
-        # an item from data.* fields without a refetch.
+        # v0.5.3: auto-create a Mock VideoJob for the new version so the UI
+        # can show a provider_not_configured status panel after regenerate.
+        video_job_dict = _create_mock_video_job_for_record(db, new_record, new_record.title)
         return JSONResponse(content={
             "success": True,
             "id": new_record.id,
@@ -2517,6 +2600,7 @@ async def video_regenerate(
             "created_at": new_record.created_at.isoformat() if new_record.created_at else None,
             "updated_at": new_record.updated_at.isoformat() if new_record.updated_at else None,
             "item": new_record.to_dict(include_prompt=True),
+            "video_job": video_job_dict,
         })
 
     except subprocess.TimeoutExpired:
@@ -2741,7 +2825,7 @@ async def video_download_all(
         "regenerate_feedback": record.regenerate_feedback,
         "video_status": record.video_status,
         "video_duration_seconds": record.video_duration_seconds,
-        "export_schema_version": "video_v0.5.1",
+        "export_schema_version": "video_v0.5.3",
     }
 
     buf = io.BytesIO()
@@ -2760,6 +2844,220 @@ async def video_download_all(
         media_type="application/zip",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# =============================================================================
+# Video Mode v0.5.3 - Job + Asset endpoints
+# =============================================================================
+
+
+def _resolve_safe_outputs_path(candidate: Optional[str]) -> Optional[Path]:
+    """Resolve a stored asset path against project_root/outputs and reject any
+    path that escapes that directory. Returns None if the candidate is empty,
+    relative to outside outputs, or doesn't exist on disk.
+    """
+    if not candidate:
+        return None
+    try:
+        p = Path(candidate)
+        if not p.is_absolute():
+            p = project_root / p
+        resolved = p.resolve()
+        outputs_root = (project_root / "outputs").resolve()
+        try:
+            resolved.relative_to(outputs_root)
+        except ValueError:
+            return None
+        if not resolved.exists() or not resolved.is_file():
+            return None
+        return resolved
+    except Exception:
+        return None
+
+
+@app.post("/api/video/history/{history_id}/jobs")
+async def video_create_job(
+    history_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    """v0.5.3: explicitly create a Mock VideoJob for an existing record.
+
+    Used when the Video Mode generate flow could not auto-create a job (e.g.
+    older record without a job, or user clicks a future "retry provider"
+    affordance). No real provider is contacted.
+    """
+    record = VideoHistoryRepository.get_history_record(db, history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Video history record {history_id} not found"},
+        )
+    job_dict = _create_mock_video_job_for_record(db, record, record.title or "")
+    if job_dict is None:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": "Failed to create Mock VideoJob"},
+        )
+    return {"success": True, "job": job_dict}
+
+
+@app.get("/api/video/history/{history_id}/jobs/latest")
+async def video_get_latest_job(
+    history_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    """Return the most recent VideoJob for a Video Mode record, or null."""
+    record = VideoHistoryRepository.get_history_record(db, history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Video history record {history_id} not found"},
+        )
+    job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+    return {"success": True, "job": job.to_dict() if job else None}
+
+
+@app.get("/api/video/jobs/{job_id}")
+async def video_get_job_detail(
+    job_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    job = VideoJobRepository.get_job(db, job_id)
+    if not job:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"VideoJob {job_id} not found"},
+        )
+    return {"success": True, "job": job.to_dict()}
+
+
+@app.post("/api/video/jobs/{job_id}/refresh")
+async def video_refresh_job(
+    job_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    """Refresh a job by polling the (mock) provider. v0.5.3 always yields a
+    `provider_not_configured` shell — no network call is made."""
+    job = VideoJobRepository.get_job(db, job_id)
+    if not job:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"VideoJob {job_id} not found"},
+        )
+
+    if job.provider != "mock":
+        # v0.5.3 ships only the mock provider. Real providers are out of scope.
+        return JSONResponse(
+            status_code=501,
+            content={
+                "success": False,
+                "error": f"Provider '{job.provider}' is not connected in v0.5.3",
+            },
+        )
+
+    if job.status in ("succeeded", "failed", "cancelled"):
+        return {"success": True, "job": job.to_dict()}
+
+    provider = MockVideoProvider()
+    response_payload = provider.get_status(job.provider_job_id or "")
+    updated = VideoJobRepository.update_job_status(
+        db,
+        job_id=job_id,
+        status=response_payload.get("status", "provider_not_configured"),
+        stage=response_payload.get("stage", "provider_not_connected"),
+        progress=int(response_payload.get("progress") or 0),
+        response_payload=response_payload,
+    )
+    return {"success": True, "job": updated.to_dict() if updated else None}
+
+
+@app.post("/api/video/jobs/{job_id}/cancel")
+async def video_cancel_job(
+    job_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    job = VideoJobRepository.get_job(db, job_id)
+    if not job:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"VideoJob {job_id} not found"},
+        )
+    cancelled = VideoJobRepository.mark_cancelled(
+        db, job_id=job_id, message="Cancelled by user."
+    )
+    return {"success": True, "job": cancelled.to_dict() if cancelled else None}
+
+
+@app.get("/api/video/history/{history_id}/asset/video")
+async def video_asset_video(
+    history_id: int,
+    db: Session = Depends(get_video_db),
+) -> Any:
+    """Serve the video asset for a Video Mode record, if and only if a real
+    file exists under project_root/outputs. v0.5.3 never produces a real
+    video, so this endpoint returns 404 in normal use.
+    """
+    record = VideoHistoryRepository.get_history_record(db, history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Video history record {history_id} not found"},
+        )
+
+    candidate = record.video_file_path
+    if not candidate:
+        latest_job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+        if latest_job:
+            candidate = latest_job.result_video_path
+
+    safe_path = _resolve_safe_outputs_path(candidate)
+    if not safe_path:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "Video asset is not available."},
+        )
+
+    return FileResponse(str(safe_path), media_type="video/mp4")
+
+
+@app.get("/api/video/history/{history_id}/asset/thumbnail")
+async def video_asset_thumbnail(
+    history_id: int,
+    db: Session = Depends(get_video_db),
+) -> Any:
+    """Serve the thumbnail asset for a Video Mode record, with the same
+    outputs-only path safety as the video endpoint. 404 when missing.
+    """
+    record = VideoHistoryRepository.get_history_record(db, history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Video history record {history_id} not found"},
+        )
+
+    candidate = record.video_thumbnail_path
+    if not candidate:
+        latest_job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+        if latest_job:
+            candidate = latest_job.result_thumbnail_path
+
+    safe_path = _resolve_safe_outputs_path(candidate)
+    if not safe_path:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "Thumbnail asset is not available."},
+        )
+
+    suffix = safe_path.suffix.lower()
+    media_map = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }
+    media_type = media_map.get(suffix, "application/octet-stream")
+    return FileResponse(str(safe_path), media_type=media_type)
 
 
 # =============================================================================

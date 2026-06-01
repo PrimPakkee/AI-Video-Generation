@@ -188,14 +188,13 @@ http://127.0.0.1:8000
 
 ### 当前版本状态
 
-- **当前版本阶段**：`v0.4.x — Prompt Mode stability and AI Review iteration`
-- **已完成**：Prompt Mode 的核心功能（Prompt 生成、历史记录、版本管理、视图切换、AI Review、Regenerate workflow、本地 Web 应用）。
-- **正在进行**：
-  - AI Review 评分严格性持续校准
-  - 编辑保存稳定性
-  - 数据保护与回归测试
-  - README 与 GitHub 仓库规范化
-- **尚未完成**：端到端视频生成（Video Mode 属于长期路线）。
+- **当前版本阶段**：`v0.5.3 — Video Mode job/provider foundation`
+- **已完成**：
+  - Prompt Mode v0.4.10 全部能力（Prompt 生成、历史、版本、视图、AI Review、Regenerate、本地 Web 应用）；
+  - Video Mode 独立框架（v0.5.2）：独立数据库 / API / 6 tab / 播放器骨架 / 全局 tooltip portal；
+  - Video Mode Job/Provider/Asset 基础层（v0.5.3）：`video_jobs` 表、`VideoJobRepository`、`VideoProvider` 抽象层、`MockVideoProvider`、Job/Asset endpoint、首页 `Generate Video` 动态入口、多阶段进度面板、Video Job 状态面板。
+- **正在进行**：Video Mode 进度文案与状态面板细节、Web Copy 模板预设、播放器交互打磨。
+- **尚未完成**：端到端真实视频生成（计划在 v0.6.x 通过 `VideoProvider` 抽象层接入第一个真实 provider）。
 
 ---
 
@@ -203,11 +202,14 @@ http://127.0.0.1:8000
 
 | 版本 | 主要内容 |
 | --- | --- |
-| **v0.4.x** | Prompt Mode 稳定性修复、AI Review 校准、README 与 GitHub 仓库规范化 |
-| **v0.5.x** | Prompt Mode 完整测试、体验优化、更多题材模板 |
-| **v0.6.x** | Video Mode 原型设计 |
-| **v0.8.x** | 接入 Seedance 2.0 / SeeDance 2.0 视频生成能力 |
-| **v1.0.0** | 输入题目 → 自动生成 Prompt → 自动生成视频 → 网页端播放 / 下载 / 管理的完整闭环 |
+| **v0.4.x** | Prompt Mode 稳定性修复、AI Review 校准、README 与 GitHub 仓库规范化（已完成） |
+| **v0.5.2** | Video Mode 独立框架与播放器界面稳定版（已完成） |
+| **v0.5.3** | Video Job / Provider / Asset 基础层 + Generate Video 动态入口 + 多阶段进度（当前版本） |
+| **v0.5.x（继续）** | Web Copy 模板预设、播放器交互细节 |
+| **v0.6.0** | 设计真实视频任务模型，接入第一个真实 provider（候选 Seedance），保留 MockVideoProvider 作为离线测试 |
+| **v0.6.1** | Video Job 轮询 / Refresh / 真实 mp4 下载与播放 |
+| **v0.6.2+** | 独立 Video Review prompt / schema |
+| **v0.7.x – v1.0** | 用户登录、用户空间、权限管控、产品化 |
 
 未来可继续扩展：
 - 用户登录系统
@@ -288,14 +290,17 @@ Configure a local `.env` (do not commit):
 
 ### Current Status
 
-The project is in **v0.4.x — Prompt Mode stability and AI Review iteration**. Prompt Mode core features are in place. Ongoing work focuses on AI Review calibration, edit-save stability, data protection, regression tests, and repository normalization. End-to-end video generation is not yet implemented and remains a long-term Video Mode goal.
+The project is at **v0.5.3 — Video Mode job/provider foundation**. Prompt Mode v0.4.10 features remain frozen and intact. Video Mode now ships an independent framework (v0.5.2) plus a Job/Provider/Asset base layer (v0.5.3): a `video_jobs` table, a `VideoProvider` abstraction with a `MockVideoProvider`, new `/api/video/...` job and asset endpoints, a homepage `Generate Video` entry that swaps with `currentAppMode`, a multi-stage progress panel, and a Video Job status panel inside the Video tab. No real video provider is wired in this version — the Mock provider always returns a `provider_not_configured` shell.
 
 ### Roadmap
 
-- **v0.4.x** — Prompt Mode stability fixes, AI Review calibration, repository normalization.
-- **v0.5.x** — Full Prompt Mode testing, UX polish, more topic templates.
-- **v0.6.x** — Video Mode prototype design.
-- **v0.8.x** — Integrate Seedance 2.0 / SeeDance 2.0 video generation.
-- **v1.0.0** — Topic → prompt → video → in-browser playback, download, and management, end to end.
+- **v0.4.x** — Prompt Mode stability fixes, AI Review calibration, repository normalization (complete).
+- **v0.5.2** — Video Mode independent framework + player UI stabilization (complete).
+- **v0.5.3** — Video Job / Provider / Asset base layer + dynamic Generate Video entry + multi-stage progress (current).
+- **v0.5.x (continued)** — Web Copy templates, player interaction polish.
+- **v0.6.0** — First real video provider behind `VideoProvider` abstraction (candidate: Seedance), Mock provider preserved for offline tests.
+- **v0.6.1** — Video Job polling / refresh / real mp4 download + playback.
+- **v0.6.2+** — Standalone Video Review prompt and schema, decoupled from Prompt Mode AI Review.
+- **v0.7.x – v1.0** — User accounts, user workspaces, permissions, productionization.
 
 Future extensions: user accounts, user workspaces, cloud deployment, video job queue, and video asset management.
