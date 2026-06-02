@@ -2,6 +2,119 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.5.6 - Seedance Prompt Compiler (Dry-Run)
+
+> 本版本在 v0.5.5「Seedance Provider Contract Adapter」之上新增 **Seedance
+> Prompt Compiler**——一个离线、dry-run、不联网的编译器，把 Video Mode 的
+> 结构化内容资产（`topic_analysis` / `reasoning` / `video_script` /
+> `storyboard` / `provider_request_preview`）编译成 Seedance 形态的英文
+> prompt 包（主 prompt + negative prompt + debug 元数据），为 v0.6.0 的
+> 首次真实 Seedance 调用提供可直接复用的输入。**v0.5.6 仍然不接 Seedance、
+> 不接任何真实视频生成 API、不发起任何真实网络请求、不生成真实 mp4、
+> 不下载真实视频文件、不写入真实视频 URL；真正的 submit / poll / download
+> 仍保留给 v0.6.0。** Prompt Mode 数据库 schema、主提示词、NotebookLM Prompt
+> 主模板、AI Review 评分标准均未变动。
+
+### 新增
+- 新增 `config/provider_profiles/seedance.json`，
+  `profile_version="seedance_prompt_profile_v0.5.6"`：声明
+  `preferred_prompt_language="en"`、`default_duration_seconds=60`、
+  `default_aspect_ratio="9:16"`、`prompt_strategy="scene_by_scene"`、
+  `narration_mode="single_narrator_monologue"`、12 项
+  `must_include_constraints`、14 项 `negative_prompt_defaults`、
+  `visual_defaults`、8 段 `section_order`。Profile 是静态配置文件，
+  forward-compatible，可在不影响 Seedance 的前提下追加 `kling.json` /
+  `runway.json` / `veo.json`。
+- 新增 `web/video_providers/seedance_prompt_compiler.py`，类
+  `SeedancePromptCompiler`：`compiler_version="seedance_prompt_compiler_v0.5.6"`、
+  `network_enabled=False`，导出
+  `compile_from_assets` / `build_seedance_prompt` /
+  `build_negative_prompt` / `build_debug_payload` 四个方法；
+  模块顶层无 `requests` / `httpx` / `aiohttp` / `urllib` 真实网络调用，
+  也不导入 NotebookLM Prompt 主模板。`build_seedance_prompt` 输出英文
+  8-section prompt：Video Goal / Visual Style / Narration Mode /
+  Core Explanation / Scene-by-scene Storyboard / On-screen Text Rules /
+  Motion / Final Constraints。`build_debug_payload` 输出
+  `seedance_prompt_debug_v0.5.6` schema 的 JSON。
+- `web/video_asset_pipeline.py` 升级到 `video_assets_v0.5.6`（保留
+  `VIDEO_ASSETS_LEGACY_SCHEMA_VERSION="video_assets_v0.5.5"`），在写完
+  `provider_request_preview.json` 之后、调用 `SeedanceContractAdapter`
+  之前，先调用 `SeedancePromptCompiler.compile_from_assets(...)`，落 3
+  个新资产文件：`seedance_prompt.txt`、`seedance_negative_prompt.txt`、
+  `seedance_prompt_debug.json`，资产数量从 10 升级到 13。Manifest 新增
+  `seedance_prompt_compiler_version` / `seedance_prompt_profile_version`
+  / `seedance_prompt_ready` / `seedance_prompt_path` /
+  `seedance_negative_prompt_path` / `seedance_prompt_debug_path` /
+  `prompt_source_for_seedance_payload` 字段。
+- `web/video_providers/seedance_contract_adapter.py` 升级到
+  `seedance_payload_preview_v0.5.6`（保留
+  `PAYLOAD_PREVIEW_LEGACY_SCHEMA_VERSION="seedance_payload_preview_v0.5.5"`）：
+  `build_seedance_payload_preview` 新增 `compiled_prompt` /
+  `compiled_negative_prompt` / `prompt_compiler_version` /
+  `prompt_source` / `negative_prompt_source` / `compiler_ready`
+  关键字参数；`payload.prompt` 优先使用 compiled `seedance_prompt.txt`，
+  缺失时回退 upstream `provider_prompt.txt` 并在 `warnings` 中记录
+  `Compiled Seedance prompt was empty; payload fell back to provider_prompt.`
+  返回值新增 `prompt_compiler_version` / `prompt_source` /
+  `negative_prompt_source` / `prompt_from_compiler` /
+  `negative_prompt_from_compiler` 顶层字段。
+- `/api/video/generate` 与 `/api/video/history/{id}/regenerate` 响应额外
+  携带 `seedance_prompt` / `seedance_negative_prompt` /
+  `seedance_prompt_debug` / `seedance_prompt_compiler_version` /
+  `seedance_prompt_profile_version` / `seedance_prompt_ready` 字段，
+  并在 `provider_contract` 子对象中追加 `prompt_compiler_ready` /
+  `prompt_compiler_version`。message 文案改为
+  `Seedance prompt compiler + contract adapter are ready in v0.5.6.
+  Compiled Seedance prompt + negative prompt were generated, but no real
+  video API was called.`
+- `/api/video/history/{id}/provider-contract` 端点扩展：顶层加上
+  `prompt_compiler_ready` / `prompt_compiler_version`，直接返回
+  `seedance_prompt` / `seedance_negative_prompt` /
+  `seedance_prompt_debug`；`readiness_summary` 加
+  `has_seedance_prompt` / `has_seedance_negative_prompt` /
+  `has_seedance_prompt_debug` / `prompt_compiler_ready`。
+- Video Mode Overview 的 *Provider Contract Summary* 区块新增一行
+  *Seedance Prompt Compiler: Ready / Not Available*，与 *Contract Status*
+  并列展示；前端通过既有的
+  `GET /api/video/history/{id}/provider-contract` 异步刷新。
+- Download All 的 `metadata.json` 升级到 `export_schema_version=video_v0.5.6`
+  （保留 `legacy_export_schema_version="video_v0.5.5"`），新增
+  `seedance_prompt_compiler_version` / `seedance_prompt_profile_version`
+  / `seedance_prompt_ready` 与 3 个新资产路径字段。zip 内自动追加 3 个
+  新资产文件。
+- 新增 `docs/v0.5.6_seedance_prompt_compiler.md`，详述 Prompt Compiler
+  的三层 prompt 架构、provider profile 设计、新资产、manifest 与 payload
+  preview 升级、API 表面、UI 行为、严禁项与自检命令。
+- `scripts/run_stability_checks.py` 升级到 `STABILITY_CHECKS_VERSION="v0.5.6"`，
+  新增 `check_v056_compiler` 检查组（≥17 项），py_compile 列表加入
+  `seedance_prompt_compiler.py`，`allowed_untracked` 加入 v0.5.6 新文件
+  （doc / compiler / profile / 可选 fixture）。
+
+### 修复
+- 修复 stability check 因 v0.5.6 升级误报的 v0.5.5 marker：v0.5.5 检查组
+  改为同时接受 `video_assets_v0.5.5` 与 `video_assets_v0.5.6` 两种
+  schema_version；`VIDEO_ASSETS_LEGACY_SCHEMA_VERSION` 检查放宽至同时
+  接受 `video_assets_v0.5.4` 与 `video_assets_v0.5.5`。
+- 修复 export_schema_version 检查在多版本下的回归：v0.5.3 / v0.5.4 /
+  v0.5.5 检查组的 `export_schema_version` 上限统一放宽到 `video_v0.5.6`，
+  不再在 v0.5.6 升级后误报旧版 marker 缺失。
+
+### 严禁项（在本版本中得到保留）
+- 不接 Seedance / 不接任何真实视频生成 API。
+- 不新增 `seedance_provider.py`，不创建任何真实 video provider 实现。
+- 不执行 `requests.post` / `httpx.post` / `aiohttp` / `urllib.request` 的真实
+  网络调用（自动化检查会扫描整个 `seedance_prompt_compiler.py`）。
+- 不生成真实 mp4，不下载真实视频文件，不写入真实视频 URL。
+- 不引入 Celery / Redis / RQ / 真实异步任务队列。
+- 不新增 `video_review` 表。
+- 不修改 Prompt Mode 数据库 schema、不修改 Prompt Mode 主提示词、不修改
+  NotebookLM Prompt 主模板、不修改 AI Review 评分标准。
+- 不修改 `.env`，不打印 API key，不硬编码 API key。
+- 不提交 `data/*.db` / `outputs/` / `.env`；不执行 `git add` / `git commit`
+  / `git push`（由用户决定）。
+
+---
+
 ## v0.5.5 - Seedance Provider Contract Adapter (Dry-Run)
 
 > 本版本在 v0.5.4「Video Content Asset Pipeline」之上新增 **Seedance Provider

@@ -1748,6 +1748,7 @@ function renderProviderContractSummaryHTML(item) {
         <ul class="provider-contract-list">
             <li><strong>Future Provider:</strong> Seedance</li>
             <li><strong>Contract Status:</strong> <span data-field="contract-status">Loading…</span></li>
+            <li><strong>Seedance Prompt Compiler:</strong> <span data-field="prompt-compiler-status">Loading…</span></li>
             <li><strong>Real API Call:</strong> Disabled until v0.6.0</li>
             <li><strong>Real Video Generated:</strong> No</li>
         </ul>
@@ -1768,6 +1769,10 @@ function refreshProviderContractSummary(historyId) {
             const statusEl = el.querySelector('[data-field="contract-status"]');
             if (statusEl) {
                 statusEl.textContent = payload.contract_ready ? 'Ready' : 'Validation Failed';
+            }
+            const compilerEl = el.querySelector('[data-field="prompt-compiler-status"]');
+            if (compilerEl) {
+                compilerEl.textContent = payload.prompt_compiler_ready ? 'Ready' : 'Not Available';
             }
         })
         .catch(() => {});
@@ -1842,7 +1847,7 @@ function completeVideoGenerationProgress(videoJob) {
     const { message } = _videoProgressEls();
     if (message) {
         if (videoJob && videoJob.status === 'provider_not_configured') {
-            message.textContent = 'Seedance contract adapter is ready in v0.5.5. Content assets and provider payload preview were generated, but no real video API was called.';
+            message.textContent = 'Seedance prompt compiler + contract adapter are ready. Content assets, compiled Seedance prompt, and payload preview were generated, but no real video API was called. Real Seedance provider calls are reserved for v0.6.0.';
         } else if (videoJob && videoJob.error_message) {
             message.textContent = videoJob.error_message;
         } else {
@@ -1914,7 +1919,7 @@ function renderVideoJobStatus(job) {
         if (job.message) {
             msgEl.textContent = job.message;
         } else if (job.status === 'provider_not_configured') {
-            msgEl.textContent = 'Seedance contract adapter is ready in v0.5.5. Content assets and provider payload preview were generated, but no real video API was called.';
+            msgEl.textContent = 'Seedance prompt compiler + contract adapter are ready. Content assets, compiled Seedance prompt, and payload preview were generated, but no real video API was called. Real Seedance provider calls are reserved for v0.6.0.';
         } else if (job.error_message) {
             msgEl.textContent = job.error_message;
         } else {

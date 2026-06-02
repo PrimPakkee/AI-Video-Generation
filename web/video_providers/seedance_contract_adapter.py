@@ -1,10 +1,18 @@
 """
-SeedanceContractAdapter (v0.5.5).
+SeedanceContractAdapter (v0.5.5 / v0.5.6).
 
 Dry-run contract adapter that prepares the future Seedance provider payload
-without performing any network call. v0.5.5 does NOT call any real Seedance
-endpoint, does NOT generate any mp4, and does NOT download any video file.
-Real submit / poll / download is reserved for v0.6.0.
+without performing any network call. v0.5.5/v0.5.6 do NOT call any real
+Seedance endpoint, do NOT generate any mp4, and do NOT download any video
+file. Real submit / poll / download is reserved for v0.6.0.
+
+v0.5.6 extends ``build_seedance_payload_preview`` so it can consume a
+compiled Seedance prompt + negative prompt produced by
+``SeedancePromptCompiler``. The payload's ``prompt`` and
+``negative_prompt`` fields prefer the compiled values; if the compiler
+output is missing, the adapter falls back to the upstream
+``provider_request_preview`` and emits a warning. The adapter still does
+not import the prompt-mode template and still does not access the network.
 
 This module is deliberately not named ``seedance_provider.py`` — it is a
 contract validator + payload preview builder, not a real provider.
@@ -19,7 +27,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 CONTRACT_VALIDATION_SCHEMA_VERSION = "seedance_contract_validation_v0.5.5"
-PAYLOAD_PREVIEW_SCHEMA_VERSION = "seedance_payload_preview_v0.5.5"
+PAYLOAD_PREVIEW_SCHEMA_VERSION = "seedance_payload_preview_v0.5.6"
+PAYLOAD_PREVIEW_LEGACY_SCHEMA_VERSION = "seedance_payload_preview_v0.5.5"
 LIFECYCLE_PREVIEW_SCHEMA_VERSION = "provider_lifecycle_preview_v0.5.5"
 PROVIDER_CONTRACT_SCHEMA_VERSION = "seedance_contract_v0.5.5"
 
@@ -157,10 +166,52 @@ class SeedanceContractAdapter:
             "real_video_generated": False,
         }
 
-    def build_seedance_payload_preview(self, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def build_seedance_payload_preview(
+        self,
+        payload: Optional[Dict[str, Any]],
+        compiled_prompt: Optional[str] = None,
+        compiled_negative_prompt: Optional[str] = None,
+        prompt_compiler_version: Optional[str] = None,
+        prompt_source: Optional[str] = None,
+        negative_prompt_source: Optional[str] = None,
+        compiler_ready: Optional[bool] = None,
+    ) -> Dict[str, Any]:
         src = payload if isinstance(payload, dict) else {}
 
-        prompt = src.get("prompt") if isinstance(src.get("prompt"), str) else ""
+        upstream_prompt = src.get("prompt") if isinstance(src.get("prompt"), str) else ""
+        upstream_negative = (
+            src.get("negative_prompt") if isinstance(src.get("negative_prompt"), str) else ""
+        )
+
+        warnings: List[str] = []
+
+        if isinstance(compiled_prompt, str) and compiled_prompt.strip():
+            prompt = compiled_prompt
+            resolved_prompt_source = prompt_source or "video_assets/seedance_prompt.txt"
+            prompt_from_compiler = True
+        else:
+            prompt = upstream_prompt
+            resolved_prompt_source = prompt_source or "video_assets/provider_prompt.txt"
+            prompt_from_compiler = False
+            if compiler_ready is False or compiled_prompt is not None:
+                warnings.append(
+                    "Compiled Seedance prompt was empty; payload fell back to provider_prompt."
+                )
+
+        if isinstance(compiled_negative_prompt, str) and compiled_negative_prompt.strip():
+            negative_prompt = compiled_negative_prompt
+            resolved_neg_source = (
+                negative_prompt_source or "video_assets/seedance_negative_prompt.txt"
+            )
+            negative_from_compiler = True
+        else:
+            negative_prompt = upstream_negative
+            resolved_neg_source = (
+                negative_prompt_source
+                or "video_assets/provider_request_preview.json#negative_prompt"
+            )
+            negative_from_compiler = False
+
         duration = src.get("duration_seconds") if isinstance(
             src.get("duration_seconds"), (int, float)
         ) else DEFAULT_DURATION_SECONDS
@@ -177,16 +228,22 @@ class SeedanceContractAdapter:
         style = src.get("style") if isinstance(
             src.get("style"), str
         ) and src.get("style") else DEFAULT_STYLE
-        negative_prompt = src.get("negative_prompt") if isinstance(
-            src.get("negative_prompt"), str
-        ) else ""
 
         return {
             "schema_version": PAYLOAD_PREVIEW_SCHEMA_VERSION,
+            "legacy_schema_version": PAYLOAD_PREVIEW_LEGACY_SCHEMA_VERSION,
             "future_provider": self.future_provider,
             "network_call_performed": False,
+            "real_video_generated": False,
+            "real_video_downloaded": False,
+            "provider_status": "provider_not_configured",
             "submit_mode": "dry_run_contract_only",
             "endpoint": None,
+            "prompt_compiler_version": prompt_compiler_version,
+            "prompt_source": resolved_prompt_source,
+            "negative_prompt_source": resolved_neg_source,
+            "prompt_from_compiler": prompt_from_compiler,
+            "negative_prompt_from_compiler": negative_from_compiler,
             "auth": {
                 "api_key_required_in_v0_6_0": True,
                 "api_key_present_in_payload": False,
@@ -203,15 +260,20 @@ class SeedanceContractAdapter:
                 "style": style,
                 "negative_prompt": negative_prompt,
                 "metadata": {
-                    "source": "video_assets_v0.5.4",
+                    "source": "video_assets_v0.5.6",
                     "real_video_generated": False,
+                    "prompt_source": resolved_prompt_source,
+                    "negative_prompt_source": resolved_neg_source,
+                    "prompt_compiler_version": prompt_compiler_version,
                 },
             },
+            "warnings": warnings,
             "notes": [
-                "This is a v0.5.5 Seedance payload preview.",
+                "This is a Seedance payload preview built locally.",
                 "No real Seedance endpoint is called.",
                 "No API key is included.",
-                "Real submission is reserved for v0.6.0.",
+                "Real Seedance provider calls are reserved for v0.6.0.",
+                "payload.prompt is sourced from the compiled Seedance prompt when available.",
             ],
         }
 
@@ -222,9 +284,9 @@ class SeedanceContractAdapter:
     ) -> Dict[str, Any]:
         contract_ready = bool(validation and validation.get("valid"))
         message = (
-            "Seedance contract adapter is ready, but real provider calls are reserved for v0.6.0."
+            "Seedance contract adapter is ready, but real Seedance provider calls are reserved for v0.6.0."
             if contract_ready
-            else "Seedance contract validation failed; real provider calls remain blocked."
+            else "Seedance contract validation failed; real Seedance provider calls remain blocked."
         )
         return {
             "schema_version": LIFECYCLE_PREVIEW_SCHEMA_VERSION,
@@ -242,17 +304,17 @@ class SeedanceContractAdapter:
                 {
                     "step": "submit",
                     "status": "blocked_until_v0.6.0",
-                    "description": "Real Seedance submit API is not connected in v0.5.5.",
+                    "description": "Real Seedance submit API is reserved for v0.6.0.",
                 },
                 {
                     "step": "poll",
                     "status": "blocked_until_v0.6.0",
-                    "description": "Real Seedance polling is not connected in v0.5.5.",
+                    "description": "Real Seedance polling is reserved for v0.6.0.",
                 },
                 {
                     "step": "download",
                     "status": "blocked_until_v0.6.0",
-                    "description": "Real video asset download is not connected in v0.5.5.",
+                    "description": "Real video asset download is reserved for v0.6.0.",
                 },
             ],
             "canonical_status_mapping": {
@@ -289,7 +351,7 @@ class SeedanceContractAdapter:
             "status": "provider_not_configured",
             "stage": "poll_blocked_until_v0.6.0",
             "progress": 90,
-            "message": "Real Seedance polling is not connected in v0.5.5.",
+            "message": "Real Seedance polling is reserved for v0.6.0.",
         }
 
     def dry_run_download(self, provider_job_id: str) -> Dict[str, Any]:
@@ -311,5 +373,6 @@ __all__ = [
     "PROVIDER_CONTRACT_SCHEMA_VERSION",
     "CONTRACT_VALIDATION_SCHEMA_VERSION",
     "PAYLOAD_PREVIEW_SCHEMA_VERSION",
+    "PAYLOAD_PREVIEW_LEGACY_SCHEMA_VERSION",
     "LIFECYCLE_PREVIEW_SCHEMA_VERSION",
 ]

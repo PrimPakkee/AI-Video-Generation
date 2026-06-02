@@ -188,13 +188,14 @@ http://127.0.0.1:8000
 
 ### 当前版本状态
 
-- **当前版本阶段**：`v0.5.5 — Seedance Provider Contract Adapter (dry-run)`
+- **当前版本阶段**：`v0.5.6 — Seedance Prompt Compiler (dry-run)`
 - **已完成**：
   - Prompt Mode v0.4.10 全部能力（Prompt 生成、历史、版本、视图、AI Review、Regenerate、本地 Web 应用）；
   - Video Mode 独立框架（v0.5.2）：独立数据库 / API / 6 tab / 播放器骨架 / 全局 tooltip portal；
   - Video Mode Job/Provider/Asset 基础层（v0.5.3）：`video_jobs` 表、`VideoJobRepository`、`VideoProvider` 抽象层、`MockVideoProvider`、Job/Asset endpoint、首页 `Generate Video` 动态入口、多阶段进度面板、Video Job 状态面板；
   - Video Content Asset Pipeline（v0.5.4）：LLM 驱动的 7 个内容资产、Download All 升级、9 步进度面板、`AI_VIDEO_LLM_*` 配置体系；
-  - **Seedance Provider Contract Adapter（v0.5.5，当前版本）**：dry-run 契约层、3 个新契约文件、4 个 dry-run API 端点、Provider Contract Summary 区块、stage 升级到 `contract_ready`。**仍然不接真实 Seedance、不发起任何真实网络请求、不生成 mp4、不下载视频文件。**
+  - Seedance Provider Contract Adapter（v0.5.5）：dry-run 契约层、3 个新契约文件、4 个 dry-run API 端点、Provider Contract Summary 区块、stage 升级到 `contract_ready`；
+  - **Seedance Prompt Compiler（v0.5.6，当前版本）**：离线 prompt 编译器、provider profile (`config/provider_profiles/seedance.json`) 抽象、3 个新资产文件（`seedance_prompt.txt` / `seedance_negative_prompt.txt` / `seedance_prompt_debug.json`）、`payload.prompt` 优先取自 compiled prompt、Overview 区块新增 *Seedance Prompt Compiler: Ready* 行。**仍然不接真实 Seedance、不发起任何真实网络请求、不生成 mp4、不下载视频文件。**
 - **正在进行**：Video Mode 真实 provider 接入前的契约稳定与文档收敛。
 - **尚未完成**：端到端真实视频生成（计划在 v0.6.0 通过 `VideoProvider` 抽象层接入第一个真实 Seedance provider 实现）。
 
@@ -208,9 +209,10 @@ http://127.0.0.1:8000
 | **v0.5.2** | Video Mode 独立框架与播放器界面稳定版（已完成） |
 | **v0.5.3** | Video Job / Provider / Asset 基础层 + Generate Video 动态入口 + 多阶段进度（已完成） |
 | **v0.5.4** | Video Content Asset Pipeline + Download All 升级 + 9 步进度（已完成） |
-| **v0.5.5** | Seedance Provider Contract Adapter (dry-run) + 3 个契约文件 + 4 个 dry-run API（当前版本） |
+| **v0.5.5** | Seedance Provider Contract Adapter (dry-run) + 3 个契约文件 + 4 个 dry-run API（已完成） |
+| **v0.5.6** | Seedance Prompt Compiler (dry-run) + provider profile + 3 个新资产文件 + Overview Compiler 行（当前版本） |
 | **v0.5.x（继续）** | Web Copy 模板预设、播放器交互细节 |
-| **v0.6.0** | 把 v0.5.5 契约层升级为真实 Seedance provider 实现（首次真实网络调用），保留 MockVideoProvider 作为离线测试 |
+| **v0.6.0** | 把 v0.5.6 编译好的 Seedance prompt 直接喂给真实 Seedance provider 实现（首次真实网络调用），保留 MockVideoProvider 作为离线测试 |
 | **v0.6.1** | Video Job 轮询 / Refresh / 真实 mp4 下载与播放 |
 | **v0.6.2+** | 独立 Video Review prompt / schema |
 | **v0.7.x – v1.0** | 用户登录、用户空间、权限管控、产品化 |
@@ -294,7 +296,7 @@ Configure a local `.env` (do not commit):
 
 ### Current Status
 
-The project is at **v0.5.5 — Seedance Provider Contract Adapter (dry-run)**. Prompt Mode v0.4.10 features remain frozen and intact. Video Mode now ships an independent framework (v0.5.2), a Job/Provider/Asset base layer (v0.5.3), an LLM-driven Video Content Asset Pipeline (v0.5.4), and a dry-run Seedance contract adapter (v0.5.5) that validates the future Seedance payload, builds 3 new contract files (`seedance_payload_preview.json` / `provider_contract_validation.json` / `provider_lifecycle_preview.json`), and exposes 4 new dry-run API endpoints. **No real Seedance API is called, no real network request is made, no real mp4 is generated, and no real video is downloaded.** Real submit/poll/download is reserved for v0.6.0.
+The project is at **v0.5.6 — Seedance Prompt Compiler (dry-run)**. Prompt Mode v0.4.10 features remain frozen and intact. Video Mode now ships an independent framework (v0.5.2), a Job/Provider/Asset base layer (v0.5.3), an LLM-driven Video Content Asset Pipeline (v0.5.4), a dry-run Seedance contract adapter (v0.5.5), and an offline Seedance Prompt Compiler (v0.5.6) that turns the structured content assets into a Seedance-shaped 8-section English prompt + negative prompt + debug metadata, persisted as 3 new asset files (`seedance_prompt.txt` / `seedance_negative_prompt.txt` / `seedance_prompt_debug.json`) under a forward-compatible provider profile (`config/provider_profiles/seedance.json`). **No real Seedance API is called, no real network request is made, no real mp4 is generated, and no real video is downloaded.** Real submit/poll/download is reserved for v0.6.0.
 
 ### Roadmap
 
@@ -302,9 +304,10 @@ The project is at **v0.5.5 — Seedance Provider Contract Adapter (dry-run)**. P
 - **v0.5.2** — Video Mode independent framework + player UI stabilization (complete).
 - **v0.5.3** — Video Job / Provider / Asset base layer + dynamic Generate Video entry + multi-stage progress (complete).
 - **v0.5.4** — Video Content Asset Pipeline + Download All upgrade + 9-step progress (complete).
-- **v0.5.5** — Seedance Provider Contract Adapter (dry-run) + 3 contract files + 4 dry-run APIs (current).
+- **v0.5.5** — Seedance Provider Contract Adapter (dry-run) + 3 contract files + 4 dry-run APIs (complete).
+- **v0.5.6** — Seedance Prompt Compiler (dry-run) + provider profile + 3 new asset files + Overview Compiler line (current).
 - **v0.5.x (continued)** — Web Copy templates, player interaction polish.
-- **v0.6.0** — First real video provider behind `VideoProvider` abstraction (candidate: Seedance), Mock provider preserved for offline tests.
+- **v0.6.0** — First real video provider behind `VideoProvider` abstraction (candidate: Seedance), feeding the v0.5.6 compiled prompt directly; Mock provider preserved for offline tests.
 - **v0.6.1** — Video Job polling / refresh / real mp4 download + playback.
 - **v0.6.2+** — Standalone Video Review prompt and schema, decoupled from Prompt Mode AI Review.
 - **v0.7.x – v1.0** — User accounts, user workspaces, permissions, productionization.

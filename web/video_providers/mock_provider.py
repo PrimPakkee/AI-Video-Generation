@@ -20,8 +20,9 @@ from .base import VideoProvider
 
 
 _NOT_CONNECTED_MESSAGE = (
-    "Seedance contract adapter is ready in v0.5.5. Content assets and "
-    "provider payload preview were generated, but no real video API was called."
+    "Seedance prompt compiler + contract adapter are ready. Content assets, "
+    "compiled Seedance prompt, and payload preview were generated, but no real "
+    "video API was called. Real Seedance provider calls are reserved for v0.6.0."
 )
 
 

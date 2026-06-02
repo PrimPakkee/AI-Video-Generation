@@ -1,0 +1,69 @@
+{
+  "schema_version": "seedance_prompt_profile_v0.5.6",
+  "provider": "seedance",
+  "future_provider": "seedance",
+  "profile_version": "seedance_prompt_profile_v0.5.6",
+  "preferred_prompt_language": "en",
+  "default_duration_seconds": 60,
+  "default_aspect_ratio": "9:16",
+  "default_resolution": "1080x1920",
+  "default_fps": 24,
+  "default_style": "clean whiteboard line-art educational short video",
+  "prompt_strategy": "scene_by_scene",
+  "narration_mode": "single_narrator_monologue",
+  "must_include_constraints": [
+    "single narrator only",
+    "no dialogue",
+    "no two-host conversation",
+    "no podcast format",
+    "no interview format",
+    "no multiple speakers",
+    "white background",
+    "clean whiteboard line-art visuals",
+    "large readable on-screen text",
+    "visuals must match narration",
+    "no irrelevant decorative visuals",
+    "the final answer shown must be correct"
+  ],
+  "negative_prompt_defaults": [
+    "no dialogue",
+    "no interview",
+    "no podcast",
+    "no two-host conversation",
+    "no multiple speakers",
+    "no off-topic decoration",
+    "no wrong answer",
+    "no unsupported visual claims",
+    "no real human faces",
+    "no copyrighted characters",
+    "no logos or watermarks",
+    "no text rendering errors",
+    "no flicker",
+    "no extreme camera movement"
+  ],
+  "visual_defaults": {
+    "background": "pure white",
+    "line_art": "hand-drawn black line",
+    "highlight_color": "yellow",
+    "answer_box_color": "yellow",
+    "text_size": "large",
+    "text_color": "black",
+    "camera": "mostly static, gentle zoom only",
+    "transitions": "simple cut, occasional cross-fade"
+  },
+  "section_order": [
+    "Video Goal",
+    "Visual Style",
+    "Narration Mode",
+    "Core Explanation",
+    "Scene-by-scene Storyboard",
+    "On-screen Text Rules",
+    "Motion",
+    "Final Constraints"
+  ],
+  "notes": [
+    "This profile drives the v0.5.6 SeedancePromptCompiler.",
+    "It is a static configuration only; no real Seedance API is contacted.",
+    "Real submit/poll/download is reserved for v0.6.0."
+  ]
+}

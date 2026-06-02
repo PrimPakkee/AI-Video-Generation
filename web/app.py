@@ -2124,11 +2124,31 @@ def _build_video_assets_metadata_json(pipeline_result: Dict[str, Any]) -> str:
     blob = {
         'video_assets_schema_version': pipeline_result.get('schema_version', VIDEO_ASSETS_SCHEMA_VERSION),
         'provider_contract_schema_version': manifest.get('provider_contract_schema_version', 'seedance_contract_v0.5.5'),
+        'seedance_prompt_compiler_version': manifest.get(
+            'seedance_prompt_compiler_version',
+            pipeline_result.get('seedance_prompt_compiler_version'),
+        ),
+        'seedance_prompt_profile_version': manifest.get(
+            'seedance_prompt_profile_version',
+            pipeline_result.get('seedance_prompt_profile_version'),
+        ),
         'seedance_contract_ready': bool(contract_validation.get('valid')) if contract_validation else False,
         'provider_contract_validation_valid': bool(contract_validation.get('valid')) if contract_validation else False,
+        'seedance_prompt_ready': bool(
+            manifest.get('seedance_prompt_ready', pipeline_result.get('seedance_prompt_ready', False))
+        ),
         'seedance_payload_preview_path': asset_paths.get('seedance_payload_preview'),
         'provider_contract_validation_path': asset_paths.get('provider_contract_validation'),
         'provider_lifecycle_preview_path': asset_paths.get('provider_lifecycle_preview'),
+        'seedance_prompt_path': asset_paths.get('seedance_prompt'),
+        'seedance_negative_prompt_path': asset_paths.get('seedance_negative_prompt'),
+        'seedance_prompt_debug_path': asset_paths.get('seedance_prompt_debug'),
+        'prompt_source_for_seedance_payload': manifest.get(
+            'prompt_source_for_seedance_payload',
+            'video_assets/seedance_prompt.txt'
+            if manifest.get('seedance_prompt_ready')
+            else 'video_assets/provider_prompt.txt',
+        ),
         'asset_manifest': manifest,
         'asset_paths': asset_paths,
         'warnings': pipeline_result.get('warnings', []),
@@ -2238,10 +2258,15 @@ async def video_generate(
     """
     Generate a Video Mode entry.
 
-    v0.5.1 reuses the existing Prompt generation script
-    (scripts/generate_video_package.py) so the underlying NotebookLM-style
-    Prompt is identical. The result is saved to the Video Mode database
-    (data/video_history.db) only. No real video provider is invoked.
+    Video Mode still reuses ``scripts/generate_video_package.py`` for the first
+    package stage. After that, v0.5.6 runs the Video Content Asset Pipeline,
+    which generates Seedance prompt compiler assets (compiled prompt, negative
+    prompt, debug payload) and dry-run contract assets (payload preview,
+    contract validation, lifecycle preview). No real video provider is invoked
+    in v0.5.6 — real Seedance provider calls are reserved for v0.6.0. The
+    Prompt Mode database is not touched; only the Video Mode database
+    (``data/video_history.db``) and ``outputs/<slug>/video_assets/`` are
+    written.
     """
     title = request.title.strip()
     if not title:
@@ -2397,17 +2422,30 @@ async def video_generate(
                 'seedance_payload_preview': pipeline_result.get('seedance_payload_preview'),
                 'provider_contract_validation': pipeline_result.get('provider_contract_validation'),
                 'provider_lifecycle_preview': pipeline_result.get('provider_lifecycle_preview'),
+                # v0.5.6 — Seedance prompt compiler
+                'seedance_prompt': pipeline_result.get('seedance_prompt'),
+                'seedance_negative_prompt': pipeline_result.get('seedance_negative_prompt'),
+                'seedance_prompt_debug': pipeline_result.get('seedance_prompt_debug'),
+                'seedance_prompt_compiler_version': pipeline_result.get(
+                    'seedance_prompt_compiler_version'
+                ),
+                'seedance_prompt_profile_version': pipeline_result.get(
+                    'seedance_prompt_profile_version'
+                ),
+                'seedance_prompt_ready': bool(pipeline_result.get('seedance_prompt_ready')),
                 'provider_contract': {
                     'future_provider': 'seedance',
                     'contract_ready': bool((pipeline_result.get('provider_contract_validation') or {}).get('valid')),
+                    'prompt_compiler_ready': bool(pipeline_result.get('seedance_prompt_ready')),
+                    'prompt_compiler_version': pipeline_result.get('seedance_prompt_compiler_version'),
                     'network_call_performed': False,
                     'real_video_generated': False,
                     'real_video_downloaded': False,
                 },
                 'message': (
-                    'Seedance contract adapter is ready in v0.5.5. Content assets '
-                    'and provider payload preview were generated, but no real video '
-                    'API was called.'
+                    'Seedance prompt compiler + contract adapter are ready in v0.5.6. '
+                    'Content assets, compiled Seedance prompt, and payload preview were '
+                    'generated, but no real video API was called.'
                 ),
             })
         except Exception as e:
@@ -2737,17 +2775,31 @@ async def video_regenerate(
             "seedance_payload_preview": pipeline_result.get('seedance_payload_preview'),
             "provider_contract_validation": pipeline_result.get('provider_contract_validation'),
             "provider_lifecycle_preview": pipeline_result.get('provider_lifecycle_preview'),
+            # v0.5.6 — Seedance prompt compiler
+            "seedance_prompt": pipeline_result.get('seedance_prompt'),
+            "seedance_negative_prompt": pipeline_result.get('seedance_negative_prompt'),
+            "seedance_prompt_debug": pipeline_result.get('seedance_prompt_debug'),
+            "seedance_prompt_compiler_version": pipeline_result.get(
+                'seedance_prompt_compiler_version'
+            ),
+            "seedance_prompt_profile_version": pipeline_result.get(
+                'seedance_prompt_profile_version'
+            ),
+            "seedance_prompt_ready": bool(pipeline_result.get('seedance_prompt_ready')),
             "provider_contract": {
                 'future_provider': 'seedance',
                 'contract_ready': bool((pipeline_result.get('provider_contract_validation') or {}).get('valid')),
+                'prompt_compiler_ready': bool(pipeline_result.get('seedance_prompt_ready')),
+                'prompt_compiler_version': pipeline_result.get('seedance_prompt_compiler_version'),
                 'network_call_performed': False,
                 'real_video_generated': False,
                 'real_video_downloaded': False,
             },
             "message": (
-                'Seedance contract adapter is ready in v0.5.5. Content assets '
-                'and provider payload preview were generated, but no real video '
-                'API was called.'
+                'Seedance prompt compiler + contract adapter are ready. Content '
+                'assets, compiled Seedance prompt, and payload preview were '
+                'generated, but no real video API was called. Real Seedance '
+                'provider calls are reserved for v0.6.0.'
             ),
         })
 
@@ -3039,7 +3091,8 @@ async def video_download_all(
         "regenerate_feedback": record.regenerate_feedback,
         "video_status": record.video_status,
         "video_duration_seconds": record.video_duration_seconds,
-        "export_schema_version": "video_v0.5.5",
+        "export_schema_version": "video_v0.5.6",
+        "legacy_export_schema_version": "video_v0.5.5",
         # v0.5.4 additions
         "video_assets_schema_version": VIDEO_ASSETS_SCHEMA_VERSION,
         "has_video_assets": has_video_assets,
@@ -3056,6 +3109,29 @@ async def video_download_all(
         "seedance_contract_ready": bool(asset_manifest.get("seedance_contract_ready", False)),
         "provider_contract_validation_valid": bool(
             asset_manifest.get("provider_contract_validation_valid", False)
+        ),
+        # v0.5.6 additions
+        "seedance_prompt_compiler_version": asset_manifest.get(
+            "seedance_prompt_compiler_version", "seedance_prompt_compiler_v0.5.6"
+        ),
+        "seedance_prompt_profile_version": asset_manifest.get(
+            "seedance_prompt_profile_version", "seedance_prompt_profile_v0.5.6"
+        ),
+        "seedance_prompt_ready": bool(asset_manifest.get("seedance_prompt_ready", False)),
+        "seedance_prompt_path": asset_manifest.get(
+            "seedance_prompt_path", "video_assets/seedance_prompt.txt"
+        ),
+        "seedance_negative_prompt_path": asset_manifest.get(
+            "seedance_negative_prompt_path", "video_assets/seedance_negative_prompt.txt"
+        ),
+        "seedance_prompt_debug_path": asset_manifest.get(
+            "seedance_prompt_debug_path", "video_assets/seedance_prompt_debug.json"
+        ),
+        "prompt_source_for_seedance_payload": asset_manifest.get(
+            "prompt_source_for_seedance_payload",
+            "video_assets/seedance_prompt.txt"
+            if asset_manifest.get("seedance_prompt_ready")
+            else "video_assets/provider_prompt.txt",
         ),
         "real_video_downloaded": False,
         "network_call_performed": False,
@@ -3201,7 +3277,7 @@ async def video_refresh_job(
             status_code=501,
             content={
                 "success": False,
-                "error": f"Provider '{job.provider}' is not connected in v0.5.5",
+                "error": f"Provider '{job.provider}' is not connected. Real Seedance provider calls are reserved for v0.6.0.",
             },
         )
 
@@ -3276,12 +3352,18 @@ async def video_get_provider_contract(
     provider_contract_validation = None
     provider_lifecycle_preview = None
     asset_paths: Dict[str, str] = {}
+    seedance_prompt_text = ""
+    seedance_negative_prompt_text = ""
+    seedance_prompt_debug = None
     if candidate_dir is not None:
         for key, name in [
             ("provider_request_preview", "provider_request_preview.json"),
             ("seedance_payload_preview", "seedance_payload_preview.json"),
             ("provider_contract_validation", "provider_contract_validation.json"),
             ("provider_lifecycle_preview", "provider_lifecycle_preview.json"),
+            ("seedance_prompt", "seedance_prompt.txt"),
+            ("seedance_negative_prompt", "seedance_negative_prompt.txt"),
+            ("seedance_prompt_debug", "seedance_prompt_debug.json"),
         ]:
             fp = candidate_dir / name
             if fp.exists():
@@ -3290,15 +3372,37 @@ async def video_get_provider_contract(
         seedance_payload_preview = _safe_load_json(candidate_dir / "seedance_payload_preview.json")
         provider_contract_validation = _safe_load_json(candidate_dir / "provider_contract_validation.json")
         provider_lifecycle_preview = _safe_load_json(candidate_dir / "provider_lifecycle_preview.json")
+        seedance_prompt_debug = _safe_load_json(candidate_dir / "seedance_prompt_debug.json")
+        try:
+            sp = candidate_dir / "seedance_prompt.txt"
+            if sp.exists():
+                with open(sp, "r", encoding="utf-8") as f:
+                    seedance_prompt_text = f.read()
+        except Exception:
+            seedance_prompt_text = ""
+        try:
+            sn = candidate_dir / "seedance_negative_prompt.txt"
+            if sn.exists():
+                with open(sn, "r", encoding="utf-8") as f:
+                    seedance_negative_prompt_text = f.read()
+        except Exception:
+            seedance_negative_prompt_text = ""
 
     contract_ready = bool(
         provider_contract_validation and provider_contract_validation.get("valid")
     )
+    prompt_compiler_ready = bool(seedance_prompt_text.strip())
     return {
         "success": True,
         "history_id": history_id,
         "future_provider": "seedance",
         "contract_ready": contract_ready,
+        "prompt_compiler_ready": prompt_compiler_ready,
+        "prompt_compiler_version": (
+            (seedance_prompt_debug or {}).get("compiler_version")
+            if seedance_prompt_debug
+            else None
+        ),
         "network_call_performed": False,
         "real_video_generated": False,
         "real_video_downloaded": False,
@@ -3306,13 +3410,20 @@ async def video_get_provider_contract(
         "seedance_payload_preview": seedance_payload_preview,
         "provider_contract_validation": provider_contract_validation,
         "provider_lifecycle_preview": provider_lifecycle_preview,
+        "seedance_prompt": seedance_prompt_text,
+        "seedance_negative_prompt": seedance_negative_prompt_text,
+        "seedance_prompt_debug": seedance_prompt_debug,
         "asset_paths": asset_paths,
         "readiness_summary": {
             "has_provider_request_preview": provider_request_preview is not None,
             "has_seedance_payload_preview": seedance_payload_preview is not None,
             "has_provider_contract_validation": provider_contract_validation is not None,
             "has_provider_lifecycle_preview": provider_lifecycle_preview is not None,
+            "has_seedance_prompt": prompt_compiler_ready,
+            "has_seedance_negative_prompt": bool(seedance_negative_prompt_text.strip()),
+            "has_seedance_prompt_debug": seedance_prompt_debug is not None,
             "contract_ready": contract_ready,
+            "prompt_compiler_ready": prompt_compiler_ready,
         },
     }
 

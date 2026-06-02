@@ -4,7 +4,7 @@
 
 本文档详细规划了从当前版本（V0）到端到端自动化（V4）的完整技术路线。每个 Phase 都有明确的技术目标、实现方案、技术栈和成功标准。
 
-## 当前里程碑（v0.5.5）
+## 当前里程碑（v0.5.6）
 
 - **Prompt Mode**：v0.4.10 已冻结，所有保护边界继续生效（详见
   [`prompt_mode_freeze_spec.md`](./prompt_mode_freeze_spec.md)）。
@@ -17,16 +17,28 @@
 - **Video Content Asset Pipeline（v0.5.4）**：LLM 驱动的 7 个内容资产、9 步
   进度面板、Download All 升级、`AI_VIDEO_LLM_*` 配置体系（详见
   [`v0.5.4_video_content_asset_pipeline.md`](./v0.5.4_video_content_asset_pipeline.md)）。
-- **Seedance Provider Contract Adapter（当前 v0.5.5）**：新增 dry-run 契约
+- **Seedance Provider Contract Adapter（v0.5.5）**：新增 dry-run 契约
   适配器 `SeedanceContractAdapter`、3 个新契约文件（`seedance_payload_preview.json`
   / `provider_contract_validation.json` / `provider_lifecycle_preview.json`）、
   4 个 dry-run API 端点、Provider Contract Summary 区块、stage 升级到
   `contract_ready` / progress=90（详见
   [`v0.5.5_seedance_provider_contract_adapter.md`](./v0.5.5_seedance_provider_contract_adapter.md)）。
+- **Seedance Prompt Compiler（当前 v0.5.6）**：新增离线
+  `SeedancePromptCompiler` 编译器（`compiler_version=
+  seedance_prompt_compiler_v0.5.6`）+ provider profile
+  (`config/provider_profiles/seedance.json`)；落 3 个新资产文件
+  `seedance_prompt.txt` / `seedance_negative_prompt.txt` /
+  `seedance_prompt_debug.json`；`seedance_payload_preview.json` 升级到
+  `seedance_payload_preview_v0.5.6`，`payload.prompt` 优先取自 compiled
+  prompt；Overview 新增 *Seedance Prompt Compiler: Ready / Not Available*
+  行（详见
+  [`v0.5.6_seedance_prompt_compiler.md`](./v0.5.6_seedance_prompt_compiler.md)）。
   **本版本仍然不接真实 Seedance、不发起任何真实网络请求、不生成 mp4、不下载视频文件。**
-- **下一阶段（v0.6.0）**：把 v0.5.5 dry-run 契约升级为真实 Seedance provider
-  实现，引入首次真实网络调用、真实 Job 轮询、真实 mp4 下载，以及 Video Review
-  独立评分协议。
+- **下一阶段（v0.6.0）**：把 v0.5.6 编译好的 `seedance_prompt.txt` +
+  `seedance_negative_prompt.txt` 直接喂给真实 Seedance provider 实现，
+  引入首次真实网络调用、真实 Job 轮询、真实 mp4 下载，以及 Video Review
+  独立评分协议。Mock provider 与 prompt compiler 保留作为离线测试与回归
+  基线。
 
 ---
 

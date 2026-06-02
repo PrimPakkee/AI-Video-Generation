@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 """
-Video Content Asset Pipeline - v0.5.5 (compatible with the v0.5.4 surface).
+Video Content Asset Pipeline - v0.5.6 (compatible with the v0.5.5 surface).
 
 Generates the structured content assets that the v0.6.0 Seedance integration
-will eventually consume, plus the v0.5.5 dry-run Seedance contract bundle.
-This module **does NOT call any real video API, does NOT call Seedance,
-does NOT generate real mp4, and does NOT download any real video file**.
-It only:
+will eventually consume, plus the v0.5.5 dry-run Seedance contract bundle
+and the v0.5.6 Seedance prompt compiler bundle. This module **does NOT
+call any real video API, does NOT call Seedance, does NOT generate real
+mp4, and does NOT download any real video file**. It only:
 
 1. Renders the Video Asset Prompt template with the user topic.
 2. Calls an OpenAI-compatible LLM (config from ``AI_VIDEO_LLM_*`` env vars).
 3. Parses the strict-JSON response (with markdown-fence + extract fallbacks).
-4. Writes 10 deterministic asset files to ``output_dir/video_assets/``:
+4. Writes 13 deterministic asset files to ``output_dir/video_assets/``:
    ``topic_analysis.json``, ``reasoning.md``, ``video_script.md``,
    ``storyboard.json``, ``provider_prompt.txt``,
    ``provider_request_preview.json``, ``seedance_payload_preview.json``,
    ``provider_contract_validation.json``, ``provider_lifecycle_preview.json``,
-   and the self-registering ``generation_manifest.json``.
+   ``seedance_prompt.txt``, ``seedance_negative_prompt.txt``,
+   ``seedance_prompt_debug.json``, and the self-registering
+   ``generation_manifest.json``.
 5. Returns a dict the FastAPI layer can splice into the response.
 
 Any failure (missing API key, network error, JSON parse failure, validation
@@ -40,8 +42,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.5.5"
-VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.4"
+VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.5.6"
+VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.5"
 DEFAULT_DURATION_SECONDS = 60
 DEFAULT_ASPECT_RATIO = "9:16"
 DEFAULT_STYLE = "clean whiteboard line-art educational short video"
@@ -64,6 +66,9 @@ ASSET_FILES = [
     "seedance_payload_preview.json",
     "provider_contract_validation.json",
     "provider_lifecycle_preview.json",
+    "seedance_prompt.txt",
+    "seedance_negative_prompt.txt",
+    "seedance_prompt_debug.json",
 ]
 
 REQUIRED_TOP_KEYS = (
@@ -748,9 +753,68 @@ def _save_assets(
     _safe_write(preview_path, json.dumps(provider_request_preview, ensure_ascii=False, indent=2))
     paths["provider_request_preview"] = str(preview_path)
 
+    # v0.5.6: Seedance prompt compiler — convert the structured assets into
+    # a Seedance-shaped prompt + negative prompt + debug payload. The
+    # compiler is offline only; no network call is made. The compiled
+    # prompt is then handed to the v0.5.5 contract adapter so the Seedance
+    # payload preview reflects the compiled prompt instead of the generic
+    # provider_prompt.
+    from .video_providers.seedance_prompt_compiler import (  # local import to avoid cycle
+        SeedancePromptCompiler,
+        COMPILER_VERSION as SEEDANCE_COMPILER_VERSION,
+        PROFILE_SCHEMA_VERSION as SEEDANCE_PROFILE_SCHEMA_VERSION,
+    )
+
+    compiler_warnings: List[str] = []
+    seedance_prompt_text = ""
+    seedance_negative_prompt = ""
+    seedance_prompt_debug: Dict[str, Any] = {}
+    compiler_ready = False
+    compiler_profile_version = SEEDANCE_PROFILE_SCHEMA_VERSION
+    try:
+        compiler = SeedancePromptCompiler()
+        compiled = compiler.compile_from_assets(
+            topic_analysis=normalized.get("topic_analysis"),
+            reasoning=normalized.get("reasoning"),
+            video_script=normalized.get("script"),
+            storyboard=normalized.get("storyboard"),
+            provider_request_preview=provider_request_preview,
+            topic=topic,
+            language=normalized.get("topic_analysis", {}).get("language"),
+        )
+        seedance_prompt_text = compiled.get("seedance_prompt") or ""
+        seedance_negative_prompt = compiled.get("negative_prompt") or ""
+        seedance_prompt_debug = compiled.get("seedance_prompt_debug") or {}
+        compiler_warnings = list(compiled.get("warnings") or [])
+        compiler_profile_version = compiled.get("profile_version") or SEEDANCE_PROFILE_SCHEMA_VERSION
+        compiler_ready = bool(seedance_prompt_text.strip())
+    except Exception as compiler_exc:
+        warnings.append(f"Seedance prompt compiler failed: {compiler_exc}")
+        compiler_ready = False
+
+    if compiler_warnings:
+        warnings.extend(compiler_warnings)
+
+    seedance_prompt_path = assets_dir / "seedance_prompt.txt"
+    _safe_write(seedance_prompt_path, seedance_prompt_text or "")
+    paths["seedance_prompt"] = str(seedance_prompt_path)
+
+    seedance_negative_prompt_path = assets_dir / "seedance_negative_prompt.txt"
+    _safe_write(seedance_negative_prompt_path, seedance_negative_prompt or "")
+    paths["seedance_negative_prompt"] = str(seedance_negative_prompt_path)
+
+    seedance_prompt_debug_path = assets_dir / "seedance_prompt_debug.json"
+    _safe_write(
+        seedance_prompt_debug_path,
+        json.dumps(seedance_prompt_debug or {}, ensure_ascii=False, indent=2),
+    )
+    paths["seedance_prompt_debug"] = str(seedance_prompt_debug_path)
+
     # v0.5.5: Seedance contract adapter — validate the request preview, build
     # a future-Seedance payload preview, and emit a canonical lifecycle
-    # preview. All three are dry-run only; no network call is made.
+    # preview. All three are dry-run only; no network call is made. v0.5.6
+    # passes the compiled Seedance prompt + negative prompt so the payload
+    # preview reflects the compiler output.
     from .video_providers.seedance_contract_adapter import (  # local import to avoid cycle
         SeedanceContractAdapter,
         PROVIDER_CONTRACT_SCHEMA_VERSION,
@@ -758,7 +822,21 @@ def _save_assets(
 
     adapter = SeedanceContractAdapter()
     contract_validation = adapter.validate_provider_request_preview(provider_request_preview)
-    seedance_payload = adapter.build_seedance_payload_preview(provider_request_preview)
+    seedance_payload = adapter.build_seedance_payload_preview(
+        provider_request_preview,
+        compiled_prompt=seedance_prompt_text or None,
+        compiled_negative_prompt=seedance_negative_prompt or None,
+        prompt_compiler_version=SEEDANCE_COMPILER_VERSION if compiler_ready else None,
+        prompt_source=(
+            "video_assets/seedance_prompt.txt" if compiler_ready else "video_assets/provider_prompt.txt"
+        ),
+        negative_prompt_source=(
+            "video_assets/seedance_negative_prompt.txt"
+            if compiler_ready
+            else "video_assets/provider_request_preview.json#negative_prompt"
+        ),
+        compiler_ready=compiler_ready,
+    )
     lifecycle_preview = adapter.build_lifecycle_preview(provider_request_preview, contract_validation)
 
     seedance_payload_path = assets_dir / "seedance_payload_preview.json"
@@ -790,6 +868,8 @@ def _save_assets(
         "schema_version": VIDEO_ASSETS_SCHEMA_VERSION,
         "legacy_schema_version": VIDEO_ASSETS_LEGACY_SCHEMA_VERSION,
         "provider_contract_schema_version": PROVIDER_CONTRACT_SCHEMA_VERSION,
+        "seedance_prompt_compiler_version": SEEDANCE_COMPILER_VERSION,
+        "seedance_prompt_profile_version": compiler_profile_version,
         "generated_at": _utc_now_iso(),
         "topic": topic,
         "history_id": history_id,
@@ -803,6 +883,15 @@ def _save_assets(
         "network_call_performed": False,
         "seedance_contract_ready": bool(contract_validation.get("valid")),
         "provider_contract_validation_valid": bool(contract_validation.get("valid")),
+        "seedance_prompt_ready": bool(compiler_ready),
+        "seedance_prompt_path": "video_assets/seedance_prompt.txt",
+        "seedance_negative_prompt_path": "video_assets/seedance_negative_prompt.txt",
+        "seedance_prompt_debug_path": "video_assets/seedance_prompt_debug.json",
+        "prompt_source_for_seedance_payload": (
+            "video_assets/seedance_prompt.txt"
+            if compiler_ready
+            else "video_assets/provider_prompt.txt"
+        ),
         "llm_used": bool(llm_used),
         "fallback_used": not bool(llm_used),
         "llm": {
@@ -835,6 +924,12 @@ def _save_assets(
         "seedance_payload_preview": seedance_payload,
         "provider_contract_validation": contract_validation,
         "provider_lifecycle_preview": lifecycle_preview,
+        "seedance_prompt": seedance_prompt_text,
+        "seedance_negative_prompt": seedance_negative_prompt,
+        "seedance_prompt_debug": seedance_prompt_debug,
+        "seedance_prompt_compiler_version": SEEDANCE_COMPILER_VERSION,
+        "seedance_prompt_profile_version": compiler_profile_version,
+        "seedance_prompt_ready": bool(compiler_ready),
     }
     return paths, manifest, contract_bundle
 
@@ -917,6 +1012,16 @@ def build_video_content_assets(
             "seedance_payload_preview": contract_bundle["seedance_payload_preview"],
             "provider_contract_validation": contract_bundle["provider_contract_validation"],
             "provider_lifecycle_preview": contract_bundle["provider_lifecycle_preview"],
+            "seedance_prompt": contract_bundle.get("seedance_prompt", ""),
+            "seedance_negative_prompt": contract_bundle.get("seedance_negative_prompt", ""),
+            "seedance_prompt_debug": contract_bundle.get("seedance_prompt_debug", {}),
+            "seedance_prompt_compiler_version": contract_bundle.get(
+                "seedance_prompt_compiler_version"
+            ),
+            "seedance_prompt_profile_version": contract_bundle.get(
+                "seedance_prompt_profile_version"
+            ),
+            "seedance_prompt_ready": bool(contract_bundle.get("seedance_prompt_ready")),
             "asset_manifest": manifest,
             "asset_paths": paths,
             "assets_dir": str(assets_dir),
@@ -957,6 +1062,16 @@ def build_video_content_assets(
                 "seedance_payload_preview": contract_bundle["seedance_payload_preview"],
                 "provider_contract_validation": contract_bundle["provider_contract_validation"],
                 "provider_lifecycle_preview": contract_bundle["provider_lifecycle_preview"],
+                "seedance_prompt": contract_bundle.get("seedance_prompt", ""),
+                "seedance_negative_prompt": contract_bundle.get("seedance_negative_prompt", ""),
+                "seedance_prompt_debug": contract_bundle.get("seedance_prompt_debug", {}),
+                "seedance_prompt_compiler_version": contract_bundle.get(
+                    "seedance_prompt_compiler_version"
+                ),
+                "seedance_prompt_profile_version": contract_bundle.get(
+                    "seedance_prompt_profile_version"
+                ),
+                "seedance_prompt_ready": bool(contract_bundle.get("seedance_prompt_ready")),
                 "asset_manifest": manifest,
                 "asset_paths": paths,
                 "assets_dir": str(assets_dir),
@@ -976,6 +1091,12 @@ def build_video_content_assets(
                 "seedance_payload_preview": None,
                 "provider_contract_validation": None,
                 "provider_lifecycle_preview": None,
+                "seedance_prompt": "",
+                "seedance_negative_prompt": "",
+                "seedance_prompt_debug": {},
+                "seedance_prompt_compiler_version": None,
+                "seedance_prompt_profile_version": None,
+                "seedance_prompt_ready": False,
                 "asset_manifest": None,
                 "asset_paths": {},
                 "assets_dir": str(assets_dir),
