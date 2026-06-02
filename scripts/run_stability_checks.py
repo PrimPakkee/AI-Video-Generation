@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prompt Mode + Video Mode Stability Checks Script (v0.5.3)
+Prompt Mode + Video Mode Stability Checks Script (v0.5.4)
 
 Runs read-only checks for code and database integrity. Does not call
 external APIs and does not modify any database.
@@ -9,7 +9,7 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.5.3"
+STABILITY_CHECKS_VERSION = "v0.5.4"
 
 import sys
 import os
@@ -44,6 +44,7 @@ class StabilityChecker:
             "web/video_providers/__init__.py",
             "web/video_providers/base.py",
             "web/video_providers/mock_provider.py",
+            "web/video_asset_pipeline.py",
             "scripts/llm_topic_enhancer.py",
             "scripts/audit_and_repair_prompt_history.py",
             "scripts/run_stability_checks.py",
@@ -1593,11 +1594,14 @@ class StabilityChecker:
                 print("  [FAIL] _create_mock_video_job_for_record helper missing")
                 all_passed = False
 
-            # 10. export_schema_version upgraded to v0.5.3
-            if '"export_schema_version": "video_v0.5.3"' in app_src:
-                print("  [OK] download_all uses export_schema_version video_v0.5.3")
+            # 10. export_schema_version must be at least v0.5.3 (v0.5.4 also OK)
+            if (
+                '"export_schema_version": "video_v0.5.3"' in app_src
+                or '"export_schema_version": "video_v0.5.4"' in app_src
+            ):
+                print("  [OK] download_all uses export_schema_version >= video_v0.5.3")
             else:
-                print("  [FAIL] export_schema_version not upgraded to video_v0.5.3")
+                print("  [FAIL] export_schema_version not upgraded to >= video_v0.5.3")
                 all_passed = False
             if '"export_schema_version": "video_v0.5.1"' in app_src:
                 print("  [FAIL] legacy export_schema_version video_v0.5.1 still present")
@@ -1776,6 +1780,476 @@ class StabilityChecker:
             print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} fix sanity checks failed")
             self.checks_failed += 1
 
+    def check_v054_fixes(self):
+        """v0.5.4-specific source-level checks (read-only).
+
+        Audits the Video Content Asset Pipeline added in v0.5.4. No service
+        start, no LLM call, no DB write.
+        """
+        print("\n" + "="*80)
+        print("v0.5.4 Fix Sanity Checks")
+        print("="*80)
+
+        all_passed = True
+
+        # 1. Pipeline module exists with the v0.5.4 entry points.
+        try:
+            with open("web/video_asset_pipeline.py", "r", encoding="utf-8") as f:
+                pipe_src = f.read()
+            for marker in (
+                "def build_video_content_assets(",
+                'VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.5.4"',
+                "def _call_llm(",
+                "def _validate_and_normalize(",
+                "def _save_assets(",
+                "topic_analysis.json",
+                "reasoning.md",
+                "video_script.md",
+                "storyboard.json",
+                "provider_prompt.txt",
+                "provider_request_preview.json",
+                "generation_manifest.json",
+                "AI_VIDEO_LLM_API_KEY",
+                "AI_VIDEO_LLM_MODEL",
+            ):
+                if marker in pipe_src:
+                    print(f"  [OK] video_asset_pipeline.py has {marker}")
+                else:
+                    print(f"  [FAIL] video_asset_pipeline.py missing {marker}")
+                    all_passed = False
+            # API key safety: must not log/print key contents.
+            if "self.api_key" in pipe_src or "print(api_key)" in pipe_src:
+                print("  [FAIL] video_asset_pipeline.py appears to log/print API key")
+                all_passed = False
+            else:
+                print("  [OK] video_asset_pipeline.py does not log/print API key")
+        except FileNotFoundError:
+            print("  [FAIL] web/video_asset_pipeline.py is missing")
+            all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect video_asset_pipeline.py: {e}")
+            all_passed = False
+
+        # 2. Template file exists with the v0.5.4 required keys.
+        try:
+            with open("templates/video_asset_prompt_template.md", "r", encoding="utf-8") as f:
+                tmpl_src = f.read()
+            for marker in (
+                "topic_analysis",
+                "reasoning",
+                "storyboard",
+                "provider_prompt",
+                "web_copy_placeholder",
+                "single narrator",
+                "monologue",
+                "no dialogue",
+                "no interview",
+                "no podcast",
+                "{{TOPIC}}",
+                "{{LANGUAGE}}",
+            ):
+                if marker in tmpl_src:
+                    print(f"  [OK] template has {marker}")
+                else:
+                    print(f"  [FAIL] template missing {marker}")
+                    all_passed = False
+        except FileNotFoundError:
+            print("  [FAIL] templates/video_asset_prompt_template.md is missing")
+            all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect template: {e}")
+            all_passed = False
+
+        # 3. web/app.py wires the pipeline into generate + regenerate +
+        #    Download All, and uses the v0.5.4 export_schema_version.
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src = f.read()
+            for marker in (
+                "from web.video_asset_pipeline import",
+                "build_video_content_assets",
+                "VIDEO_ASSETS_SCHEMA_VERSION",
+                '"export_schema_version": "video_v0.5.4"',
+                '"video_assets_schema_version"',
+                '"provider_status": "provider_not_configured"',
+                '"real_video_generated": False',
+                "Real video provider is not connected in v0.5.4",
+                "video_assets/",
+            ):
+                if marker in app_src:
+                    print(f"  [OK] app.py has {marker}")
+                else:
+                    print(f"  [FAIL] app.py missing {marker}")
+                    all_passed = False
+            # Both generate and regenerate must call the pipeline.
+            call_count = app_src.count("build_video_content_assets(")
+            if call_count >= 2:
+                print(f"  [OK] app.py calls build_video_content_assets >= 2 times ({call_count})")
+            else:
+                print(f"  [FAIL] app.py calls build_video_content_assets only {call_count} time(s)")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect web/app.py: {e}")
+            all_passed = False
+
+        # 4. Frontend main.js: 9-step list with v0.5.4 keys.
+        try:
+            with open("web/static/main.js", "r", encoding="utf-8") as f:
+                main_js = f.read()
+            for key in (
+                "'analyzing_topic'",
+                "'verifying_answer'",
+                "'writing_video_script'",
+                "'building_storyboard'",
+                "'creating_provider_prompt'",
+                "'preparing_provider_request'",
+                "'creating_mock_video_job'",
+                "'saving_assets'",
+                "'completed'",
+            ):
+                if key in main_js:
+                    print(f"  [OK] main.js VIDEO_GENERATION_STEPS has {key}")
+                else:
+                    print(f"  [FAIL] main.js VIDEO_GENERATION_STEPS missing {key}")
+                    all_passed = False
+            if "Real video provider is not connected in v0.5.4" in main_js:
+                print("  [OK] main.js uses v0.5.4 provider message")
+            else:
+                print("  [FAIL] main.js missing v0.5.4 provider message")
+                all_passed = False
+            if "is not connected in v0.5.3" in main_js:
+                print("  [FAIL] main.js still references 'is not connected in v0.5.3'")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect web/static/main.js: {e}")
+            all_passed = False
+
+        # 5. CHANGELOG has a v0.5.4 entry with protection clauses.
+        try:
+            with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+                changelog_src = f.read()
+            if "v0.5.4 - Video Content Asset Pipeline" in changelog_src:
+                print("  [OK] CHANGELOG.md has v0.5.4 entry")
+            else:
+                print("  [FAIL] CHANGELOG.md missing v0.5.4 entry")
+                all_passed = False
+            for protect in (
+                "不接 Seedance",
+                "不接",
+                "不生成",
+                "不打印",
+                "Prompt Mode",
+            ):
+                if protect not in changelog_src:
+                    print(f"  [FAIL] CHANGELOG.md missing protection clause: {protect}")
+                    all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect CHANGELOG.md: {e}")
+            all_passed = False
+
+        # 6. v0.5.4 doc exists.
+        if os.path.exists("docs/v0.5.4_video_content_asset_pipeline.md"):
+            print("  [OK] docs/v0.5.4_video_content_asset_pipeline.md present")
+        else:
+            print("  [FAIL] docs/v0.5.4_video_content_asset_pipeline.md missing")
+            all_passed = False
+
+        # 7. No real provider implementation files introduced.
+        forbidden = [
+            "web/video_providers/seedance_provider.py",
+            "web/video_providers/runway_provider.py",
+            "web/video_providers/pika_provider.py",
+            "web/video_providers/luma_provider.py",
+        ]
+        for path in forbidden:
+            if os.path.exists(path):
+                print(f"  [FAIL] forbidden real provider file present: {path}")
+                all_passed = False
+        print("  [OK] no real video provider implementation files in v0.5.4")
+
+        # 7b. v0.5.4 structural-fix audits.
+        # 7b.i: Pipeline must read AI_VIDEO_LLM_API_KEY as primary source
+        #       (and not surface "OPENAI_API_KEY configured" as a
+        #       conclusion). OPENAI_API_KEY may appear only as a fallback.
+        try:
+            with open("web/video_asset_pipeline.py", "r", encoding="utf-8") as f:
+                pipe_src2 = f.read()
+            if "AI_VIDEO_LLM_API_KEY" in pipe_src2:
+                print("  [OK] pipeline uses AI_VIDEO_LLM_API_KEY as primary config")
+            else:
+                print("  [FAIL] pipeline does not reference AI_VIDEO_LLM_API_KEY")
+                all_passed = False
+            if "AI_VIDEO_LLM_BASE_URL" in pipe_src2:
+                print("  [OK] pipeline reads AI_VIDEO_LLM_BASE_URL")
+            else:
+                print("  [FAIL] pipeline does not read AI_VIDEO_LLM_BASE_URL")
+                all_passed = False
+            if "_load_dotenv_for_cli" in pipe_src2:
+                print("  [OK] pipeline CLI loads .env on standalone run")
+            else:
+                print("  [FAIL] pipeline CLI does not load .env on standalone run")
+                all_passed = False
+            # The misleading "OPENAI_API_KEY configured" CLI banner from the
+            # earlier draft must be gone.
+            if "`OPENAI_API_KEY` configured" in pipe_src2:
+                print("  [FAIL] pipeline still prints 'OPENAI_API_KEY configured' banner")
+                all_passed = False
+            else:
+                print("  [OK] pipeline no longer prints misleading OPENAI_API_KEY banner")
+        except Exception as e:
+            print(f"  [FAIL] Could not re-inspect video_asset_pipeline.py: {e}")
+            all_passed = False
+
+        # 7b.ii: app.py must NOT call build_video_content_assets with
+        #        history_id=None in the production paths. Both call sites
+        #        should pass a real record.id.
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src2 = f.read()
+            if "history_id=record.id" in app_src2 and "history_id=new_record.id" in app_src2:
+                print("  [OK] app.py passes real history_id into the asset pipeline")
+            else:
+                print("  [FAIL] app.py does not pass real history_id into the asset pipeline")
+                all_passed = False
+            # generate path must call create_history_record before
+            # build_video_content_assets so the manifest gets a real id.
+            cre_idx = app_src2.find("create_history_record(")
+            pipe_idx = app_src2.find("build_video_content_assets(")
+            if cre_idx != -1 and pipe_idx != -1 and cre_idx < pipe_idx:
+                print("  [OK] generate creates VideoHistory before calling pipeline")
+            else:
+                print("  [FAIL] generate must create VideoHistory record before calling pipeline")
+                all_passed = False
+            if "update_asset_pipeline_result" in app_src2:
+                print("  [OK] app.py writes pipeline result back to record")
+            else:
+                print("  [FAIL] app.py does not write pipeline result back to record")
+                all_passed = False
+            # metadata_json + preview_text + overview_cn write-back
+            for marker in ("preview_text=pipeline_preview_text", "overview_cn=pipeline_overview_cn", "metadata_json=asset_metadata_json"):
+                if marker in app_src2:
+                    print(f"  [OK] app.py write-back has {marker}")
+                else:
+                    print(f"  [FAIL] app.py write-back missing {marker}")
+                    all_passed = False
+            # download_all metadata must include the asset list.
+            if '"asset_list"' in app_src2:
+                print("  [OK] download_all metadata includes asset_list")
+            else:
+                print("  [FAIL] download_all metadata missing asset_list")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not re-inspect web/app.py: {e}")
+            all_passed = False
+
+        # 7b.iii: Repository must expose update_asset_pipeline_result.
+        try:
+            with open("web/db/video_repository.py", "r", encoding="utf-8") as f:
+                repo_src = f.read()
+            if "def update_asset_pipeline_result(" in repo_src:
+                print("  [OK] VideoHistoryRepository.update_asset_pipeline_result exists")
+            else:
+                print("  [FAIL] VideoHistoryRepository.update_asset_pipeline_result missing")
+                all_passed = False
+        except Exception as e:
+            print(f"  [FAIL] Could not inspect web/db/video_repository.py: {e}")
+            all_passed = False
+
+        # 7b.iv: docs / README must say the report uses AI_VIDEO_LLM_API_KEY
+        #        configured rather than OPENAI_API_KEY configured. (Soft
+        #        check — only fails if the doc is present and contradicts.)
+        try:
+            doc_path = "docs/v0.5.4_video_content_asset_pipeline.md"
+            if os.path.exists(doc_path):
+                with open(doc_path, "r", encoding="utf-8") as f:
+                    doc_src = f.read()
+                if "AI_VIDEO_LLM_API_KEY" in doc_src:
+                    print("  [OK] v0.5.4 doc references AI_VIDEO_LLM_API_KEY")
+                else:
+                    print("  [FAIL] v0.5.4 doc does not reference AI_VIDEO_LLM_API_KEY")
+                    all_passed = False
+        except Exception as e:
+            print(f"  [WARN] Could not inspect v0.5.4 doc: {e}")
+
+        # 8. No video_review table introduced anywhere in v0.5.4 surface.
+        review_table_clean = True
+        for src_path in ("web/db/video_models.py", "web/video_asset_pipeline.py", "web/app.py"):
+            if not os.path.exists(src_path):
+                continue
+            try:
+                with open(src_path, "r", encoding="utf-8") as f:
+                    src = f.read()
+            except Exception:
+                continue
+            if "video_reviews" in src or '"video_review"' in src or "'video_review'" in src:
+                print(f"  [FAIL] {src_path} introduces video_review table (forbidden in v0.5.4)")
+                all_passed = False
+                review_table_clean = False
+        if review_table_clean:
+            print("  [OK] no video_review table introduced in v0.5.4 surface")
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} fix sanity checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} fix sanity checks failed")
+            self.checks_failed += 1
+
+    def check_git_status_hygiene(self):
+        """Read-only audit of ``git status --porcelain``.
+
+        v0.5.4 second polish: catch two failure modes that have happened
+        before during pre-commit reviews:
+
+        1. Old ``docs/v0.4.*`` Chinese-named files showing up as deleted
+           (often from an encoding-sensitive zip round-trip).
+        2. Garbled ``docs/v0.4.*`` files showing up as untracked (the
+           encoding-broken counterparts of the deletions above).
+
+        Also FAILs on accidental commits-in-waiting for ``.env``,
+        ``data/*.db``, ``outputs/``, ``__MACOSX``, ``.DS_Store``.
+
+        This check NEVER modifies any file — it only reads
+        ``git status --porcelain`` via subprocess.
+        """
+        import subprocess
+
+        print("\n" + "="*80)
+        print("Git Status Hygiene (read-only)")
+        print("="*80)
+
+        try:
+            res = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except FileNotFoundError:
+            print("  [WARN] git not available; skipping git status audit")
+            self.warnings += 1
+            return
+        except Exception as e:
+            print(f"  [WARN] git status failed: {e}")
+            self.warnings += 1
+            return
+
+        if res.returncode != 0:
+            print(f"  [WARN] git status returned {res.returncode}; skipping")
+            self.warnings += 1
+            return
+
+        lines = [ln for ln in res.stdout.splitlines() if ln.strip()]
+
+        all_passed = True
+        deleted_old_docs: list = []
+        garbled_docs: list = []
+        forbidden_paths: list = []
+
+        # Allow-list of v0.5.4 surface untracked files that are EXPECTED.
+        allowed_untracked = {
+            "docs/v0.5.4_video_content_asset_pipeline.md",
+            "templates/video_asset_prompt_template.md",
+            "web/video_asset_pipeline.py",
+        }
+
+        def _looks_garbled(name: str) -> bool:
+            """Heuristic for filenames that have been UTF-8 → Latin-1 mangled.
+
+            Triggers when:
+            - The filename contains escaped octal byte sequences
+              (``"\\xxx"`` style emitted by core.quotepath=true).
+            - The filename contains stray Latin-1 high bytes that are not
+              valid CJK (\\u00c0-\\u00ff range mixed in a path that looks
+              like UTF-8 mojibake — e.g. è¯, ç¬¬, ä¸).
+            """
+            if "\\3" in name or "\\2" in name:
+                return True
+            # Mojibake markers: a Latin-1 capital letter accented char
+            # immediately followed by two more accented bytes is a strong
+            # signal for double-decoded UTF-8 (CJK -> latin-1 -> latin-1).
+            mojibake_markers = ("è¯", "ç¬", "ä¸", "Ã¥", "Ã©", "â\x80")
+            return any(m in name for m in mojibake_markers)
+
+        for ln in lines:
+            # Format: "XY path" with X = index, Y = work-tree status; for
+            # untracked it's "?? path"; for deleted-from-work-tree it's
+            # " D path".
+            if len(ln) < 4:
+                continue
+            code = ln[:2]
+            path = ln[3:].strip()
+            # Quoted paths from core.quotepath=true: strip surrounding
+            # quotes for matching but keep raw form for diagnostics.
+            raw = path
+            if path.startswith('"') and path.endswith('"'):
+                path = path[1:-1]
+
+            # 1) Deleted old docs.
+            if (code == " D" or code == "D ") and path.startswith("docs/v0.4."):
+                deleted_old_docs.append(raw)
+                all_passed = False
+
+            # 2) Untracked garbled docs in the v0.4.x range.
+            if code == "??" and (path.startswith("docs/v0.4.") or path.startswith("docs/\"v0.4")) and _looks_garbled(raw):
+                garbled_docs.append(raw)
+                all_passed = False
+
+            # 3) Forbidden paths in any tracked or untracked state.
+            forbidden_prefixes = (
+                ".env",
+                "data/prompt_history.db",
+                "data/video_history.db",
+                "outputs/",
+                "__MACOSX",
+                ".DS_Store",
+            )
+            if any(path == fp or path.startswith(fp + "/") or path.endswith("/" + fp) for fp in forbidden_prefixes):
+                forbidden_paths.append(raw)
+                all_passed = False
+
+            # 4) data/*.db catch-all.
+            if path.startswith("data/") and path.endswith(".db"):
+                forbidden_paths.append(raw)
+                all_passed = False
+
+        if deleted_old_docs:
+            print("  [FAIL] old docs/v0.4.* files appear deleted in git status:")
+            for p in deleted_old_docs:
+                print(f"         {p}")
+        else:
+            print("  [OK] no old docs/v0.4.* files deleted")
+
+        if garbled_docs:
+            print("  [FAIL] garbled docs/v0.4.* files appear untracked:")
+            for p in garbled_docs:
+                print(f"         {p}")
+        else:
+            print("  [OK] no garbled docs/v0.4.* untracked files")
+
+        if forbidden_paths:
+            print("  [FAIL] forbidden paths present in git status:")
+            for p in sorted(set(forbidden_paths)):
+                print(f"         {p}")
+        else:
+            print("  [OK] no .env / data/*.db / outputs/ / __MACOSX / .DS_Store in git status")
+
+        # Surface the v0.5.4 expected untracked files — informational only.
+        for ln in lines:
+            if ln.startswith("?? "):
+                p = ln[3:].strip()
+                if p.startswith('"') and p.endswith('"'):
+                    p = p[1:-1]
+                if p in allowed_untracked:
+                    print(f"  [INFO] expected v0.5.4 untracked: {p}")
+
+        if all_passed:
+            print("\n[OK] git status hygiene check passed")
+            self.checks_passed += 1
+        else:
+            print("\n[FAIL] git status hygiene check failed")
+            self.checks_failed += 1
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -1868,6 +2342,8 @@ def main():
         checker.check_v0512_fixes()
         checker.check_v0512_ui_hotfix()
         checker.check_v053_fixes()
+        checker.check_v054_fixes()
+        checker.check_git_status_hygiene()
         checker.check_database_integrity()
     except Exception as e:
         print(f"\n[ERROR] Stability check failed: {e}")

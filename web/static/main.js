@@ -1708,11 +1708,12 @@ function switchPromptViewMode(mode) {
  */
 const VIDEO_GENERATION_STEPS = [
     { key: 'analyzing_topic', label: 'Analyzing topic' },
-    { key: 'generating_prompt', label: 'Generating prompt' },
-    { key: 'writing_script', label: 'Writing script' },
+    { key: 'verifying_answer', label: 'Verifying answer' },
+    { key: 'writing_video_script', label: 'Writing video script' },
+    { key: 'building_storyboard', label: 'Building storyboard' },
+    { key: 'creating_provider_prompt', label: 'Creating provider prompt' },
     { key: 'preparing_provider_request', label: 'Preparing provider request' },
-    { key: 'submitting_provider_job', label: 'Submitting mock provider job' },
-    { key: 'generating_video', label: 'Waiting for video render' },
+    { key: 'creating_mock_video_job', label: 'Creating mock video job' },
     { key: 'saving_assets', label: 'Saving assets' },
     { key: 'completed', label: 'Done' },
 ];
@@ -1789,7 +1790,7 @@ function completeVideoGenerationProgress(videoJob) {
     const { message } = _videoProgressEls();
     if (message) {
         if (videoJob && videoJob.status === 'provider_not_configured') {
-            message.textContent = 'Mock provider created the job shell. Real video provider is not connected in v0.5.3.';
+            message.textContent = 'Real video provider is not connected in v0.5.4. Content assets were generated successfully, but no real video API was called.';
         } else if (videoJob && videoJob.error_message) {
             message.textContent = videoJob.error_message;
         } else {
@@ -1861,7 +1862,7 @@ function renderVideoJobStatus(job) {
         if (job.message) {
             msgEl.textContent = job.message;
         } else if (job.status === 'provider_not_configured') {
-            msgEl.textContent = 'Real video provider is not connected in v0.5.3. The Mock provider produced this job shell only.';
+            msgEl.textContent = 'Real video provider is not connected in v0.5.4. Content assets were generated successfully, but no real video API was called.';
         } else if (job.error_message) {
             msgEl.textContent = job.error_message;
         } else {
@@ -1934,16 +1935,25 @@ async function triggerGenerate() {
             }
             renderVideoJobStatus(currentVideoJob);
 
-            // Update prompt view state
+            // Update prompt view state. In Video Mode v0.5.4 the backend sets
+            // `prompt` to the provider_prompt produced by the Video Content
+            // Asset Pipeline; in Prompt Mode it remains the NotebookLM prompt.
             currentRawText = data.prompt || '';
 
-            // Generate preview
-            try {
-                const sections = parsePromptSections(currentRawText);
-                currentPreviewText = generatePreviewHTML(sections);
-            } catch (error) {
-                console.error('Failed to generate preview:', error);
-                currentPreviewText = '<div class="preview-error">Preview generation failed. See Raw Text for full content.</div>';
+            // Generate preview. v0.5.4: in Video Mode prefer the
+            // pipeline-rendered preview_text (script + storyboard) directly,
+            // since the provider_prompt no longer follows NotebookLM section
+            // headings that parsePromptSections expects.
+            if (currentAppMode === 'video' && data.preview_text) {
+                currentPreviewText = `<div class="preview-content">${escapeHtml(data.preview_text).replace(/\n/g, '<br>')}</div>`;
+            } else {
+                try {
+                    const sections = parsePromptSections(currentRawText);
+                    currentPreviewText = generatePreviewHTML(sections);
+                } catch (error) {
+                    console.error('Failed to generate preview:', error);
+                    currentPreviewText = '<div class="preview-error">Preview generation failed. See Raw Text for full content.</div>';
+                }
             }
 
             // Get or generate overview

@@ -14,8 +14,8 @@ from .base import VideoProvider
 
 
 _NOT_CONNECTED_MESSAGE = (
-    "Mock provider created the job shell. Real video provider is not "
-    "connected in v0.5.3."
+    "Real video provider is not connected in v0.5.4. Content assets were "
+    "generated successfully, but no real video API was called."
 )
 
 

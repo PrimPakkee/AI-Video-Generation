@@ -46,6 +46,14 @@ from web.db import (
 )
 from web.video_providers import MockVideoProvider
 
+# v0.5.4: Video Content Asset Pipeline. Generates structured assets that a
+# future real video provider integration will consume. Never calls a real
+# video provider, never produces real mp4.
+from web.video_asset_pipeline import (
+    build_video_content_assets,
+    VIDEO_ASSETS_SCHEMA_VERSION,
+)
+
 app = FastAPI(title="AI Video Prompt Generator")
 
 # Initialize database on startup
@@ -2104,6 +2112,34 @@ class VideoRegenerateRequest(BaseModel):
     feedback: str = Field(..., min_length=1, max_length=2000)
 
 
+def _build_video_assets_metadata_json(pipeline_result: Dict[str, Any]) -> str:
+    """Serialise the v0.5.4 asset pipeline result into a compact JSON string
+    suitable for ``VideoHistory.metadata_json``. Stores schema version, asset
+    manifest, asset paths, warnings, llm_used / fallback_used flags, and
+    provider status — never the API key, never any secret.
+    """
+    manifest = pipeline_result.get('asset_manifest') or {}
+    blob = {
+        'video_assets_schema_version': pipeline_result.get('schema_version', VIDEO_ASSETS_SCHEMA_VERSION),
+        'asset_manifest': manifest,
+        'asset_paths': pipeline_result.get('asset_paths') or {},
+        'warnings': pipeline_result.get('warnings', []),
+        'llm_used': bool(pipeline_result.get('llm_used', False)),
+        'fallback_used': not bool(pipeline_result.get('llm_used', False)),
+        'provider_status': 'provider_not_configured',
+        'real_video_generated': False,
+    }
+    try:
+        return json.dumps(blob, ensure_ascii=False)
+    except Exception:
+        return json.dumps({
+            'video_assets_schema_version': VIDEO_ASSETS_SCHEMA_VERSION,
+            'provider_status': 'provider_not_configured',
+            'real_video_generated': False,
+            'serialisation_error': True,
+        }, ensure_ascii=False)
+
+
 def _create_mock_video_job_for_record(
     db: Session,
     record: VideoHistory,
@@ -2268,6 +2304,10 @@ async def video_generate(
         mode = 'video'
 
         try:
+            # v0.5.4 structural fix: create the VideoHistory record FIRST so
+            # the asset pipeline can stamp the real history_id into
+            # generation_manifest.json. Initial values use the script-stage
+            # outputs (overwritten with the pipeline result a few lines below).
             record = VideoHistoryRepository.create_history_record(
                 db=db,
                 title=title,
@@ -2280,6 +2320,29 @@ async def video_generate(
                 overview_cn=overview_cn,
                 web_copy_text=None,
             )
+
+            # v0.5.4: build the Video Content Asset bundle for the record we
+            # just created. The pipeline never raises; real video providers
+            # are NOT contacted.
+            pipeline_result = build_video_content_assets(
+                topic=title,
+                output_dir=output_dir,
+                history_id=record.id,
+            )
+            provider_prompt_text = pipeline_result.get('provider_prompt') or prompt_content
+            pipeline_overview_cn = pipeline_result.get('overview_cn') or overview_cn or ''
+            pipeline_preview_text = pipeline_result.get('preview_text') or ''
+            asset_metadata_json = _build_video_assets_metadata_json(pipeline_result)
+
+            record = VideoHistoryRepository.update_asset_pipeline_result(
+                db=db,
+                history_id=record.id,
+                prompt_text=provider_prompt_text,
+                preview_text=pipeline_preview_text,
+                overview_cn=pipeline_overview_cn,
+                metadata_json=asset_metadata_json,
+            ) or record
+
             # v0.5.3: auto-create a Mock VideoJob so the frontend can render a
             # provider_not_configured status panel. No real provider invoked.
             video_job_dict = _create_mock_video_job_for_record(db, record, title)
@@ -2291,11 +2354,11 @@ async def video_generate(
                 'slug': slug,
                 'topic_group_id': record.topic_group_id,
                 'version_number': record.version_number,
-                'prompt': prompt_content,
-                'raw_text': prompt_content,
-                'prompt_text': prompt_content,
+                'prompt': record.prompt_text,
+                'raw_text': record.prompt_text,
+                'prompt_text': record.prompt_text,
                 'preview_text': record.preview_text,
-                'overview_cn': overview_cn,
+                'overview_cn': record.overview_cn,
                 'change_summary_cn': record.change_summary_cn,
                 'web_copy_text': record.web_copy_text,
                 'output_dir': str(output_dir),
@@ -2311,6 +2374,19 @@ async def video_generate(
                 'updated_at': record.updated_at.isoformat() if record.updated_at else None,
                 'item': record.to_dict(include_prompt=True),
                 'video_job': video_job_dict,
+                # v0.5.4 — Video Content Asset bundle
+                'video_assets': pipeline_result.get('video_assets'),
+                'provider_prompt': pipeline_result.get('provider_prompt'),
+                'provider_request_preview': pipeline_result.get('provider_request_preview'),
+                'asset_manifest': pipeline_result.get('asset_manifest'),
+                'asset_paths': pipeline_result.get('asset_paths'),
+                'video_assets_schema_version': pipeline_result.get('schema_version'),
+                'video_assets_warnings': pipeline_result.get('warnings', []),
+                'llm_used': pipeline_result.get('llm_used', False),
+                'message': (
+                    'Real video provider is not connected in v0.5.4. Content assets '
+                    'were generated successfully, but no real video API was called.'
+                ),
             })
         except Exception as e:
             print(f"[Video Mode] Warning: failed to save: {e}")
@@ -2553,6 +2629,10 @@ async def video_regenerate(
                 print(f"[Video Mode] regenerate: failed to read topic.json: {e}")
 
         model = os.getenv('AI_VIDEO_LLM_MODEL', 'gpt-5-chat')
+
+        # v0.5.4 structural fix: create the new VideoHistory version FIRST
+        # using the script-stage outputs, then call the asset pipeline with
+        # the real new history_id, then write the pipeline result back.
         new_record = VideoHistoryRepository.create_regenerated_version(
             db=db,
             from_history_id=history_id,
@@ -2569,6 +2649,27 @@ async def video_regenerate(
                 status_code=500,
                 content={"success": False, "error": "Failed to create regenerated version"},
             )
+
+        # v0.5.4: rebuild the Video Content Asset bundle for the new version.
+        # Always returns a result dict; never raises.
+        pipeline_result = build_video_content_assets(
+            topic=new_record.title,
+            output_dir=output_dir,
+            history_id=new_record.id,
+        )
+        provider_prompt_text = pipeline_result.get('provider_prompt') or new_prompt
+        pipeline_overview_cn = pipeline_result.get('overview_cn') or new_overview_cn or ''
+        pipeline_preview_text = pipeline_result.get('preview_text') or ''
+        asset_metadata_json = _build_video_assets_metadata_json(pipeline_result)
+
+        new_record = VideoHistoryRepository.update_asset_pipeline_result(
+            db=db,
+            history_id=new_record.id,
+            prompt_text=provider_prompt_text,
+            preview_text=pipeline_preview_text,
+            overview_cn=pipeline_overview_cn,
+            metadata_json=asset_metadata_json,
+        ) or new_record
 
         # v0.5.3: auto-create a Mock VideoJob for the new version so the UI
         # can show a provider_not_configured status panel after regenerate.
@@ -2601,6 +2702,19 @@ async def video_regenerate(
             "updated_at": new_record.updated_at.isoformat() if new_record.updated_at else None,
             "item": new_record.to_dict(include_prompt=True),
             "video_job": video_job_dict,
+            # v0.5.4 — Video Content Asset bundle
+            "video_assets": pipeline_result.get('video_assets'),
+            "provider_prompt": pipeline_result.get('provider_prompt'),
+            "provider_request_preview": pipeline_result.get('provider_request_preview'),
+            "asset_manifest": pipeline_result.get('asset_manifest'),
+            "asset_paths": pipeline_result.get('asset_paths'),
+            "video_assets_schema_version": pipeline_result.get('schema_version'),
+            "video_assets_warnings": pipeline_result.get('warnings', []),
+            "llm_used": pipeline_result.get('llm_used', False),
+            "message": (
+                'Real video provider is not connected in v0.5.4. Content assets '
+                'were generated successfully, but no real video API was called.'
+            ),
         })
 
     except subprocess.TimeoutExpired:
@@ -2791,6 +2905,54 @@ async def video_download_all(
     change_summary = record.change_summary_cn or ""
     web_copy_text = record.web_copy_text or ""
 
+    # v0.5.4: try to discover the on-disk Video Content Asset bundle. The
+    # bundle is read-only here — Download All never modifies asset files.
+    video_assets_dir: Optional[Path] = None
+    has_video_assets = False
+    asset_manifest: Dict[str, Any] = {}
+    try:
+        if record.output_dir:
+            candidate = Path(record.output_dir) / "video_assets"
+            if candidate.exists() and candidate.is_dir():
+                video_assets_dir = candidate
+                has_video_assets = True
+                manifest_path = candidate / "generation_manifest.json"
+                if manifest_path.exists():
+                    try:
+                        with open(manifest_path, 'r', encoding='utf-8') as mf:
+                            asset_manifest = json.load(mf) or {}
+                    except Exception as e:
+                        print(f"[Video Mode] download_all: failed to read manifest: {e}")
+    except Exception as e:
+        print(f"[Video Mode] download_all: failed to inspect video_assets dir: {e}")
+
+    # v0.5.4: if the DB preview_text is empty but the asset bundle has a
+    # script + storyboard, build a fallback preview from disk so preview.txt
+    # in the zip is never blank when assets exist.
+    if not preview_text.strip() and video_assets_dir is not None:
+        try:
+            script_md_path = video_assets_dir / "video_script.md"
+            storyboard_path = video_assets_dir / "storyboard.json"
+            parts: List[str] = []
+            if script_md_path.exists():
+                with open(script_md_path, 'r', encoding='utf-8') as sf:
+                    parts.append(sf.read().rstrip())
+            if storyboard_path.exists():
+                with open(storyboard_path, 'r', encoding='utf-8') as sf:
+                    sb = json.load(sf) or {}
+                lines = ["# Storyboard", ""]
+                for sc in sb.get("scenes", []) or []:
+                    lines.append(
+                        f"- Scene {sc.get('scene_id', '?')} "
+                        f"({sc.get('time_range', '')}): "
+                        f"{sc.get('visual', '')} | OST: {sc.get('on_screen_text', '')}"
+                    )
+                parts.append("\n".join(lines))
+            if parts:
+                preview_text = "\n\n".join(parts).rstrip() + "\n"
+        except Exception as e:
+            print(f"[Video Mode] download_all: failed to build fallback preview: {e}")
+
     overview_full_parts: List[str] = []
     if overview_text.strip():
         overview_full_parts.append(overview_text.rstrip())
@@ -2804,6 +2966,24 @@ async def video_download_all(
             "Web Copy is not generated yet. This tab will later contain "
             "YouTube/TikTok titles, descriptions, captions, and posting copy."
         )
+
+    # Asset list: prefer the manifest's "assets" array (matches what was
+    # actually written), else fall back to a directory scan.
+    asset_list: List[Dict[str, Any]] = []
+    if isinstance(asset_manifest.get("assets"), list):
+        asset_list = [
+            {"key": entry.get("key"), "relative_path": entry.get("relative_path")}
+            for entry in asset_manifest["assets"]
+            if isinstance(entry, dict)
+        ]
+    elif video_assets_dir is not None:
+        for asset_path in sorted(video_assets_dir.rglob("*")):
+            if asset_path.is_file():
+                try:
+                    rel = asset_path.relative_to(video_assets_dir.parent)
+                    asset_list.append({"key": asset_path.stem, "relative_path": rel.as_posix()})
+                except ValueError:
+                    continue
 
     metadata = {
         "id": record.id,
@@ -2825,7 +3005,16 @@ async def video_download_all(
         "regenerate_feedback": record.regenerate_feedback,
         "video_status": record.video_status,
         "video_duration_seconds": record.video_duration_seconds,
-        "export_schema_version": "video_v0.5.3",
+        "export_schema_version": "video_v0.5.4",
+        # v0.5.4 additions
+        "video_assets_schema_version": VIDEO_ASSETS_SCHEMA_VERSION,
+        "has_video_assets": has_video_assets,
+        "provider_status": "provider_not_configured",
+        "real_video_generated": False,
+        "llm_used": bool(asset_manifest.get("llm_used", False)),
+        "fallback_used": bool(asset_manifest.get("fallback_used", not asset_manifest.get("llm_used", False))),
+        "asset_history_id": asset_manifest.get("history_id"),
+        "asset_list": asset_list,
     }
 
     buf = io.BytesIO()
@@ -2835,6 +3024,23 @@ async def video_download_all(
         zf.writestr("overview.txt", overview_bundle)
         zf.writestr("web_copy.txt", web_copy_text)
         zf.writestr("metadata.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+        # v0.5.4: include the Video Content Asset bundle (read-only). The
+        # bundle never includes mp4/mov/video URL/token; the pipeline only
+        # writes structured text files.
+        if video_assets_dir is not None:
+            for asset_path in sorted(video_assets_dir.rglob("*")):
+                if not asset_path.is_file():
+                    continue
+                try:
+                    rel = asset_path.relative_to(video_assets_dir)
+                except ValueError:
+                    continue
+                arcname = f"video_assets/{rel.as_posix()}"
+                try:
+                    with open(asset_path, 'rb') as fp:
+                        zf.writestr(arcname, fp.read())
+                except Exception as e:
+                    print(f"[Video Mode] download_all: skipped asset {asset_path}: {e}")
     buf.seek(0)
 
     safe_slug = record.slug or f"video_{record.id}"
@@ -2951,7 +3157,7 @@ async def video_refresh_job(
             status_code=501,
             content={
                 "success": False,
-                "error": f"Provider '{job.provider}' is not connected in v0.5.3",
+                "error": f"Provider '{job.provider}' is not connected in v0.5.4",
             },
         )
 

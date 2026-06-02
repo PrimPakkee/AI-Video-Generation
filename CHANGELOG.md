@@ -2,6 +2,145 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.5.4 - Video Content Asset Pipeline
+
+> 本版本在 v0.5.3「Video Job / Provider / Asset 基础层」之上新增 **Video
+> Content Asset Pipeline**，把 Video Mode 的「生成」从「写一份 NotebookLM 脚本
+> + Mock VideoJob」升级为「先调用 LLM 生成结构化内容资产 → 落 7 个产物文件 →
+> 写历史 + Mock VideoJob → 把资产塞回响应」。**本版本仍然不接 Seedance、不接
+> 任何真实视频生成 API、不生成真实 mp4、不下载视频文件**。Video Mode Raw Text
+> 在 v0.5.4 中改为承载未来给 Seedance 用的 `provider_prompt`，而不是
+> NotebookLM 脚本（NotebookLM 主模板归 Prompt Mode 独占，未被复制或修改）。
+
+### 新增
+- 新增 `web/video_asset_pipeline.py` 与 `build_video_content_assets()`：
+  - 渲染 `templates/video_asset_prompt_template.md` 模板（v0.5.4 新增）。
+  - 通过 `AI_VIDEO_LLM_*` 环境变量复用 OpenAI-compatible 客户端
+    (`AI_VIDEO_LLM_PROVIDER` / `AI_VIDEO_LLM_BASE_URL` /
+    `AI_VIDEO_LLM_MODEL` / `AI_VIDEO_LLM_API_KEY` /
+    `AI_VIDEO_LLM_TEMPERATURE` / `AI_VIDEO_LLM_MAX_TOKENS` /
+    `AI_VIDEO_LLM_TIMEOUT` / `AI_VIDEO_LLM_RESPONSE_FORMAT`)，
+    并实现 temperature/json_mode 不支持时的降级重试。
+  - 严格 JSON 解析（直接 / 去 markdown fence / 抽取最外层 `{...}` 三段式
+    fallback），失败统一走确定性 fallback，不抛异常。
+  - 落 7 个产物到 `outputs/<slug>/video_assets/`：
+    `topic_analysis.json` / `reasoning.md` / `video_script.md` /
+    `storyboard.json` / `provider_prompt.txt` /
+    `provider_request_preview.json` / `generation_manifest.json`。
+    LLM 原始输出落 `llm_raw_output.txt`。
+  - **不打印 API key**，只输出 `AI_VIDEO_LLM_API_KEY configured: true/false`、
+    `AI_VIDEO_LLM_BASE_URL configured: true/false`、`current model: ...`、
+    `LLM path used: real LLM / fallback`；不写 API key 进任何文件，不硬编码
+    API key。`OPENAI_API_KEY` 仅作为 legacy fallback，不再作为主路径判断。
+- 新增 `templates/video_asset_prompt_template.md`：v0.5.4 的 Video Asset
+  Prompt 模板，强制输出严格 JSON，包含 `topic_analysis` / `reasoning` /
+  `script` / `storyboard` / `provider_prompt` / `web_copy_placeholder`
+  六个顶层 key；硬约束：单个旁白 / monologue / 不允许 dialogue /
+  interview / podcast / two-host / multiple speakers / 无相关装饰 /
+  不允许错答 / 视觉与推理一致 / 大字号可读屏幕文本；语言规则：中文题目
+  → 中文旁白 + 英文 `provider_prompt`。
+- `/api/video/generate` 与 `/api/video/history/{id}/regenerate`：
+  在 subprocess 写完 `outputs/<slug>/notebooklm_clean_source.txt` 之后
+  立即调用 `build_video_content_assets()`，把 `provider_prompt` 写入
+  `VideoHistory.prompt_text`、把 design summary 写入 `overview_cn`，
+  并在响应中新增 `video_assets` / `provider_prompt` /
+  `provider_request_preview` / `asset_manifest` / `asset_paths` /
+  `video_assets_schema_version` / `video_assets_warnings` / `llm_used`
+  字段。同时附带 v0.5.4 message：
+  `Real video provider is not connected in v0.5.4. Content assets were
+  generated successfully, but no real video API was called.`
+- Video Mode Download All (`/api/video/history/{id}/download-all`)：
+  在保留原有 `raw_text.txt` / `preview.txt` / `overview.txt` /
+  `web_copy.txt` / `metadata.json` 之外，把磁盘上的
+  `outputs/<slug>/video_assets/` 整个目录递归追加到 zip（仅文本资产，
+  不含 mp4 / mov / video URL / token / API key）。`metadata.json` 升级
+  到 `export_schema_version=video_v0.5.4`，新增
+  `video_assets_schema_version=video_assets_v0.5.4` /
+  `provider_status=provider_not_configured` /
+  `real_video_generated=false` / `has_video_assets`。
+- 前端 Video Mode 多阶段进度面板从 8 步升级为 9 步：
+  Analyzing topic → Verifying answer → Writing video script →
+  Building storyboard → Creating provider prompt →
+  Preparing provider request → Creating mock video job →
+  Saving assets → Done。最终阶段仍按真实响应落到
+  `provider_not_configured` 或失败态。
+- 前端 Video Mode Tab 内容映射：Video tab = compact Video Job + 播放器
+  占位；Web Copy tab = 占位（v0.5.4 不变）；Raw Text tab = `provider_prompt`
+  （未来 Seedance 输入）；Preview tab = pipeline 渲染的脚本 + storyboard 摘要；
+  Overview tab = pipeline 渲染的中文 design summary；AI Review tab = 占位。
+- 新增 `docs/v0.5.4_video_content_asset_pipeline.md`，详述 v0.5.4 的设计、
+  资产形态、LLM 配置复用与失败降级、Tab 映射、Download All 契约、稳定性
+  检查清单与保护边界。
+- README 与 `docs/technical_roadmap.md` 当前里程碑更新至 v0.5.4 阶段。
+
+### 修复
+- 修复 Video Mode 生成完成后 Job message 的版本号，由「v0.5.3 / Mock provider
+  produced this job shell only」改为版本无关 + v0.5.4 资产说明：
+  `Real video provider is not connected in v0.5.4. Content assets were
+  generated successfully, but no real video API was called.`
+- v0.5.4 first structural fix：修正 LLM 配置读取与生成顺序：
+  - 资产管线主配置改为读取 `AI_VIDEO_LLM_API_KEY` /
+    `AI_VIDEO_LLM_BASE_URL` / `AI_VIDEO_LLM_MODEL`；`OPENAI_API_KEY` 降级为
+    legacy fallback。`generation_manifest.json` 的 `llm` 段不再写
+    完整 base_url，只写 `base_url_configured` / `api_key_configured` /
+    `config_namespace`。
+  - 资产管线 CLI 在独立运行时主动加载项目根 `.env`（如果存在），保证
+    standalone / FastAPI / stability check 三处口径一致。
+  - `/api/video/generate` 改为「先 `create_history_record` → 再
+    `build_video_content_assets(history_id=record.id)` →
+    `update_asset_pipeline_result()` 写回 `prompt_text` /
+    `preview_text` / `overview_cn` / `metadata_json`」。
+    `generation_manifest.json` 中的 `history_id` 不再为 `null`。
+  - `/api/video/history/{id}/regenerate` 同样修复：先建 new_record，再
+    用 new_record.id 调 pipeline，再写回 record。
+  - 新增 `VideoHistoryRepository.update_asset_pipeline_result()` 用于
+    在不改 schema 的前提下回写 v0.5.4 字段。
+  - `Download All`：`preview.txt` 优先使用 `record.preview_text`，
+    若为空且磁盘上存在 `video_assets/video_script.md` 与
+    `video_assets/storyboard.json`，则按「Script + Storyboard」拼接
+    fallback；`metadata.json` 增加 `asset_list` /
+    `asset_history_id` / `llm_used` / `fallback_used` 字段，
+    `asset_list` 优先来自 `generation_manifest.assets`。
+- v0.5.4 second polish：
+  - `generation_manifest.json` 的 `assets` / `files` 现在自登记，
+    包含 `generation_manifest.json` 自身（核心资产共 7 个），LLM 命中
+    时再追加 `llm_raw_output.txt`。manifest 顶层新增
+    `future_provider=seedance` / `submit_mode=not_connected` /
+    `real_video_generated=false`，便于未来 v0.6.0 Seedance 集成做契约对齐。
+  - `provider_request_preview.json` 重塑为「未来 Seedance 契约预览」：
+    顶层暴露 `provider` / `future_provider` / `prompt` /
+    `duration_seconds` / `aspect_ratio` / `resolution` / `fps` /
+    `language` / `style` / `negative_prompt` / `submit_mode` /
+    `provider_status` / `real_video_generated` / `note`，原嵌套结构
+    保留在 `request` 字段下兼容。v0.5.4 仍然不发送该请求。
+  - `scripts/run_stability_checks.py` 新增 `check_git_status_hygiene()`
+    只读审计：禁止旧 `docs/v0.4.*` 文件被删除、禁止乱码（mojibake）
+    docs 出现在 untracked、禁止 `.env` / `data/*.db` / `outputs/` /
+    `__MACOSX` / `.DS_Store` 出现在 git status。
+
+### 保护边界
+- 本版本**不接** Seedance。
+- 本版本**不新增** `seedance_provider.py`，也不新增任何真实视频
+  provider 实现文件。
+- 本版本**不接**任何真实视频生成 API。
+- 本版本**不生成**真实 mp4，**不下载**视频文件。
+- 本版本**不修改** `.env`，**不打印** API key 真实内容，**不硬编码** API key。
+- 本版本**不新增**真实异步任务队列（无 Celery / Redis / RQ）。
+- 本版本**不新增** `video_review` 表。
+- 本版本**不修改** Prompt Mode 数据库 schema（`prompt_history` /
+  `prompt_reviews` 不变）。
+- 本版本**不修改** Prompt Mode 主流程、Prompt 主提示词、AI Review 评分
+  标准、NotebookLM 输出结构。
+- 本版本**不破坏** Prompt Mode 既有能力（Prompt 生成 / Raw Text /
+  历史 / 版本 / 收藏 / 置顶 / 回收站 / Regenerate / Download All 全部保留）。
+- 本版本**不跨库写入**：VideoJob 与 Video Content Asset 仅写入
+  `data/video_history.db` 与 `outputs/<slug>/video_assets/`，
+  从不接触 Prompt Mode 表。
+- 本版本**不提交** `.env` / `data/*.db` / `outputs/` / 任何 API key 或
+  真实密钥。
+
+---
+
 ## v0.5.3 - Video Job / Provider / Asset 基础层与生成流程升级
 
 > 本版本在 v0.5.2「Video Mode 独立框架」之上新增 Video Job 数据模型、Provider

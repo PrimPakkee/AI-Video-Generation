@@ -324,6 +324,37 @@ class VideoHistoryRepository:
         ).limit(limit).all()
 
     @staticmethod
+    def update_asset_pipeline_result(
+        db: Session,
+        history_id: int,
+        prompt_text: Optional[str] = None,
+        preview_text: Optional[str] = None,
+        overview_cn: Optional[str] = None,
+        metadata_json: Optional[str] = None,
+    ) -> Optional[VideoHistory]:
+        """Write v0.5.4 Video Content Asset Pipeline outputs back onto an
+        existing VideoHistory record using only existing columns
+        (``prompt_text`` / ``preview_text`` / ``overview_cn`` /
+        ``metadata_json``). No schema change. Fields with ``None`` are left
+        untouched so callers can selectively update.
+        """
+        record = db.query(VideoHistory).filter(VideoHistory.id == history_id).first()
+        if not record:
+            return None
+        if prompt_text is not None:
+            record.prompt_text = prompt_text
+        if preview_text is not None:
+            record.preview_text = preview_text
+        if overview_cn is not None:
+            record.overview_cn = overview_cn
+        if metadata_json is not None:
+            record.metadata_json = metadata_json
+        record.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(record)
+        return record
+
+    @staticmethod
     def update_prompt_content(
         db: Session,
         history_id: int,
