@@ -1,0 +1,21 @@
+{
+  "schema_version": "provider_request_preview_v0.5.4",
+  "provider": "mock",
+  "future_provider": "seedance",
+  "submit_mode": "not_connected",
+  "real_video_generated": false,
+  "prompt": "A 60-second clean whiteboard line-art monologue explaining how a single neuron transmits a signal to the next neuron, narrated by a single voice in zh-CN.",
+  "negative_prompt": "no dialogue, no interview, no podcast, no on-screen text overlay",
+  "duration_seconds": 60,
+  "aspect_ratio": "9:16",
+  "resolution": "1080p",
+  "fps": 24,
+  "language": "zh-CN",
+  "style": "clean whiteboard line-art educational short video",
+  "metadata": {
+    "source": "video_assets_v0.5.4",
+    "topic": "How does a neuron send a signal to the next neuron?",
+    "version_number": 1,
+    "real_video_generated": false
+  }
+}

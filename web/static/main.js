@@ -465,7 +465,17 @@ function renderHistoryRecord(item) {
             </div>
         `;
     }
+    // v0.5.5: in Video Mode, append a small Provider Contract Summary block.
+    // The summary reflects v0.5.5 invariants (no real API call); the real
+    // validation result can be fetched lazily from
+    // /api/video/history/{id}/provider-contract.
+    if (currentAppMode === 'video') {
+        overviewHTML += renderProviderContractSummaryHTML(item);
+    }
     document.getElementById('prompt-overview').innerHTML = overviewHTML;
+    if (currentAppMode === 'video' && item && item.id != null) {
+        refreshProviderContractSummary(item.id);
+    }
 
     // v0.5.3: in Video Mode, fetch the latest VideoJob and render the
     // status panel inside the Video tab. Prompt Mode skips this entirely.
@@ -1636,8 +1646,14 @@ function renderCurrentPromptView() {
                 </div>
             `;
         }
+        if (currentAppMode === 'video') {
+            overviewHTML += renderProviderContractSummaryHTML({ id: currentHistoryId });
+        }
         overviewEl.innerHTML = overviewHTML;
         overviewEl.classList.remove('hidden');
+        if (currentAppMode === 'video' && currentHistoryId != null) {
+            refreshProviderContractSummary(currentHistoryId);
+        }
 
     } else if (mode === 'review') {
         reviewEl.classList.remove('hidden');
@@ -1721,6 +1737,42 @@ const VIDEO_GENERATION_STEPS = [
 let _videoProgressTimer = null;
 let _videoProgressIndex = 0;
 
+// v0.5.5 — Render the Provider Contract Summary block shown at the bottom
+// of the Overview tab in Video Mode. Initial render uses static defaults
+// (no real API call ever happens in v0.5.5); refreshProviderContractSummary
+// can fetch the on-disk validation result lazily.
+function renderProviderContractSummaryHTML(item) {
+    const slot = `<div id="provider-contract-summary" class="provider-contract-summary"
+        data-history-id="${(item && item.id != null) ? String(item.id) : ''}">
+        <h4 class="provider-contract-title">Provider Contract</h4>
+        <ul class="provider-contract-list">
+            <li><strong>Future Provider:</strong> Seedance</li>
+            <li><strong>Contract Status:</strong> <span data-field="contract-status">Loading…</span></li>
+            <li><strong>Real API Call:</strong> Disabled until v0.6.0</li>
+            <li><strong>Real Video Generated:</strong> No</li>
+        </ul>
+    </div>`;
+    return slot;
+}
+
+function refreshProviderContractSummary(historyId) {
+    if (historyId == null) return;
+    fetch(`/api/video/history/${historyId}/provider-contract`)
+        .then(r => r.ok ? r.json() : null)
+        .then(payload => {
+            if (!payload || !payload.success) return;
+            const el = document.getElementById('provider-contract-summary');
+            if (!el) return;
+            const expected = el.getAttribute('data-history-id');
+            if (expected && String(historyId) !== expected) return;
+            const statusEl = el.querySelector('[data-field="contract-status"]');
+            if (statusEl) {
+                statusEl.textContent = payload.contract_ready ? 'Ready' : 'Validation Failed';
+            }
+        })
+        .catch(() => {});
+}
+
 function _videoProgressEls() {
     return {
         panel: document.getElementById('video-progress-panel'),
@@ -1790,7 +1842,7 @@ function completeVideoGenerationProgress(videoJob) {
     const { message } = _videoProgressEls();
     if (message) {
         if (videoJob && videoJob.status === 'provider_not_configured') {
-            message.textContent = 'Real video provider is not connected in v0.5.4. Content assets were generated successfully, but no real video API was called.';
+            message.textContent = 'Seedance contract adapter is ready in v0.5.5. Content assets and provider payload preview were generated, but no real video API was called.';
         } else if (videoJob && videoJob.error_message) {
             message.textContent = videoJob.error_message;
         } else {
@@ -1862,7 +1914,7 @@ function renderVideoJobStatus(job) {
         if (job.message) {
             msgEl.textContent = job.message;
         } else if (job.status === 'provider_not_configured') {
-            msgEl.textContent = 'Real video provider is not connected in v0.5.4. Content assets were generated successfully, but no real video API was called.';
+            msgEl.textContent = 'Seedance contract adapter is ready in v0.5.5. Content assets and provider payload preview were generated, but no real video API was called.';
         } else if (job.error_message) {
             msgEl.textContent = job.error_message;
         } else {

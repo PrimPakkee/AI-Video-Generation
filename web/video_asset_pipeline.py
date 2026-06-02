@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """
-Video Content Asset Pipeline - v0.5.4
+Video Content Asset Pipeline - v0.5.5 (compatible with the v0.5.4 surface).
 
 Generates the structured content assets that the v0.6.0 Seedance integration
-will eventually consume. This module **does NOT call Seedance, does NOT touch
-any real video provider, does NOT generate real mp4**. It only:
+will eventually consume, plus the v0.5.5 dry-run Seedance contract bundle.
+This module **does NOT call any real video API, does NOT call Seedance,
+does NOT generate real mp4, and does NOT download any real video file**.
+It only:
 
-1. Renders the v0.5.4 Video Asset Prompt template with the user topic.
-2. Calls an OpenAI-compatible LLM (config from `AI_VIDEO_LLM_*` env vars).
+1. Renders the Video Asset Prompt template with the user topic.
+2. Calls an OpenAI-compatible LLM (config from ``AI_VIDEO_LLM_*`` env vars).
 3. Parses the strict-JSON response (with markdown-fence + extract fallbacks).
-4. Writes 7 deterministic asset files to ``output_dir/video_assets/``.
+4. Writes 10 deterministic asset files to ``output_dir/video_assets/``:
+   ``topic_analysis.json``, ``reasoning.md``, ``video_script.md``,
+   ``storyboard.json``, ``provider_prompt.txt``,
+   ``provider_request_preview.json``, ``seedance_payload_preview.json``,
+   ``provider_contract_validation.json``, ``provider_lifecycle_preview.json``,
+   and the self-registering ``generation_manifest.json``.
 5. Returns a dict the FastAPI layer can splice into the response.
 
 Any failure (missing API key, network error, JSON parse failure, validation
@@ -33,7 +40,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.5.4"
+VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.5.5"
+VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.4"
 DEFAULT_DURATION_SECONDS = 60
 DEFAULT_ASPECT_RATIO = "9:16"
 DEFAULT_STYLE = "clean whiteboard line-art educational short video"
@@ -53,6 +61,9 @@ ASSET_FILES = [
     "provider_prompt.txt",
     "provider_request_preview.json",
     "generation_manifest.json",
+    "seedance_payload_preview.json",
+    "provider_contract_validation.json",
+    "provider_lifecycle_preview.json",
 ]
 
 REQUIRED_TOP_KEYS = (
@@ -673,7 +684,7 @@ def _build_provider_request_preview(
         "provider_status": PROVIDER_STATUS,
         "real_video_generated": False,
         "note": (
-            "This is a v0.5.4 provider request preview. No real video API is called."
+            "This is a v0.5.x provider request preview. No real video API is called."
         ),
         # Compatibility nested form retained for any caller that read the
         # earlier shape. Same data, no secrets.
@@ -706,7 +717,7 @@ def _save_assets(
     warnings: List[str],
     llm_used: bool,
     llm_raw_text: Optional[str],
-) -> Tuple[Dict[str, str], Dict[str, Any]]:
+) -> Tuple[Dict[str, str], Dict[str, Any], Dict[str, Any]]:
     assets_dir.mkdir(parents=True, exist_ok=True)
 
     paths: Dict[str, str] = {}
@@ -737,6 +748,31 @@ def _save_assets(
     _safe_write(preview_path, json.dumps(provider_request_preview, ensure_ascii=False, indent=2))
     paths["provider_request_preview"] = str(preview_path)
 
+    # v0.5.5: Seedance contract adapter — validate the request preview, build
+    # a future-Seedance payload preview, and emit a canonical lifecycle
+    # preview. All three are dry-run only; no network call is made.
+    from .video_providers.seedance_contract_adapter import (  # local import to avoid cycle
+        SeedanceContractAdapter,
+        PROVIDER_CONTRACT_SCHEMA_VERSION,
+    )
+
+    adapter = SeedanceContractAdapter()
+    contract_validation = adapter.validate_provider_request_preview(provider_request_preview)
+    seedance_payload = adapter.build_seedance_payload_preview(provider_request_preview)
+    lifecycle_preview = adapter.build_lifecycle_preview(provider_request_preview, contract_validation)
+
+    seedance_payload_path = assets_dir / "seedance_payload_preview.json"
+    _safe_write(seedance_payload_path, json.dumps(seedance_payload, ensure_ascii=False, indent=2))
+    paths["seedance_payload_preview"] = str(seedance_payload_path)
+
+    contract_validation_path = assets_dir / "provider_contract_validation.json"
+    _safe_write(contract_validation_path, json.dumps(contract_validation, ensure_ascii=False, indent=2))
+    paths["provider_contract_validation"] = str(contract_validation_path)
+
+    lifecycle_preview_path = assets_dir / "provider_lifecycle_preview.json"
+    _safe_write(lifecycle_preview_path, json.dumps(lifecycle_preview, ensure_ascii=False, indent=2))
+    paths["provider_lifecycle_preview"] = str(lifecycle_preview_path)
+
     # Register generation_manifest.json BEFORE we serialise the manifest so
     # that manifest.files / manifest.assets include the manifest itself
     # (matches what is on disk and what Download All packages).
@@ -752,6 +788,8 @@ def _save_assets(
 
     manifest = {
         "schema_version": VIDEO_ASSETS_SCHEMA_VERSION,
+        "legacy_schema_version": VIDEO_ASSETS_LEGACY_SCHEMA_VERSION,
+        "provider_contract_schema_version": PROVIDER_CONTRACT_SCHEMA_VERSION,
         "generated_at": _utc_now_iso(),
         "topic": topic,
         "history_id": history_id,
@@ -761,6 +799,10 @@ def _save_assets(
         "provider_status": PROVIDER_STATUS,
         "submit_mode": "not_connected",
         "real_video_generated": False,
+        "real_video_downloaded": False,
+        "network_call_performed": False,
+        "seedance_contract_ready": bool(contract_validation.get("valid")),
+        "provider_contract_validation_valid": bool(contract_validation.get("valid")),
         "llm_used": bool(llm_used),
         "fallback_used": not bool(llm_used),
         "llm": {
@@ -789,7 +831,12 @@ def _save_assets(
             # manifest's claim about it stays accurate.
             paths.pop("llm_raw_output", None)
 
-    return paths, manifest
+    contract_bundle = {
+        "seedance_payload_preview": seedance_payload,
+        "provider_contract_validation": contract_validation,
+        "provider_lifecycle_preview": lifecycle_preview,
+    }
+    return paths, manifest, contract_bundle
 
 
 def build_video_content_assets(
@@ -846,7 +893,7 @@ def build_video_content_assets(
             topic, normalized["provider_prompt"], normalized["storyboard"], language,
         )
 
-        paths, manifest = _save_assets(
+        paths, manifest, contract_bundle = _save_assets(
             assets_dir=assets_dir,
             topic=topic,
             history_id=history_id,
@@ -867,6 +914,9 @@ def build_video_content_assets(
             "video_assets": normalized,
             "provider_prompt": normalized["provider_prompt"],
             "provider_request_preview": provider_request_preview,
+            "seedance_payload_preview": contract_bundle["seedance_payload_preview"],
+            "provider_contract_validation": contract_bundle["provider_contract_validation"],
+            "provider_lifecycle_preview": contract_bundle["provider_lifecycle_preview"],
             "asset_manifest": manifest,
             "asset_paths": paths,
             "assets_dir": str(assets_dir),
@@ -885,7 +935,7 @@ def build_video_content_assets(
             provider_request_preview = _build_provider_request_preview(
                 topic, normalized["provider_prompt"], normalized["storyboard"], language,
             )
-            paths, manifest = _save_assets(
+            paths, manifest, contract_bundle = _save_assets(
                 assets_dir=assets_dir,
                 topic=topic,
                 history_id=history_id,
@@ -904,6 +954,9 @@ def build_video_content_assets(
                 "video_assets": normalized,
                 "provider_prompt": normalized["provider_prompt"],
                 "provider_request_preview": provider_request_preview,
+                "seedance_payload_preview": contract_bundle["seedance_payload_preview"],
+                "provider_contract_validation": contract_bundle["provider_contract_validation"],
+                "provider_lifecycle_preview": contract_bundle["provider_lifecycle_preview"],
                 "asset_manifest": manifest,
                 "asset_paths": paths,
                 "assets_dir": str(assets_dir),
@@ -920,6 +973,9 @@ def build_video_content_assets(
                 "video_assets": None,
                 "provider_prompt": "",
                 "provider_request_preview": None,
+                "seedance_payload_preview": None,
+                "provider_contract_validation": None,
+                "provider_lifecycle_preview": None,
                 "asset_manifest": None,
                 "asset_paths": {},
                 "assets_dir": str(assets_dir),

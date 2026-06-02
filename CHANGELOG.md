@@ -2,6 +2,88 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.5.5 - Seedance Provider Contract Adapter (Dry-Run)
+
+> 本版本在 v0.5.4「Video Content Asset Pipeline」之上新增 **Seedance Provider
+> Contract Adapter**——一个只读、dry-run、不联网的契约层，用来把 v0.5.4 写好
+> 的 `provider_request_preview.json` 校验为「未来可被 Seedance 接收」的载荷，
+> 并落 3 个新的契约文件。**v0.5.5 不接 Seedance、不接任何真实视频生成 API、
+> 不发起任何真实网络请求、不生成真实 mp4、不下载真实视频文件、不写入真实视频
+> URL；真正的 submit / poll / download 留给 v0.6.0。** Prompt Mode 数据库
+> schema、主提示词、NotebookLM 主模板、AI Review 评分标准均未变动。
+
+### 新增
+- 新增 `web/video_providers/seedance_contract_adapter.py`，类
+  `SeedanceContractAdapter`：`provider_name="mock"`、
+  `future_provider="seedance"`、`network_enabled=False`，导出
+  `validate_provider_request_preview` / `build_seedance_payload_preview` /
+  `build_lifecycle_preview` / `dry_run_submit` / `dry_run_poll` /
+  `dry_run_download` 六个方法；模块顶层无 `requests.post` / `httpx.post` /
+  `aiohttp` / `urllib.request` 真实网络调用；`http://` / `https://` 字符串只
+  作为 `_scan_for_unsafe_strings` 的检测模式，不作为真实 endpoint。
+- `web/video_asset_pipeline.py` 升级到 `video_assets_v0.5.5`（保留
+  `VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.4"` 常量），落
+  3 个新资产文件：`seedance_payload_preview.json`、
+  `provider_contract_validation.json`、`provider_lifecycle_preview.json`，
+  `generation_manifest.json` 自身仍然自注册路径，资产数量从 7 升级到 10。
+- `/api/video/generate` 与 `/api/video/history/{id}/regenerate` 响应额外携带
+  `seedance_payload_preview` / `provider_contract_validation` /
+  `provider_lifecycle_preview` / `provider_contract` 四个字段，message 文案
+  改为 `Seedance contract adapter is ready in v0.5.5. Content assets and
+  provider payload preview were generated, but no real video API was called.`
+- 新增 4 个 dry-run API 端点：
+  - `GET  /api/video/history/{history_id}/provider-contract`
+  - `POST /api/video/jobs/{job_id}/dry-run-submit`
+  - `POST /api/video/jobs/{job_id}/dry-run-poll`
+  - `POST /api/video/jobs/{job_id}/dry-run-download`
+  全部不发起任何真实 HTTP 请求；submit/poll/download 将所有真实步骤标记为
+  `blocked_until_v0.6.0`。
+- VideoJob 的 stage 从 `not_started` 升级为 `contract_ready`，progress 从
+  `0` 升级为 `90`；`provider` 仍是 `mock`、`status` 仍是
+  `provider_not_configured`。
+- Video Mode Overview 标签新增独立的 **Provider Contract Summary** 区块
+  (`<div id="provider-contract-summary">`)，前端通过新端点
+  `GET /api/video/history/{id}/provider-contract` 异步刷新；摘要显示
+  future provider、contract status、network call performed、real video
+  downloaded。`refreshProviderContractSummary()` 仅访问本地 dry-run 端点，
+  不发起任何真实视频下载或外部 API 调用。
+- Download All 的 `metadata.json` 升级到 `export_schema_version=video_v0.5.5`，
+  新增 `provider_contract_schema_version=seedance_contract_v0.5.5` /
+  `seedance_contract_ready` / `provider_contract_validation_valid` /
+  `real_video_downloaded=false` / `network_call_performed=false` 字段；zip
+  内追加 3 个新资产文件。
+- 新增 `docs/v0.5.5_seedance_provider_contract_adapter.md`，详述 dry-run
+  适配器的设计、资产升级、schema version、API 端点、UI 行为、严禁项与自检
+  命令。
+- 新增 `tests/fixtures/seedance_contract_sample_request.json` 作为契约样例。
+- `scripts/run_stability_checks.py` 升级到 `STABILITY_CHECKS_VERSION="v0.5.5"`，
+  新增 `check_v055_contract` 检查组（≥16 项），py_compile 列表加入
+  `seedance_contract_adapter.py`，`allowed_untracked` 加入 v0.5.5 新文件。
+
+### 修复
+- 修复 stability check 因 v0.5.5 升级误报的 v0.5.4 marker：v0.5.4 检查组
+  改为同时接受 `v0.5.4` 与 `v0.5.5` 两种 export_schema_version / 用户可见
+  message；v0.5.3 检查组放宽 export_schema_version 上限到 `v0.5.5`。
+- 修复 v0.5.5 contract 检查组的 `http://` / `https://` 误报——改为只匹配
+  真实 URL 字面量（`https?://[A-Za-z0-9]`），让 `_scan_for_unsafe_strings`
+  内部的检测模式不再被当作 endpoint 泄漏。
+
+### 严禁项（在本版本中得到保留）
+- 不接 Seedance / 不接任何真实视频生成 API。
+- 不新增 `seedance_provider.py`，不创建任何真实 video provider 实现。
+- 不执行 `requests.post` / `httpx.post` / `aiohttp` / `urllib.request` 的真实
+  网络调用。
+- 不生成真实 mp4，不下载真实视频文件，不写入真实视频 URL。
+- 不引入 Celery / Redis / RQ / 真实异步任务队列。
+- 不新增 `video_review` 表。
+- 不修改 Prompt Mode 数据库 schema、不修改 Prompt Mode 主提示词、不修改
+  NotebookLM Prompt 主模板、不修改 AI Review 评分标准。
+- 不修改 `.env`，不打印 API key，不硬编码 API key。
+- 不提交 `data/*.db` / `outputs/` / `.env`；不执行 `git add` / `git commit`
+  / `git push`（由用户决定）。
+
+---
+
 ## v0.5.4 - Video Content Asset Pipeline
 
 > 本版本在 v0.5.3「Video Job / Provider / Asset 基础层」之上新增 **Video

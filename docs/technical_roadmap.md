@@ -4,19 +4,29 @@
 
 本文档详细规划了从当前版本（V0）到端到端自动化（V4）的完整技术路线。每个 Phase 都有明确的技术目标、实现方案、技术栈和成功标准。
 
-## 当前里程碑（v0.5.3）
+## 当前里程碑（v0.5.5）
 
 - **Prompt Mode**：v0.4.10 已冻结，所有保护边界继续生效（详见
   [`prompt_mode_freeze_spec.md`](./prompt_mode_freeze_spec.md)）。
 - **Video Mode 框架**：v0.5.2 完成独立数据库 / API / 6 tab / 播放器骨架 / 全局
   tooltip portal（详见 [`v0.5.2_video_mode_framework.md`](./v0.5.2_video_mode_framework.md)）。
-- **Video Mode Job/Provider/Asset 基础层（当前 v0.5.3）**：新增 `video_jobs` 表、
+- **Video Mode Job/Provider/Asset 基础层（v0.5.3）**：新增 `video_jobs` 表、
   `VideoProvider` 抽象层、`MockVideoProvider`、Job/Asset endpoint、首页
   `Generate Video` 动态入口、多阶段进度面板、Video Job 状态面板（详见
   [`v0.5.3_video_job_provider_framework.md`](./v0.5.3_video_job_provider_framework.md)）。
-  本版本不接 Seedance、不接真实视频 API、不生成真实 mp4。
-- **下一阶段（v0.6.x）**：在 `VideoProvider` 抽象层之上接入第一个真实
-  provider，引入 Job 轮询 / 真实 mp4 下载 / Video Review 独立评分协议。
+- **Video Content Asset Pipeline（v0.5.4）**：LLM 驱动的 7 个内容资产、9 步
+  进度面板、Download All 升级、`AI_VIDEO_LLM_*` 配置体系（详见
+  [`v0.5.4_video_content_asset_pipeline.md`](./v0.5.4_video_content_asset_pipeline.md)）。
+- **Seedance Provider Contract Adapter（当前 v0.5.5）**：新增 dry-run 契约
+  适配器 `SeedanceContractAdapter`、3 个新契约文件（`seedance_payload_preview.json`
+  / `provider_contract_validation.json` / `provider_lifecycle_preview.json`）、
+  4 个 dry-run API 端点、Provider Contract Summary 区块、stage 升级到
+  `contract_ready` / progress=90（详见
+  [`v0.5.5_seedance_provider_contract_adapter.md`](./v0.5.5_seedance_provider_contract_adapter.md)）。
+  **本版本仍然不接真实 Seedance、不发起任何真实网络请求、不生成 mp4、不下载视频文件。**
+- **下一阶段（v0.6.0）**：把 v0.5.5 dry-run 契约升级为真实 Seedance provider
+  实现，引入首次真实网络调用、真实 Job 轮询、真实 mp4 下载，以及 Video Review
+  独立评分协议。
 
 ---
 

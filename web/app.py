@@ -2119,15 +2119,25 @@ def _build_video_assets_metadata_json(pipeline_result: Dict[str, Any]) -> str:
     provider status — never the API key, never any secret.
     """
     manifest = pipeline_result.get('asset_manifest') or {}
+    contract_validation = pipeline_result.get('provider_contract_validation') or {}
+    asset_paths = pipeline_result.get('asset_paths') or {}
     blob = {
         'video_assets_schema_version': pipeline_result.get('schema_version', VIDEO_ASSETS_SCHEMA_VERSION),
+        'provider_contract_schema_version': manifest.get('provider_contract_schema_version', 'seedance_contract_v0.5.5'),
+        'seedance_contract_ready': bool(contract_validation.get('valid')) if contract_validation else False,
+        'provider_contract_validation_valid': bool(contract_validation.get('valid')) if contract_validation else False,
+        'seedance_payload_preview_path': asset_paths.get('seedance_payload_preview'),
+        'provider_contract_validation_path': asset_paths.get('provider_contract_validation'),
+        'provider_lifecycle_preview_path': asset_paths.get('provider_lifecycle_preview'),
         'asset_manifest': manifest,
-        'asset_paths': pipeline_result.get('asset_paths') or {},
+        'asset_paths': asset_paths,
         'warnings': pipeline_result.get('warnings', []),
         'llm_used': bool(pipeline_result.get('llm_used', False)),
         'fallback_used': not bool(pipeline_result.get('llm_used', False)),
         'provider_status': 'provider_not_configured',
         'real_video_generated': False,
+        'real_video_downloaded': False,
+        'network_call_performed': False,
     }
     try:
         return json.dumps(blob, ensure_ascii=False)
@@ -2383,9 +2393,21 @@ async def video_generate(
                 'video_assets_schema_version': pipeline_result.get('schema_version'),
                 'video_assets_warnings': pipeline_result.get('warnings', []),
                 'llm_used': pipeline_result.get('llm_used', False),
+                # v0.5.5 — Seedance contract adapter
+                'seedance_payload_preview': pipeline_result.get('seedance_payload_preview'),
+                'provider_contract_validation': pipeline_result.get('provider_contract_validation'),
+                'provider_lifecycle_preview': pipeline_result.get('provider_lifecycle_preview'),
+                'provider_contract': {
+                    'future_provider': 'seedance',
+                    'contract_ready': bool((pipeline_result.get('provider_contract_validation') or {}).get('valid')),
+                    'network_call_performed': False,
+                    'real_video_generated': False,
+                    'real_video_downloaded': False,
+                },
                 'message': (
-                    'Real video provider is not connected in v0.5.4. Content assets '
-                    'were generated successfully, but no real video API was called.'
+                    'Seedance contract adapter is ready in v0.5.5. Content assets '
+                    'and provider payload preview were generated, but no real video '
+                    'API was called.'
                 ),
             })
         except Exception as e:
@@ -2711,9 +2733,21 @@ async def video_regenerate(
             "video_assets_schema_version": pipeline_result.get('schema_version'),
             "video_assets_warnings": pipeline_result.get('warnings', []),
             "llm_used": pipeline_result.get('llm_used', False),
+            # v0.5.5 — Seedance contract adapter
+            "seedance_payload_preview": pipeline_result.get('seedance_payload_preview'),
+            "provider_contract_validation": pipeline_result.get('provider_contract_validation'),
+            "provider_lifecycle_preview": pipeline_result.get('provider_lifecycle_preview'),
+            "provider_contract": {
+                'future_provider': 'seedance',
+                'contract_ready': bool((pipeline_result.get('provider_contract_validation') or {}).get('valid')),
+                'network_call_performed': False,
+                'real_video_generated': False,
+                'real_video_downloaded': False,
+            },
             "message": (
-                'Real video provider is not connected in v0.5.4. Content assets '
-                'were generated successfully, but no real video API was called.'
+                'Seedance contract adapter is ready in v0.5.5. Content assets '
+                'and provider payload preview were generated, but no real video '
+                'API was called.'
             ),
         })
 
@@ -3005,7 +3039,7 @@ async def video_download_all(
         "regenerate_feedback": record.regenerate_feedback,
         "video_status": record.video_status,
         "video_duration_seconds": record.video_duration_seconds,
-        "export_schema_version": "video_v0.5.4",
+        "export_schema_version": "video_v0.5.5",
         # v0.5.4 additions
         "video_assets_schema_version": VIDEO_ASSETS_SCHEMA_VERSION,
         "has_video_assets": has_video_assets,
@@ -3015,6 +3049,16 @@ async def video_download_all(
         "fallback_used": bool(asset_manifest.get("fallback_used", not asset_manifest.get("llm_used", False))),
         "asset_history_id": asset_manifest.get("history_id"),
         "asset_list": asset_list,
+        # v0.5.5 additions
+        "provider_contract_schema_version": asset_manifest.get(
+            "provider_contract_schema_version", "seedance_contract_v0.5.5"
+        ),
+        "seedance_contract_ready": bool(asset_manifest.get("seedance_contract_ready", False)),
+        "provider_contract_validation_valid": bool(
+            asset_manifest.get("provider_contract_validation_valid", False)
+        ),
+        "real_video_downloaded": False,
+        "network_call_performed": False,
     }
 
     buf = io.BytesIO()
@@ -3157,7 +3201,7 @@ async def video_refresh_job(
             status_code=501,
             content={
                 "success": False,
-                "error": f"Provider '{job.provider}' is not connected in v0.5.4",
+                "error": f"Provider '{job.provider}' is not connected in v0.5.5",
             },
         )
 
@@ -3192,6 +3236,136 @@ async def video_cancel_job(
         db, job_id=job_id, message="Cancelled by user."
     )
     return {"success": True, "job": cancelled.to_dict() if cancelled else None}
+
+
+# v0.5.5 — Seedance Contract Adapter dry-run endpoints. None of these
+# perform any real network call. They exist so the frontend (or a
+# future v0.6.0 integration) can preview the contract handshake before
+# any real Seedance API is connected.
+@app.get("/api/video/history/{history_id}/provider-contract")
+async def video_get_provider_contract(
+    history_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    record = VideoHistoryRepository.get_history_record(db, history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Video history record {history_id} not found"},
+        )
+
+    project_root = Path(__file__).resolve().parent.parent
+    output_dir = record.output_dir or ""
+    candidate_dir: Optional[Path] = None
+    if output_dir:
+        p = Path(output_dir)
+        if not p.is_absolute():
+            p = project_root / p
+        if (p / "video_assets").exists():
+            candidate_dir = p / "video_assets"
+
+    def _safe_load_json(path: Path) -> Optional[Dict[str, Any]]:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    provider_request_preview = None
+    seedance_payload_preview = None
+    provider_contract_validation = None
+    provider_lifecycle_preview = None
+    asset_paths: Dict[str, str] = {}
+    if candidate_dir is not None:
+        for key, name in [
+            ("provider_request_preview", "provider_request_preview.json"),
+            ("seedance_payload_preview", "seedance_payload_preview.json"),
+            ("provider_contract_validation", "provider_contract_validation.json"),
+            ("provider_lifecycle_preview", "provider_lifecycle_preview.json"),
+        ]:
+            fp = candidate_dir / name
+            if fp.exists():
+                asset_paths[key] = str(fp)
+        provider_request_preview = _safe_load_json(candidate_dir / "provider_request_preview.json")
+        seedance_payload_preview = _safe_load_json(candidate_dir / "seedance_payload_preview.json")
+        provider_contract_validation = _safe_load_json(candidate_dir / "provider_contract_validation.json")
+        provider_lifecycle_preview = _safe_load_json(candidate_dir / "provider_lifecycle_preview.json")
+
+    contract_ready = bool(
+        provider_contract_validation and provider_contract_validation.get("valid")
+    )
+    return {
+        "success": True,
+        "history_id": history_id,
+        "future_provider": "seedance",
+        "contract_ready": contract_ready,
+        "network_call_performed": False,
+        "real_video_generated": False,
+        "real_video_downloaded": False,
+        "provider_request_preview": provider_request_preview,
+        "seedance_payload_preview": seedance_payload_preview,
+        "provider_contract_validation": provider_contract_validation,
+        "provider_lifecycle_preview": provider_lifecycle_preview,
+        "asset_paths": asset_paths,
+        "readiness_summary": {
+            "has_provider_request_preview": provider_request_preview is not None,
+            "has_seedance_payload_preview": seedance_payload_preview is not None,
+            "has_provider_contract_validation": provider_contract_validation is not None,
+            "has_provider_lifecycle_preview": provider_lifecycle_preview is not None,
+            "contract_ready": contract_ready,
+        },
+    }
+
+
+@app.post("/api/video/jobs/{job_id}/dry-run-submit")
+async def video_dry_run_submit(
+    job_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    job = VideoJobRepository.get_job(db, job_id)
+    if not job:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"VideoJob {job_id} not found"},
+        )
+    from web.video_providers.seedance_contract_adapter import SeedanceContractAdapter
+    adapter = SeedanceContractAdapter()
+    result = adapter.dry_run_submit({})
+    return {"success": True, "job_id": job_id, "dry_run": result}
+
+
+@app.post("/api/video/jobs/{job_id}/dry-run-poll")
+async def video_dry_run_poll(
+    job_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    job = VideoJobRepository.get_job(db, job_id)
+    if not job:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"VideoJob {job_id} not found"},
+        )
+    from web.video_providers.seedance_contract_adapter import SeedanceContractAdapter
+    adapter = SeedanceContractAdapter()
+    result = adapter.dry_run_poll(job.provider_job_id or "")
+    return {"success": True, "job_id": job_id, "dry_run": result}
+
+
+@app.post("/api/video/jobs/{job_id}/dry-run-download")
+async def video_dry_run_download(
+    job_id: int,
+    db: Session = Depends(get_video_db),
+) -> Dict[str, Any]:
+    job = VideoJobRepository.get_job(db, job_id)
+    if not job:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"VideoJob {job_id} not found"},
+        )
+    from web.video_providers.seedance_contract_adapter import SeedanceContractAdapter
+    adapter = SeedanceContractAdapter()
+    result = adapter.dry_run_download(job.provider_job_id or "")
+    return {"success": True, "job_id": job_id, "dry_run": result}
 
 
 @app.get("/api/video/history/{history_id}/asset/video")

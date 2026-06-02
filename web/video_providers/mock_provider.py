@@ -1,10 +1,16 @@
 """
-MockVideoProvider (v0.5.3).
+Video Mode dry-run MockVideoProvider.
 
-Returns a `provider_not_configured` shell for every operation. Performs no
+Returns a ``provider_not_configured`` shell for every operation. Performs no
 network call, holds no API key, and never writes a video file. The mock job
 ID is generated from a UUID so each Video Mode generation has a stable
-provider_job_id that the UI can display.
+``provider_job_id`` that the UI can display.
+
+Under v0.5.5 the mock job advances to ``stage="contract_ready"`` /
+``progress=90`` to reflect that the Seedance contract adapter has produced
+its dry-run payload preview, but **no real provider is invoked, no real
+video API is called, and no real mp4 is generated**. Real submit / poll /
+download is reserved for v0.6.0.
 """
 
 import uuid
@@ -14,8 +20,8 @@ from .base import VideoProvider
 
 
 _NOT_CONNECTED_MESSAGE = (
-    "Real video provider is not connected in v0.5.4. Content assets were "
-    "generated successfully, but no real video API was called."
+    "Seedance contract adapter is ready in v0.5.5. Content assets and "
+    "provider payload preview were generated, but no real video API was called."
 )
 
 
@@ -28,8 +34,8 @@ class MockVideoProvider(VideoProvider):
             "provider": self.provider_name,
             "provider_job_id": provider_job_id,
             "status": "provider_not_configured",
-            "stage": "provider_not_connected",
-            "progress": 85,
+            "stage": "contract_ready",
+            "progress": 90,
             "message": _NOT_CONNECTED_MESSAGE,
             "video_url": None,
             "video_path": None,
@@ -40,8 +46,8 @@ class MockVideoProvider(VideoProvider):
             "provider": self.provider_name,
             "provider_job_id": provider_job_id,
             "status": "provider_not_configured",
-            "stage": "provider_not_connected",
-            "progress": 85,
+            "stage": "contract_ready",
+            "progress": 90,
             "message": _NOT_CONNECTED_MESSAGE,
             "video_url": None,
             "video_path": None,
