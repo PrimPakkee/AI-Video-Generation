@@ -42,18 +42,35 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.6.0"
-VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.6"
-# v0.6.0 duration sync: APX_VIDEO_DURATION is the single source of truth for
-# Video Mode duration. The legacy 60s default is only a last-resort fallback;
-# resolve_target_duration_seconds() should always be used in practice.
-DEFAULT_DURATION_SECONDS = 5
-DEFAULT_ASPECT_RATIO = "9:16"
-DEFAULT_STYLE = "clean whiteboard line-art educational short video"
+VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.6.1"
+VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.6.0"
+# v0.6.1 spec: English-only educational 16:9 landscape explainer video. The
+# UI duration selector (5/15/30/60/90s, default 15s) flows in via
+# target_duration_seconds; APX_VIDEO_DURATION remains a fallback source.
+DEFAULT_DURATION_SECONDS = 15
+DEFAULT_ASPECT_RATIO = "16:9"
+DEFAULT_ORIENTATION = "landscape"
+DEFAULT_STYLE = (
+    "clean educational explainer video, white background, simple line art and "
+    "infographics, English on-screen text only, yellow highlights, smooth camera"
+)
 DEFAULT_FPS = 24
-DEFAULT_RESOLUTION = "1080x1920"
+DEFAULT_RESOLUTION = "1920x1080"
+OUTPUT_LANGUAGE = "en"
+ALLOWED_DURATION_SECONDS = (5, 15, 30, 60, 90)
 PROVIDER_NAME = "mock"
 PROVIDER_STATUS = "provider_not_configured"
+# CJK detection (used to sanitize Chinese topic text before placing into
+# English-only on-screen text fragments).
+_CJK_RE = re.compile(
+    "["
+    "\u3000-\u303f"   # CJK Symbols and Punctuation
+    "\u3400-\u4dbf"   # CJK Unified Ideographs Extension A
+    "\u4e00-\u9fff"   # CJK Unified Ideographs
+    "\uf900-\ufaff"   # CJK Compatibility Ideographs
+    "\uff00-\uffef"   # Halfwidth and Fullwidth Forms
+    "]"
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE_PATH = PROJECT_ROOT / "templates" / "video_asset_prompt_template.md"
@@ -89,10 +106,48 @@ NEGATIVE_CONSTRAINTS = [
     "no podcast",
     "no two-host conversation",
     "no multiple speakers",
+    "no Chinese characters",
+    "no CJK text on screen",
+    "no misspelled text",
+    "no extra on-screen text beyond the provided list",
     "no irrelevant decorative visuals",
+    "no photorealistic humans",
+    "no 3D rendering",
+    "no dark cinematic look",
+    "no clutter",
+    "no portrait 9:16 framing",
     "no wrong answer",
     "no unsupported visual claims",
 ]
+
+
+def _strip_cjk(text: Any) -> str:
+    """Remove all CJK characters from a string. Returns a clean ASCII-leaning
+    fragment safe to embed in English-only on-screen text. Empty if every
+    character was CJK."""
+    if text is None:
+        return ""
+    s = str(text)
+    if not s:
+        return ""
+    cleaned = _CJK_RE.sub("", s)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _english_topic_label(topic: Any, fallback: str = "Topic") -> str:
+    """Return an English-safe short label for use inside on-screen text. If the
+    topic contains CJK, strip CJK; if nothing meaningful remains, return the
+    fallback. Caps at 8 words / 60 chars to satisfy on-screen text rules."""
+    s = _strip_cjk(topic) if topic is not None else ""
+    if not s:
+        s = fallback
+    words = s.split()
+    if len(words) > 8:
+        s = " ".join(words[:8])
+    if len(s) > 60:
+        s = s[:60].rstrip()
+    return s or fallback
 
 
 def _utc_now_iso() -> str:
@@ -101,13 +156,13 @@ def _utc_now_iso() -> str:
 
 # v0.6.0 — duration sync helpers ---------------------------------------------
 
-def resolve_target_duration_seconds(raw: Any = None, default: int = 5) -> int:
+def resolve_target_duration_seconds(raw: Any = None, default: int = DEFAULT_DURATION_SECONDS) -> int:
     """Single source of truth for Video Mode duration.
 
-    Priority: explicit ``raw`` arg → ``APX_VIDEO_DURATION`` env → ``default``.
-    Always returns a clean int; illegal values fall back to ``default``.
-    Values < 3 are normalised to 5 (APX rejects shorter clips). Values > 120
-    are clamped to 60 to avoid prompt bloat.
+    Priority: explicit ``raw`` arg → ``APX_VIDEO_DURATION`` env → ``default``
+    (v0.6.1 default = 15). Always returns a clean int; illegal values fall
+    back to ``default``. Values < 3 are normalised to 5 (APX rejects shorter
+    clips). Values > 120 are clamped to 90 (the v0.6.1 max selector value).
     """
     candidate: Any = raw
     if candidate is None or (isinstance(candidate, str) and not candidate.strip()):
@@ -121,68 +176,91 @@ def resolve_target_duration_seconds(raw: Any = None, default: int = 5) -> int:
     if value < 3:
         return 5
     if value > 120:
-        return 60
+        return 90
     return value
 
 
 def build_duration_profile(duration_seconds: int) -> Dict[str, Any]:
-    """Return the recommended scene/word-count strategy for a given duration."""
-    d = int(duration_seconds or 5)
-    if d <= 10:
+    """v0.6.1 duration profile.
+
+    Five hard buckets matching the home-page selector — 5s / 15s / 30s / 60s
+    / 90s — with the scene counts the spec asks for:
+        5s : 1-2 scenes (hook only)
+        15s: 3 scenes (hook → setup → answer)
+        30s: 4-5 scenes
+        60s: 6-8 scenes
+        90s: 8-10 scenes
+    Off-grid durations (e.g. 7, 22) snap to the nearest bucket so the
+    storyboard scene-count contract stays predictable."""
+    try:
+        d = int(duration_seconds or DEFAULT_DURATION_SECONDS)
+    except Exception:
+        d = DEFAULT_DURATION_SECONDS
+    if d <= 7:
         return {
-            "profile_name": "smoke_ultra_short",
+            "profile_name": "hook_only_5s",
+            "bucket": "5s",
             "duration_seconds": d,
-            "scene_count_min": 2,
-            "scene_count_max": 3,
-            "word_count_min": 12,
-            "word_count_max": 35,
+            "scene_count_min": 1,
+            "scene_count_max": 2,
+            "word_count_min": 8,
+            "word_count_max": 22,
             "instruction": (
-                "Ultra-short smoke-test video. Focus on one visual hook and one "
-                "answer. Do not write a full 60-second explanation."
+                "5-second hook only. Show the question and the answer reveal, nothing else. "
+                "Do not add setup or wrap-up."
             ),
         }
-    if d <= 20:
+    if d <= 22:
         return {
-            "profile_name": "quick_answer",
+            "profile_name": "quick_answer_15s",
+            "bucket": "15s",
             "duration_seconds": d,
             "scene_count_min": 3,
-            "scene_count_max": 4,
-            "word_count_min": 35,
-            "word_count_max": 70,
-            "instruction": "Quick short video. Hook, one compact reasoning step, answer.",
+            "scene_count_max": 3,
+            "word_count_min": 25,
+            "word_count_max": 45,
+            "instruction": (
+                "15-second short. Exactly 3 scenes: hook → one compact reasoning step → answer."
+            ),
         }
-    if d <= 35:
+    if d <= 45:
         return {
-            "profile_name": "standard_short",
+            "profile_name": "standard_short_30s",
+            "bucket": "30s",
             "duration_seconds": d,
-            "scene_count_min": 5,
-            "scene_count_max": 6,
-            "word_count_min": 70,
-            "word_count_max": 120,
-            "instruction": "Standard short video. Full but compressed reasoning.",
+            "scene_count_min": 4,
+            "scene_count_max": 5,
+            "word_count_min": 55,
+            "word_count_max": 95,
+            "instruction": (
+                "30-second short. 4-5 scenes: hook, setup, one reasoning step, answer reveal, brief takeaway."
+            ),
         }
-    if d <= 60:
+    if d <= 75:
         return {
-            "profile_name": "full_explanation",
+            "profile_name": "full_explanation_60s",
+            "bucket": "60s",
             "duration_seconds": d,
             "scene_count_min": 6,
-            "scene_count_max": 9,
-            "word_count_min": 120,
-            "word_count_max": 190,
+            "scene_count_max": 8,
+            "word_count_min": 110,
+            "word_count_max": 175,
             "instruction": (
-                "Full educational short. Hook, setup, reasoning, answer reveal, takeaway."
+                "60-second educational short. 6-8 scenes covering hook, setup, full reasoning chain, "
+                "answer reveal, takeaway."
             ),
         }
     return {
-        "profile_name": "extended_explanation",
+        "profile_name": "extended_explanation_90s",
+        "bucket": "90s",
         "duration_seconds": d,
         "scene_count_min": 8,
-        "scene_count_max": 12,
-        "word_count_min": 180,
-        "word_count_max": 280,
+        "scene_count_max": 10,
+        "word_count_min": 170,
+        "word_count_max": 260,
         "instruction": (
-            "Extended educational video. Keep visual structure clear and avoid "
-            "overloading the video model."
+            "90-second extended educational video. 8-10 scenes. Keep structure clear; do not "
+            "overload the video model with too many visual ideas."
         ),
     }
 
@@ -297,13 +375,23 @@ def _sync_provider_prompt_duration(
 
 
 def _detect_language(topic: str) -> str:
-    """Return ``zh-CN`` if the topic contains CJK characters, else ``en``."""
+    """Detect the *input* language of the topic. v0.6.1 still detects this so
+    the manifest can record what the user typed, but the *output* language for
+    the rendered video assets is always English (see ``OUTPUT_LANGUAGE``).
+    Returns ``zh-CN`` if the topic contains CJK characters, else ``en``."""
     if not topic:
         return "en"
-    for ch in topic:
-        if "一" <= ch <= "鿿":
-            return "zh-CN"
+    if _CJK_RE.search(topic):
+        return "zh-CN"
     return "en"
+
+
+def resolve_output_language(_input_language: Any = None) -> str:
+    """v0.6.1: Video Mode output is forced to English regardless of input.
+    Reason — the Seedance pipeline must render English on-screen text only,
+    and downstream constraints (no CJK, no misspelled text, exact provided
+    fragments only) require a single canonical output language."""
+    return OUTPUT_LANGUAGE
 
 
 def _read_template() -> str:
@@ -320,33 +408,46 @@ def _render_template(
     target_duration_seconds: int,
     duration_profile: Dict[str, Any],
 ) -> str:
+    # v0.6.1: regardless of input language, the rendered template always asks
+    # the LLM to produce English output. ``language`` is recorded as
+    # input_language for the manifest only.
+    _ = language
     duration_str = str(int(target_duration_seconds))
     profile_name = str(duration_profile.get("profile_name", ""))
-    scene_min = str(int(duration_profile.get("scene_count_min", 5)))
-    scene_max = str(int(duration_profile.get("scene_count_max", 6)))
-    word_min = str(int(duration_profile.get("word_count_min", 70)))
-    word_max = str(int(duration_profile.get("word_count_max", 120)))
+    scene_min = str(int(duration_profile.get("scene_count_min", 3)))
+    scene_max = str(int(duration_profile.get("scene_count_max", 3)))
+    word_min = str(int(duration_profile.get("word_count_min", 25)))
+    word_max = str(int(duration_profile.get("word_count_max", 45)))
     instruction = str(duration_profile.get("instruction", ""))
 
     template = _read_template()
+    output_language = OUTPUT_LANGUAGE
+    english_subject = _english_topic_label(topic, fallback="this topic")
     if not template:
         return (
             "Generate a strict JSON content asset for an educational short "
             "video on the topic below. Output JSON only, no commentary.\n\n"
-            f"Topic: {topic}\n"
-            f"Language: {language}\n"
+            f"Topic (input, may be in any language): {topic}\n"
+            f"English subject (use this for all on-screen text): {english_subject}\n"
+            f"Output language: {output_language} (English ONLY for narration, on-screen text, video_goal, etc.)\n"
             f"Target duration: {duration_str} seconds (single source of truth)\n"
             f"Duration profile: {profile_name}\n"
             f"Recommended scene count: {scene_min}-{scene_max}\n"
             f"Recommended narration word count: {word_min}-{word_max}\n"
             f"Duration strategy: {instruction}\n"
-            f"Aspect Ratio: {DEFAULT_ASPECT_RATIO}\n"
+            f"Aspect Ratio: {DEFAULT_ASPECT_RATIO} ({DEFAULT_ORIENTATION}, {DEFAULT_RESOLUTION})\n"
             f"Style: {DEFAULT_STYLE}\n"
+            "Hard rules: single narrator monologue only; no dialogue; no two-host conversation; "
+            "no podcast format; no Chinese characters anywhere on screen; English on-screen text only; "
+            "max 8 English words per on-screen text item; no misspelled text; only render exact provided "
+            "on-screen text fragments.\n"
         )
     return (
         template
         .replace("{{TOPIC}}", topic)
-        .replace("{{LANGUAGE}}", language)
+        .replace("{{ENGLISH_SUBJECT}}", english_subject)
+        .replace("{{LANGUAGE}}", output_language)
+        .replace("{{OUTPUT_LANGUAGE}}", output_language)
         .replace("{{DURATION_SECONDS}}", duration_str)
         .replace("{{DURATION_PROFILE_NAME}}", profile_name)
         .replace("{{SCENE_COUNT_MIN}}", scene_min)
@@ -355,6 +456,8 @@ def _render_template(
         .replace("{{WORD_COUNT_MAX}}", word_max)
         .replace("{{DURATION_STRATEGY_INSTRUCTION}}", instruction)
         .replace("{{ASPECT_RATIO}}", DEFAULT_ASPECT_RATIO)
+        .replace("{{ORIENTATION}}", DEFAULT_ORIENTATION)
+        .replace("{{RESOLUTION}}", DEFAULT_RESOLUTION)
         .replace("{{STYLE}}", DEFAULT_STYLE)
     )
 
@@ -546,6 +649,11 @@ def _validate_and_normalize(
     if duration_profile is None:
         duration_profile = build_duration_profile(target_duration)
 
+    # v0.6.1: input language is recorded; output language is forced English.
+    input_language = language or _detect_language(topic)
+    output_language = OUTPUT_LANGUAGE
+    english_subject = _english_topic_label(topic, fallback="this topic")
+
     # topic_analysis
     ta = parsed.get("topic_analysis")
     if not isinstance(ta, dict):
@@ -555,11 +663,11 @@ def _validate_and_normalize(
     ta.setdefault("normalized_topic", topic)
     ta.setdefault("content_type", "general_explanation")
     ta.setdefault("difficulty", "medium")
-    ta.setdefault("core_concept", topic)
+    ta.setdefault("core_concept", english_subject)
     ta.setdefault("target_audience", "students, parents, short-video viewers")
     ta.setdefault(
         "video_goal",
-        f"Explain the topic clearly in a {target_duration}-second educational short video.",
+        f"Explain {english_subject} clearly in a {target_duration}-second 16:9 educational explainer video, English on-screen text only.",
     )
     # Strip legacy 50–60s phrasing if the LLM (or a stale fallback) supplied it.
     if isinstance(ta.get("video_goal"), str):
@@ -568,104 +676,92 @@ def _validate_and_normalize(
         ta["risk_points"] = ["Avoid wrong answer", "Avoid mismatched visuals"]
     if not isinstance(ta.get("visual_requirements"), list):
         ta["visual_requirements"] = [
+            "16:9 landscape, 1920x1080",
             "white background",
-            "clean line-art educational visuals",
-            "large readable on-screen text",
+            "clean line art / infographic visuals",
+            "large readable English on-screen text",
+            "no Chinese characters anywhere on screen",
+            "no misspelled text",
         ]
-    ta.setdefault("language", language)
+    ta["language"] = output_language
+    ta["input_language"] = input_language
+    ta["output_language"] = output_language
+    ta["english_subject"] = english_subject
 
-    # reasoning
+    # reasoning — v0.6.1 always English regardless of input language.
     reasoning = parsed.get("reasoning")
     if not isinstance(reasoning, dict):
         reasoning = {}
         warnings.append("reasoning missing/invalid; coerced to default.")
-    is_zh = str(language).lower().startswith("zh")
-    if is_zh:
-        reasoning.setdefault("correct_answer", "需要人工核对。")
-        if not isinstance(reasoning.get("step_by_step_reasoning"), list):
-            reasoning["step_by_step_reasoning"] = [
-                "第 1 步:明确问题的精确含义。",
-                "第 2 步:找出关键的约束条件。",
-                "第 3 步:套用相关原理推导。",
-                "第 4 步:得出答案并复核。",
-            ]
-        reasoning.setdefault(
-            "common_wrong_intuition",
-            "很多人会凭直觉给出表面答案,而忽略关键约束。",
-        )
-        reasoning.setdefault(
-            "key_teaching_point",
-            "回答前先确认约束条件,慢一点再下结论。",
-        )
-        reasoning.setdefault(
-            "accuracy_notes",
-            "需要人工复核:本资产包未经过任何视频 provider 端的内容校验。",
-        )
-    else:
-        reasoning.setdefault("correct_answer", "Human review required.")
-        if not isinstance(reasoning.get("step_by_step_reasoning"), list):
-            reasoning["step_by_step_reasoning"] = [
-                "Step 1: Define the question precisely.",
-                "Step 2: Identify the key constraint.",
-                "Step 3: Apply the relevant principle.",
-                "Step 4: Derive the answer and double-check.",
-            ]
-        reasoning.setdefault(
-            "common_wrong_intuition",
-            "Many viewers will jump to a surface-level guess without checking the constraint.",
-        )
-        reasoning.setdefault(
-            "key_teaching_point",
-            "Slow down and verify the constraint before answering.",
-        )
-        reasoning.setdefault(
-            "accuracy_notes",
-            "Human review required: this asset bundle was produced without provider-side verification.",
-        )
+    reasoning.setdefault("correct_answer", "Human review required.")
+    if not isinstance(reasoning.get("step_by_step_reasoning"), list):
+        reasoning["step_by_step_reasoning"] = [
+            "Step 1: Define the question precisely.",
+            "Step 2: Identify the key constraint.",
+            "Step 3: Apply the relevant principle.",
+            "Step 4: Derive the answer and double-check.",
+        ]
+    reasoning.setdefault(
+        "common_wrong_intuition",
+        "Many viewers will jump to a surface-level guess without checking the constraint.",
+    )
+    reasoning.setdefault(
+        "key_teaching_point",
+        "Slow down and verify the constraint before answering.",
+    )
+    reasoning.setdefault(
+        "accuracy_notes",
+        "Human review required: this asset bundle was produced without provider-side verification.",
+    )
 
-    # script
+    # script — v0.6.1 always English; on-screen text is always sanitised.
     script = parsed.get("script")
     if not isinstance(script, dict):
         script = {}
         warnings.append("script missing/invalid; coerced to default.")
-    if is_zh:
-        script.setdefault("hook", f"关于「{topic}」,有一个出乎意料的点。")
-        script.setdefault(
-            "narration",
-            f"单一旁白讲解「{topic}」:先抛出问题,逐步推理,最后揭示答案并配合清晰的视觉演示。",
-        )
-        if not isinstance(script.get("on_screen_text"), list):
-            script["on_screen_text"] = [topic, "问题", "答案", "为什么?"]
-        if _timing_plan_exceeds_duration(script.get("timing_plan"), target_duration):
-            if isinstance(script.get("timing_plan"), list) and script["timing_plan"]:
-                warnings.append("script.timing_plan normalized to target duration.")
-            script["timing_plan"] = _build_fallback_timing_plan(target_duration, language)
-        script.setdefault("ending", "如果觉得有用,关注一下,后续还有类似题目。")
-    else:
-        script.setdefault("hook", f"Here's something surprising about {topic}.")
-        script.setdefault(
-            "narration",
-            f"Single narrator monologue introducing {topic}, walking through the reasoning, "
-            "and revealing the answer with a clean visual proof.",
-        )
-        if not isinstance(script.get("on_screen_text"), list):
-            script["on_screen_text"] = [
-                topic,
-                "Question",
-                "Answer",
-                "Why?",
-            ]
-        if _timing_plan_exceeds_duration(script.get("timing_plan"), target_duration):
-            if isinstance(script.get("timing_plan"), list) and script["timing_plan"]:
-                warnings.append("script.timing_plan normalized to target duration.")
-            script["timing_plan"] = _build_fallback_timing_plan(target_duration, language)
-        script.setdefault("ending", "Follow for more puzzles like this.")
+    script.setdefault("hook", f"Here's something surprising about {english_subject}.")
+    script.setdefault(
+        "narration",
+        f"Single narrator monologue introducing {english_subject}, walking through the reasoning, "
+        "and revealing the answer with a clean visual proof. No dialogue, no second voice.",
+    )
+    if not isinstance(script.get("on_screen_text"), list):
+        script["on_screen_text"] = [
+            english_subject,
+            "Question",
+            "Answer",
+            "Why?",
+        ]
+    if _timing_plan_exceeds_duration(script.get("timing_plan"), target_duration):
+        if isinstance(script.get("timing_plan"), list) and script["timing_plan"]:
+            warnings.append("script.timing_plan normalized to target duration.")
+        script["timing_plan"] = _build_fallback_timing_plan(target_duration, output_language)
+    script.setdefault("ending", "Follow for more puzzles like this.")
 
     # Strip legacy 50–60s phrasing from any LLM-supplied narration / ending.
     if isinstance(script.get("narration"), str):
         script["narration"] = _sync_duration_text(script["narration"], target_duration)
     if isinstance(script.get("ending"), str):
         script["ending"] = _sync_duration_text(script["ending"], target_duration)
+    if isinstance(script.get("hook"), str):
+        script["hook"] = _strip_cjk(script["hook"]) or f"Here's something surprising about {english_subject}."
+
+    # On-screen text safety — must be English-only, ≤8 words each, no CJK,
+    # de-duplicated, never empty.
+    cleaned_ost: List[str] = []
+    seen_ost: set = set()
+    for raw in script.get("on_screen_text") or []:
+        cleaned = _english_topic_label(raw, fallback="")
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen_ost:
+            continue
+        seen_ost.add(key)
+        cleaned_ost.append(cleaned)
+    if not cleaned_ost:
+        cleaned_ost = [english_subject, "Question", "Answer", "Why?"]
+    script["on_screen_text"] = cleaned_ost
 
     # storyboard
     storyboard = parsed.get("storyboard")
@@ -683,16 +779,23 @@ def _validate_and_normalize(
                 "storyboard.duration_seconds normalized to target duration."
             )
     storyboard["duration_seconds"] = target_duration
-    storyboard.setdefault("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    # v0.6.1: always force 16:9 / 1920x1080 even if upstream sent 9:16.
+    if storyboard.get("aspect_ratio") and storyboard.get("aspect_ratio") != DEFAULT_ASPECT_RATIO:
+        warnings.append(
+            f"storyboard.aspect_ratio normalized from {storyboard.get('aspect_ratio')} to {DEFAULT_ASPECT_RATIO}."
+        )
+    storyboard["aspect_ratio"] = DEFAULT_ASPECT_RATIO
+    storyboard["orientation"] = DEFAULT_ORIENTATION
+    storyboard["resolution"] = DEFAULT_RESOLUTION
     storyboard.setdefault("style", DEFAULT_STYLE)
-    scene_min = int(duration_profile.get("scene_count_min", 5))
-    scene_max = int(duration_profile.get("scene_count_max", 6))
+    scene_min = int(duration_profile.get("scene_count_min", 3))
+    scene_max = int(duration_profile.get("scene_count_max", 3))
     scenes = storyboard.get("scenes")
     if not isinstance(scenes, list) or len(scenes) < scene_min:
         warnings.append(
             f"storyboard.scenes missing or fewer than {scene_min} entries; using fallback scene list."
         )
-        scenes = _fallback_scenes(topic, target_duration, language)
+        scenes = _fallback_scenes(english_subject, target_duration, output_language)
     else:
         overshoot = False
         for sc in scenes:
@@ -711,14 +814,32 @@ def _validate_and_normalize(
                     continue
         cleaned_input: List[Dict[str, Any]] = [sc for sc in scenes if isinstance(sc, dict)]
         if not cleaned_input:
-            scenes = _fallback_scenes(topic, target_duration, language)
+            scenes = _fallback_scenes(english_subject, target_duration, output_language)
         else:
             scenes = _assign_scene_time_ranges(cleaned_input, target_duration)
             for idx, sc in enumerate(scenes, start=1):
                 sc.setdefault("scene_id", idx)
-                sc.setdefault("visual", "Whiteboard line-art illustration matching the narration.")
-                sc.setdefault("narration", "Single narrator explains the next reasoning step.")
-                sc.setdefault("on_screen_text", topic if idx == 1 else "")
+                sc.setdefault(
+                    "visual",
+                    "Clean 16:9 line-art / infographic illustration on a white background, matching the narration.",
+                )
+                sc.setdefault(
+                    "narration",
+                    "Single narrator explains the next reasoning step. No second voice.",
+                )
+                # v0.6.1: scene on_screen_text must be English-only.
+                raw_ost = sc.get("on_screen_text", english_subject if idx == 1 else "")
+                if isinstance(raw_ost, list):
+                    cleaned_list: List[str] = []
+                    for item in raw_ost:
+                        clean = _english_topic_label(item, fallback="")
+                        if clean:
+                            cleaned_list.append(clean)
+                    sc["on_screen_text"] = cleaned_list
+                else:
+                    sc["on_screen_text"] = _english_topic_label(
+                        raw_ost, fallback=english_subject if idx == 1 else ""
+                    )
         if overshoot:
             warnings.append("storyboard.scene time_range normalized to target duration.")
         if len(scenes) > scene_max:
@@ -729,13 +850,17 @@ def _validate_and_normalize(
     storyboard["scenes"] = scenes
     storyboard["negative_constraints"] = list(NEGATIVE_CONSTRAINTS)
 
-    # provider_prompt
+    # provider_prompt — v0.6.1: always English, always 16:9 landscape, sanitized.
     provider_prompt = parsed.get("provider_prompt")
     if not isinstance(provider_prompt, str) or len(provider_prompt.strip()) < 80:
         warnings.append("provider_prompt missing or too short; using fallback prompt.")
         provider_prompt = _build_fallback_provider_prompt(
-            topic, ta, reasoning, script, scenes, target_duration
+            english_subject, ta, reasoning, script, scenes, target_duration
         )
+    # Strip any CJK that the LLM might have leaked into provider_prompt.
+    if _CJK_RE.search(provider_prompt):
+        warnings.append("provider_prompt contained CJK; stripped to enforce English-only output.")
+        provider_prompt = _CJK_RE.sub("", provider_prompt)
     provider_prompt = _sync_provider_prompt_duration(provider_prompt, target_duration)
 
     # web_copy_placeholder
@@ -757,29 +882,19 @@ def _validate_and_normalize(
     }
 
 
-def _build_fallback_timing_plan(duration_seconds: int, language: str) -> List[str]:
-    """Deterministic timing plan that always sums to duration_seconds."""
+def _build_fallback_timing_plan(duration_seconds: int, language: str = "en") -> List[str]:
+    """v0.6.1: English-only deterministic timing plan that always ends at
+    ``duration_seconds``. ``language`` is accepted for back-compat but ignored
+    — Video Mode output is always English."""
+    _ = language
     d = int(duration_seconds or DEFAULT_DURATION_SECONDS)
-    is_zh = str(language).lower().startswith("zh")
-    if d <= 10:
-        if is_zh:
-            return [f"0-{max(1, d // 2)} 秒 钩子+问题", f"{max(1, d // 2)}-{d} 秒 答案+收尾"]
-        return [f"0-{max(1, d // 2)}s hook+question", f"{max(1, d // 2)}-{d}s answer+takeaway"]
-    if d <= 20:
-        a = max(1, d // 4)
-        b = max(a + 1, (d * 3) // 4)
-        if is_zh:
-            return [f"0-{a} 秒 钩子", f"{a}-{b} 秒 推理", f"{b}-{d} 秒 揭示"]
-        return [f"0-{a}s hook", f"{a}-{b}s reasoning", f"{b}-{d}s reveal"]
-    if d <= 35:
-        if is_zh:
-            return [
-                f"0-{max(2, d // 8)} 秒 钩子",
-                f"{max(2, d // 8)}-{d // 3} 秒 铺垫",
-                f"{d // 3}-{(2 * d) // 3} 秒 推理",
-                f"{(2 * d) // 3}-{(5 * d) // 6} 秒 揭示",
-                f"{(5 * d) // 6}-{d} 秒 收尾",
-            ]
+    if d <= 7:
+        return [f"0-{max(1, d // 2)}s hook+question", f"{max(1, d // 2)}-{d}s answer reveal"]
+    if d <= 22:
+        a = max(1, d // 3)
+        b = max(a + 1, (2 * d) // 3)
+        return [f"0-{a}s hook", f"{a}-{b}s reasoning", f"{b}-{d}s answer reveal"]
+    if d <= 45:
         return [
             f"0-{max(2, d // 8)}s hook",
             f"{max(2, d // 8)}-{d // 3}s setup",
@@ -787,30 +902,13 @@ def _build_fallback_timing_plan(duration_seconds: int, language: str) -> List[st
             f"{(2 * d) // 3}-{(5 * d) // 6}s reveal",
             f"{(5 * d) // 6}-{d}s takeaway",
         ]
-    if d <= 60:
-        if is_zh:
-            return [
-                "0-5 秒 钩子",
-                f"5-{d // 4} 秒 铺垫",
-                f"{d // 4}-{d // 2} 秒 推理",
-                f"{d // 2}-{(3 * d) // 4} 秒 揭示",
-                f"{(3 * d) // 4}-{d} 秒 收尾",
-            ]
+    if d <= 75:
         return [
             "0-5s hook",
             f"5-{d // 4}s setup",
             f"{d // 4}-{d // 2}s reasoning",
             f"{d // 2}-{(3 * d) // 4}s reveal",
             f"{(3 * d) // 4}-{d}s takeaway",
-        ]
-    if is_zh:
-        return [
-            "0-5 秒 钩子",
-            f"5-{d // 5} 秒 铺垫",
-            f"{d // 5}-{(2 * d) // 5} 秒 推理上",
-            f"{(2 * d) // 5}-{(3 * d) // 5} 秒 推理下",
-            f"{(3 * d) // 5}-{(4 * d) // 5} 秒 揭示",
-            f"{(4 * d) // 5}-{d} 秒 收尾",
         ]
     return [
         "0-5s hook",
@@ -827,54 +925,66 @@ def _fallback_scenes(
     duration_seconds: int = DEFAULT_DURATION_SECONDS,
     language: str = "en",
 ) -> List[Dict[str, Any]]:
+    """v0.6.1: English-only fallback storyboard. ``topic`` is expected to be a
+    pre-sanitised English subject label; ``language`` is ignored (kept for
+    signature back-compat but the output is always English)."""
+    _ = language
     d = int(duration_seconds or DEFAULT_DURATION_SECONDS)
     profile = build_duration_profile(d)
-    scene_count = max(int(profile.get("scene_count_min", 2)), 2)
-    is_zh = str(language).lower().startswith("zh")
+    scene_count = max(int(profile.get("scene_count_min", 1)), 1)
+    english_subject = _english_topic_label(topic, fallback="this topic")
 
-    if scene_count == 2:
+    if scene_count <= 2:
         labels = [
-            ("Hook+Question" if not is_zh else "钩子+问题", topic, "Hook scene; large readable title."),
-            ("Answer" if not is_zh else "答案", "Answer", "Final answer; correct, no unsupported claims."),
+            ("Hook + Answer", english_subject, "Hook scene; large readable English title; reveal the answer."),
         ]
+        if scene_count == 2:
+            labels.append(("Answer", "Answer", "Final answer; English on-screen text only."))
     elif scene_count == 3:
         labels = [
-            ("Hook" if not is_zh else "钩子", topic, "Hook scene."),
-            ("Reasoning" if not is_zh else "推理", "Why?", "Single narrator walks through reasoning."),
-            ("Answer" if not is_zh else "答案", "Answer", "Answer + takeaway."),
+            ("Hook", english_subject, "Hook scene; English title only."),
+            ("Reasoning", "Why?", "Single narrator walks through one reasoning step."),
+            ("Answer", "Answer", "Answer + takeaway; English text only."),
         ]
     else:
         base = [
-            ("Hook" if not is_zh else "钩子", topic),
-            ("Setup" if not is_zh else "铺垫", "Setup"),
-            ("Reasoning" if not is_zh else "推理", "Why?"),
-            ("Reveal" if not is_zh else "揭示", "Answer"),
-            ("Takeaway" if not is_zh else "收尾", "Takeaway"),
+            ("Hook", english_subject),
+            ("Setup", "Setup"),
+            ("Reasoning", "Why?"),
+            ("Reveal", "Answer"),
+            ("Takeaway", "Takeaway"),
         ]
         if scene_count > 5:
-            extra = [(f"Reasoning {i}" if not is_zh else f"推理 {i}", "Why?") for i in range(2, scene_count - 3)]
+            extra = [(f"Reasoning {i}", "Why?") for i in range(2, scene_count - 3)]
             base = base[:3] + extra + base[3:]
         base = base[:scene_count]
-        labels = [(name, ost, "Scene matches reasoning, no decorative clutter.") for name, ost in base]
+        labels = [(name, ost) for name, ost in base]
+        labels = [(name, ost, "Scene matches reasoning, no decorative clutter.") for name, ost in labels]
 
     per_scene = max(1, d // scene_count)
     scenes: List[Dict[str, Any]] = []
-    for idx, (label, ost, *rest) in enumerate(labels, start=1):
+    for idx, item in enumerate(labels, start=1):
+        if len(item) == 3:
+            label, ost, notes = item
+        else:
+            label, ost = item[0], item[1]
+            notes = "Scene matches reasoning."
         start_t = (idx - 1) * per_scene
         end_t = idx * per_scene if idx < scene_count else d
-        notes = rest[0] if rest else "Scene matches reasoning."
         scenes.append({
             "scene_id": idx,
             "time_range": f"{start_t}-{end_t}s",
             "visual": (
-                f"Whiteboard reveals the title '{topic}'." if idx == 1
-                else "Whiteboard line-art illustration matching the narration."
+                f"Clean 16:9 white-background scene introducing the English title '{english_subject}'."
+                if idx == 1
+                else "Clean 16:9 line-art / infographic illustration on a white background, matching the narration."
             ),
             "narration": (
-                f"Here's a quick puzzle about {topic}." if idx == 1
-                else "Single narrator explains the next reasoning step."
+                f"Here's a quick puzzle about {english_subject}."
+                if idx == 1
+                else "Single narrator explains the next reasoning step. No second voice."
             ),
-            "on_screen_text": ost,
+            "on_screen_text": _english_topic_label(ost, fallback="" if idx > 1 else english_subject),
             "camera": "static" if idx != 1 else "static center",
             "notes": notes,
         })
@@ -897,16 +1007,18 @@ def _build_fallback_provider_prompt(
     )
     constraints = ", ".join(NEGATIVE_CONSTRAINTS)
     return (
-        f"Generate a {int(target_duration_seconds)} second 1080p 9:16 24fps educational short video about: {topic}. "
+        f"Generate a {int(target_duration_seconds)}-second 16:9 landscape, 1920x1080, "
+        f"24fps educational explainer video about: {topic}. "
         f"Core concept: {topic_analysis.get('core_concept', topic)}. "
         f"Correct answer: {reasoning.get('correct_answer', 'Human review required.')}. "
-        f"Visual style: clean whiteboard line-art educational short video, white background, "
-        f"large readable on-screen text, simple hand-drawn diagrams. "
+        f"Visual style: clean educational explainer video, white background, simple line art and "
+        f"infographics, English on-screen text only, yellow highlights, smooth camera. "
         f"Timing plan: {timing}. "
         f"Storyboard: {scene_summary}. "
-        f"Narration constraints: single narrator, monologue narration, "
+        f"Narration constraints: single narrator monologue only, no dialogue, no second voice, "
         f"{constraints}. "
-        f"On-screen text must be large, readable, and match the narration. "
+        f"On-screen text rules: English only, no Chinese characters, no misspelled text, "
+        f"only render the exact provided on-screen text fragments, max 8 words per item. "
         f"Visuals must match the reasoning and contain no irrelevant decoration. "
         f"The final answer shown must be correct."
     )
@@ -981,20 +1093,29 @@ def _render_video_script_md(topic: str, script: Dict[str, Any], storyboard: Dict
 
 
 def _build_design_summary_cn(topic: str, ta: Dict[str, Any], reasoning: Dict[str, Any]) -> str:
-    """Brief Chinese-language design overview shown in the Video Mode Overview tab."""
-    audience = ta.get("target_audience", "短视频观众")
-    risk = "、".join(ta.get("risk_points") or []) or "无"
-    visual_reqs = "、".join(ta.get("visual_requirements") or []) or "白底线稿"
+    """v0.6.1: Design overview shown in the Video Mode Overview tab.
+
+    The function name is preserved for back-compat with callers, but the
+    content is now English-only — Video Mode output is forced English
+    regardless of input language. Input topic may still be Chinese; the
+    summary uses the sanitised English subject from ``topic_analysis``."""
+    english_subject = _english_topic_label(
+        ta.get("english_subject") or ta.get("core_concept") or topic, fallback="this topic"
+    )
+    audience = ta.get("target_audience", "short-video viewers")
+    risk = "; ".join(ta.get("risk_points") or []) or "none"
+    visual_reqs = "; ".join(ta.get("visual_requirements") or []) or "white background, clean line art"
     return (
-        f"主题：{topic}\n"
-        f"核心概念：{ta.get('core_concept', topic)}\n"
-        f"目标受众：{audience}\n"
-        f"视频目标：{ta.get('video_goal', '')}\n"
-        f"风险点：{risk}\n"
-        f"视觉要求：{visual_reqs}\n"
-        f"正确答案：{reasoning.get('correct_answer', '')}\n"
-        f"教学要点：{reasoning.get('key_teaching_point', '')}\n"
-        f"备注：{reasoning.get('accuracy_notes', '')}"
+        f"Topic (input): {topic}\n"
+        f"English subject: {english_subject}\n"
+        f"Core concept: {ta.get('core_concept', english_subject)}\n"
+        f"Target audience: {audience}\n"
+        f"Video goal: {ta.get('video_goal', '')}\n"
+        f"Risk points: {risk}\n"
+        f"Visual requirements: {visual_reqs}\n"
+        f"Correct answer: {reasoning.get('correct_answer', '')}\n"
+        f"Key teaching point: {reasoning.get('key_teaching_point', '')}\n"
+        f"Notes: {reasoning.get('accuracy_notes', '')}"
     )
 
 
@@ -1016,7 +1137,10 @@ def _build_provider_request_preview(
     entire v0.5.x line.
     """
     duration = int(target_duration_seconds or DEFAULT_DURATION_SECONDS)
-    aspect_ratio = storyboard.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    # v0.6.1: always force 16:9 / 1920x1080 in the preview, regardless of any
+    # legacy 9:16 value the storyboard might still carry.
+    aspect_ratio = DEFAULT_ASPECT_RATIO
+    resolution = DEFAULT_RESOLUTION
     style = storyboard.get("style", DEFAULT_STYLE)
     negative_prompt = ", ".join(NEGATIVE_CONSTRAINTS)
     if duration_profile is None:
@@ -1030,19 +1154,23 @@ def _build_provider_request_preview(
         "prompt": provider_prompt,
         "duration_seconds": duration,
         "target_duration_seconds": duration,
-        "duration_source": "APX_VIDEO_DURATION",
+        "duration_source": "ui_or_APX_VIDEO_DURATION",
         "duration_profile": duration_profile,
         "aspect_ratio": aspect_ratio,
-        "resolution": DEFAULT_RESOLUTION,
+        "orientation": DEFAULT_ORIENTATION,
+        "resolution": resolution,
         "fps": DEFAULT_FPS,
-        "language": language,
+        "language": OUTPUT_LANGUAGE,
+        "input_language": language,
+        "output_language": OUTPUT_LANGUAGE,
         "style": style,
         "negative_prompt": negative_prompt,
         "submit_mode": "not_connected",
         "provider_status": PROVIDER_STATUS,
         "real_video_generated": False,
         "note": (
-            "This is a v0.6.0 provider request preview. No real video API is called."
+            "This is a v0.6.1 provider request preview (English-only, 16:9 landscape). "
+            "No real video API is called."
         ),
         # Compatibility nested form retained for any caller that read the
         # earlier shape. Same data, no secrets.
@@ -1052,8 +1180,9 @@ def _build_provider_request_preview(
             "duration_seconds": duration,
             "target_duration_seconds": duration,
             "aspect_ratio": aspect_ratio,
+            "orientation": DEFAULT_ORIENTATION,
             "fps": DEFAULT_FPS,
-            "resolution": DEFAULT_RESOLUTION,
+            "resolution": resolution,
             "style": style,
             "negative_constraints": list(NEGATIVE_CONSTRAINTS),
         },
@@ -1237,16 +1366,24 @@ def _save_assets(
         "schema_version": VIDEO_ASSETS_SCHEMA_VERSION,
         "legacy_schema_version": VIDEO_ASSETS_LEGACY_SCHEMA_VERSION,
         "target_duration_seconds": target_duration,
-        "duration_source": "APX_VIDEO_DURATION",
+        "duration_source": "ui_or_APX_VIDEO_DURATION",
         "duration_profile": duration_profile.get("profile_name"),
+        "duration_bucket": duration_profile.get("bucket"),
         "duration_synced": True,
+        "aspect_ratio": DEFAULT_ASPECT_RATIO,
+        "orientation": DEFAULT_ORIENTATION,
+        "resolution": DEFAULT_RESOLUTION,
+        "fps": DEFAULT_FPS,
         "provider_contract_schema_version": PROVIDER_CONTRACT_SCHEMA_VERSION,
         "seedance_prompt_compiler_version": SEEDANCE_COMPILER_VERSION,
         "seedance_prompt_profile_version": compiler_profile_version,
         "generated_at": _utc_now_iso(),
         "topic": topic,
+        "english_subject": normalized["topic_analysis"].get("english_subject"),
         "history_id": history_id,
         "language": normalized["topic_analysis"].get("language"),
+        "input_language": normalized["topic_analysis"].get("input_language"),
+        "output_language": normalized["topic_analysis"].get("output_language", OUTPUT_LANGUAGE),
         "provider": PROVIDER_NAME,
         "future_provider": "seedance",
         "provider_status": PROVIDER_STATUS,
@@ -1335,6 +1472,8 @@ def build_video_content_assets(
     warnings: List[str] = []
     output_path = Path(output_dir)
     assets_dir = output_path / "video_assets"
+    # v0.6.1: ``language`` here is the *input* language (so the manifest can
+    # record what the user typed). The pipeline output is always English.
     language = _detect_language(topic)
     llm_used = False
     llm_raw_text: Optional[str] = None

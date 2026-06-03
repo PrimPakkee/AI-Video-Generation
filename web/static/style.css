@@ -2569,6 +2569,175 @@ body.dark-mode .regenerate-error {
     padding: 24px;
 }
 
+/* v0.6.2 — overlay is fully opaque so a previous record's mp4 can never
+   bleed through during a new generation or when blocked / failed states
+   are shown. */
+.video-progress-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f172a;
+    color: #fff;
+    padding: 24px;
+    text-align: center;
+}
+
+.video-progress-overlay.hidden { display: none; }
+
+.video-progress-overlay-inner {
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.video-progress-overlay-title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+}
+
+.video-progress-overlay-bar {
+    width: 100%;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.video-progress-overlay-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #38bdf8, #6366f1);
+    border-radius: 999px;
+    transition: width 0.4s ease;
+}
+
+.video-progress-overlay-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.video-progress-overlay-percent { font-variant-numeric: tabular-nums; }
+
+.video-progress-overlay-sub {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.65);
+}
+
+.video-progress-overlay-message {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.7);
+    min-height: 14px;
+}
+
+/* v0.6.2 — Provider Evidence Summary panel. Sits above the player so the
+   user can prove (without API keys or signed URLs) whether the real
+   APX/Seedance provider was actually called. */
+.provider-evidence-panel {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin: 8px 0 12px;
+    font-size: 12px;
+    color: #1e293b;
+}
+.provider-evidence-panel.hidden { display: none; }
+.provider-evidence-title {
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #0f172a;
+}
+.provider-evidence-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 16px;
+}
+.provider-evidence-list li {
+    line-height: 1.5;
+}
+.provider-evidence-list li strong {
+    color: #475569;
+    margin-right: 4px;
+}
+.provider-evidence-mono {
+    font-family: 'Menlo', 'SF Mono', monospace;
+    font-size: 11px;
+    color: #334155;
+    word-break: break-all;
+}
+.provider-evidence-block-reason {
+    grid-column: 1 / -1;
+    color: #b45309;
+}
+.provider-evidence-block-reason.hidden { display: none; }
+.provider-evidence-yes { color: #15803d; font-weight: 600; }
+.provider-evidence-no  { color: #b91c1c; font-weight: 600; }
+
+.video-duration-selector {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary, #f8fafc);
+    border: 1px solid var(--border-color, #e5e7eb);
+    border-radius: 10px;
+    font-size: 12px;
+}
+
+.video-duration-selector.hidden { display: none; }
+
+.video-duration-label {
+    font-weight: 600;
+    color: var(--text-primary, #111827);
+}
+
+.video-duration-options {
+    display: inline-flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.video-duration-option {
+    border: 1px solid var(--border-color, #e5e7eb);
+    background: #fff;
+    color: var(--text-primary, #111827);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.video-duration-option:hover { border-color: #6366f1; }
+
+.video-duration-option.active {
+    background: #6366f1;
+    border-color: #6366f1;
+    color: #fff;
+}
+
+.video-duration-hint {
+    color: var(--text-secondary, #6b7280);
+    font-size: 11px;
+}
+
 .video-placeholder-text {
     margin: 0;
     font-size: 13px;
@@ -3035,9 +3204,41 @@ body.dark-mode .web-copy-empty-state {
     background: #f6f8fa;
 }
 .video-job-refresh-btn[disabled] {
-    cursor: default;
+    cursor: not-allowed;
     color: #8c959f;
     background: #f6f8fa;
+}
+
+/* v0.6.2-hotfix — always-visible action row for the Video Job panel. */
+.video-job-actions {
+    margin-top: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+.video-job-regenerate-btn {
+    border: 1px solid #1f6feb;
+    background: #1f6feb;
+    color: #fff;
+    border-radius: 4px;
+    padding: 1px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    line-height: 1.4;
+}
+.video-job-regenerate-btn:hover:not([disabled]) {
+    background: #1158c7;
+    border-color: #1158c7;
+}
+.video-job-regenerate-btn[disabled] {
+    cursor: not-allowed;
+    background: #b5c8eb;
+    border-color: #b5c8eb;
+}
+.video-job-actions-hint {
+    font-size: 11px;
+    color: #6e7781;
 }
 
 .video-job-status-pill {

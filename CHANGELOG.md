@@ -2,6 +2,157 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.6.2 - Seedance Prompt Quality Gate + English Compiler + Real Progress Fix
+
+> v0.6.2 不重接接口。APX/Seedance 真实接口已经在 v0.6.0 接通并成功返回过
+> `video_url`、下载过 `video.mp4`。本次修复的是**真正提交给 Seedance 的
+> `submit_payload.prompt` 质量**：禁止 `this topic` / `A` / `AB` / `BAB` /
+> `Question` / `Answer` / `Why?` / `Human review required` / 中文字符 /
+> 空 narration / 空 scene 进入真实 APX 调用。本次仍**不调用真实 APX、不生成
+> 真实视频、不修改 .env、不引入 Celery / Redis / RQ**。
+
+### 新增 / 变更
+- Schema bump：
+  - `seedance_prompt_compiler_v0.6.1 → v0.6.2`
+  - `seedance_prompt_profile_v0.6.1 → v0.6.2`
+  - `seedance_prompt_debug_v0.6.1 → v0.6.2`
+  - `video_assets_v0.6.1`、`config/provider_profiles/seedance.json` 不变。
+- `web/video_providers/seedance_prompt_compiler.py` 重写：
+  - 新增 `normalize_seedance_prompt_input(...)`，把上游内容资产（topic_analysis /
+    reasoning / video_script / storyboard / provider_request_preview）统一抽取为
+    一份 English-only 结构化输入；任一字段缺失会写入 `quality_block_reasons`，
+    绝不再 fallback 成 `this topic` / `A` / `AB` / `BAB`。
+  - 新增 `BANNED_PLACEHOLDER_STRINGS` / `BANNED_STANDALONE_TOKENS` /
+    `REQUIRED_PROMPT_KEYWORDS` / `GENERIC_OST_FRAGMENTS` 公开常量。
+  - `build_seedance_prompt(...)` 改为紧凑的 Task / Format / Voiceover /
+    Core explanation / Scene plan / Allowed on-screen text only / Text rules /
+    Motion / Negative constraints / Final rules 段落格式；删除「does not yet
+    generate audio」相关文案，改为正向要求 `Use one clear English narrator
+    voiceover.`；保留 `Mandatory duration: <n> seconds. Ignore any conflicting
+    duration instruction from earlier sections.`、`Single narrator monologue
+    only.`、`max 8 English words`、`only render the exact provided on-screen
+    text fragments`、`16:9 landscape, 1920x1080`。
+- 新增 `validate_seedance_prompt_quality(prompt, compiled_payload, duration_seconds)`
+  Default-deny gate。检测：CJK；banned placeholder；standalone A/AB/BAB；缺失
+  required keywords；normalized_input 缺失字段；duration 不一致。
+- `web/app.py` 真实 APX submit 前调用 quality gate，失败时创建
+  `VideoJob.status="blocked_prompt_quality"` /
+  `stage="blocked_before_submit"` / `progress=0` / `response_payload.prompt_quality`，
+  `VideoHistory.video_status` 同步映射 `blocked_prompt_quality`，绝不调用 APX。
+  `APX_VIDEO_ALLOW_FALLBACK_SUBMIT=true` 是唯一覆盖。
+- `web/video_providers/apx_seedance_provider.py`：`DEFAULT_PROMPT_EXTEND = False`；
+  `config/example.env` 推荐 `APX_VIDEO_PROMPT_EXTEND=false`，默认 duration 推荐 15。
+- `web/app.py` 新增真实进度 run store：
+  - `POST /api/video/generate/start` 启动后台线程并返回 `run_id`；
+  - `GET /api/video/generate/runs/{run_id}` 返回每个 stage 的真实时间。
+  - 9 个真实阶段：`validate_topic` / `build_llm_content_package` /
+    `parse_package_output` / `create_video_history_record` /
+    `build_video_assets` / `compile_seedance_prompt` /
+    `validate_prompt_quality` / `submit_video_job` / `open_video_status_panel`。
+- 前端：彻底删除 `advanceVideoGenerationProgress` + 1.5 秒 setInterval 假动画。
+  改为 `startVideoRunPolling(runId, onComplete, onFailure)`，每秒轮询真实 stage。
+- Video Output 进度覆盖层背景改为 `#0f172a` 实色，杜绝上一条视频从 overlay
+  下方漏出；新增 `blocked_prompt_quality` 状态文案；
+  `clearVideoPlayerStateForRecordSwitch()` 在新任务开始与历史切换时调用。
+- 新增 Provider Evidence Summary 面板（`#provider-evidence-panel`）：
+  Provider / Real API call / Provider Job ID / Job status / Remote video URL
+  received（仅 Yes/No） / Local video downloaded / Local video available /
+  Local file（仅文件名） / Duration / Prompt quality / Block reason。绝不
+  暴露 API key、完整 signed video URL、绝对路径或请求 headers。
+  数据来自 `/api/video/history/{id}/provider-contract` 新增的 `provider_evidence`
+  字段。
+- `templates/video_asset_prompt_template.md` 重写为 v0.6.2 强约束模板：
+  要求 LLM 输出 `english_subject` / `english_title` / `english_question` /
+  `correct_answer` / `narration_script` /
+  `scene_plan[*].visual_en|narration_en|on_screen_text_en`；
+  禁止 `this topic` / `A` / `AB` / `BAB` / 单独 `Question`/`Answer`/`Why?`；
+  无法确定时设 `topic_analysis.needs_human_review=true` 而不是用占位符。
+- `scripts/run_stability_checks.py` 升级到 `STABILITY_CHECKS_VERSION = "v0.6.2"`：
+  新增 `check_v062_prompt_quality_gate()`；调整 v0.5.4 / v0.6.1 旧检查以接受
+  v0.6.2 的真实 stage keys / 新版本号 / `pr.get("target_duration_seconds")` 写法 /
+  `config/example.env` 编辑豁免。
+- 文档：新增 `docs/v0.6.2_seedance_prompt_quality_gate.md`；删除未追踪的
+  `docs/v0.6.1_english_landscape_video_spec.md`（内容已合并到 v0.6.2 spec）。
+
+### 不变项 / 不允许的事
+- 不修改 NotebookLM Prompt 主模板。
+- 不修改 Prompt Mode 数据库 schema。
+- 不修改 AI Review 评分标准。
+- 不引入 Celery / Redis / RQ。
+- 不修改 `.env`，不读取 / 打印 `APX_VIDEO_API_KEY`。
+- 不真实调用 APX、不真实 poll、不真实下载、不生成 mp4。
+- 不 `git add` / `git commit` / `git push`。
+- 不提交 `data/*.db` / `outputs/` / `*.mp4` / `.env`。
+
+## v0.6.1 - English-only 16:9 Landscape Video Spec & Progress UX Hardening
+
+> 本版本固化 Video Mode 的输出形态：所有最终产物（Seedance prompt、旁白、
+> on-screen text、`video_goal`）必须是英文；视频画幅强制为 **16:9 横屏**
+> （`1920x1080`），不再使用 9:16 竖屏；首页新增视频时长选择器（5 / 15 /
+> 30 / 60 / 90 秒，默认 15 秒），管线按时长档位决定场景数；视频播放区
+> 新增覆盖式 0–100% 进度条；切换历史记录时清理上一条的视频残留。本版本
+> 仍**不调用真实 APX、不生成真实视频**，所有 hard prohibitions 沿用 v0.6.0。
+
+### 新增 / 变更
+- Schema bump：`video_assets_v0.6.0 → v0.6.1`；
+  `seedance_prompt_compiler_v0.5.6 → v0.6.1`；
+  `seedance_prompt_profile_v0.5.6 → v0.6.1`；
+  `seedance_prompt_debug_v0.5.6 → v0.6.1`。
+  `VIDEO_ASSETS_LEGACY_SCHEMA_VERSION` 升至 `video_assets_v0.6.0`。
+- 强制 16:9 横屏 / 1920x1080 / 24fps：`video_asset_pipeline.py` 与
+  `seedance_prompt_compiler.py` 中的 `DEFAULT_ASPECT_RATIO`、
+  `DEFAULT_RESOLUTION`、`DEFAULT_ORIENTATION`、provider request preview
+  均硬绑定为 16:9 / 1920x1080 / landscape；`config/provider_profiles/seedance.json`
+  对应字段同步。
+- 强制英文输出：新增 `_strip_cjk` / `_english_topic_label` 工具；
+  `output_language` 始终为 `"en"`；`input_language` 单独记录在 manifest 上；
+  `on_screen_text` 在脚本、场景、fallback、compiler 全链路过 `_english_topic_label`，
+  确保最大 8 个英文单词、无 CJK、不会把中文题目泄漏到屏幕文字。
+- 新增 5 / 15 / 30 / 60 / 90 五个时长档位：`build_duration_profile` 重写为
+  `hook_only_5s` / `quick_answer_15s` / `standard_short_30s` /
+  `full_explanation_60s` / `extended_explanation_90s`，每档对应独立的
+  scene_count / word_count 区间。`DEFAULT_DURATION_SECONDS` 由 5 改为 15。
+- `web/app.py` 的 `/api/video/generate` 与 `/api/video/history/{id}/regenerate`
+  接受可选 `duration_seconds` 字段，回落顺序：请求 → 历史记录 → 默认 15。
+- 编译器 prompt 强化：增加 “# Seedance Educational Explainer Video Prompt
+  (16:9)” 头部、`## Format and Style`、`## Allowed On-screen Text`、
+  `## Negative Constraints and Final Rules` 段落；明确 `single narrator
+  monologue`、no two-host / no podcast / no interview / no dialogue、
+  English on-screen text only、no Chinese characters、no misspelled、
+  only render the exact provided fragments、`Mandatory duration: N seconds`、
+  `Ignore any conflicting duration, language, aspect-ratio or format
+  instruction from earlier content`。
+- 前端：
+  - `index.html` 新增 `#video-duration-selector`（5 / 15 / 30 / 60 / 90，默认
+    高亮 15s）；新增 `#video-progress-overlay` 覆盖在 `#video-player-shell` 上。
+  - `style.css` 新增 `.video-duration-selector` / `.video-duration-option` /
+    `.video-progress-overlay` 系列样式。
+  - `main.js` 新增 `setVideoDurationSelectorActive` / `snapVideoDuration` /
+    `getCurrentVideoDurationSeconds`、`renderVideoOverlayProgress`、
+    `clearVideoPlayerStateForRecordSwitch`；`/api/video/generate` 与
+    `/api/video/history/{id}/regenerate` 请求体中带上 `duration_seconds`；
+    切换历史记录时清空 `<video>.src` 与 `currentVideoRecord` /
+    `currentVideoJob` 上的视频残留路径。
+  - 状态 → 进度映射：`submitted:20` / `pending:35` / `running:60` /
+    `downloading:85` / `succeeded:100`（隐藏）/ `failed:100` /
+    `blocked_fallback_prompt:100` / `provider_not_configured:85`。
+- 稳定性脚本：`scripts/run_stability_checks.py` 升级到 v0.6.1，新增
+  `check_v061_english_landscape()`，覆盖约 50 项子断言。
+
+### 仍然不允许（与 v0.6.0 一致）
+1. 不调用真实 APX。
+2. 不生成真实视频。
+3. 不提交 git，不推送。
+4. 不修改 `.env`，不写死 API key。
+5. 不修改 NotebookLM prompt 模板。
+6. 不修改 Prompt Mode 数据库 schema。
+7. 不修改 AI Review 评分标准。
+8. 不引入 Celery / Redis / RQ / 后台队列。
+9. 不新增 `video_review` 表。
+10. 不把中文题目直接放进 Seedance prompt 的 screen text。
+
+详细见 `docs/v0.6.1_english_landscape_video_spec.md`。
+
 ## v0.6.0 - APX Seedance Real Provider Integration
 
 > 本版本首次接入公司内部 APX 异步视频网关（底层调用 `doubao-seedance-2.0`），

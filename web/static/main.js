@@ -56,6 +56,158 @@ let currentMode = 'history'; // 'history' | 'trash' | 'favorites'
 // All Prompt Mode v0.4.10 protections continue to apply when this is 'prompt'.
 let currentAppMode = 'prompt';
 
+// v0.6.1 — selected video duration (seconds). One of 5/15/30/60/90.
+// Default 15s. Sent in /api/video/generate and regenerate request bodies.
+const VIDEO_DURATION_OPTIONS = [5, 15, 30, 60, 90];
+const DEFAULT_VIDEO_DURATION_SECONDS = 15;
+let currentVideoDurationSeconds = DEFAULT_VIDEO_DURATION_SECONDS;
+
+// v0.6.1 — status -> overlay percent mapping.
+const VIDEO_OVERLAY_STATUS_PERCENT = {
+    submitted: 20,
+    pending: 35,
+    running: 60,
+    downloading: 85,
+    succeeded: 100,
+    ready: 100,
+    failed: 100,
+    cancelled: 100,
+    blocked_fallback_prompt: 100,
+    blocked_prompt_quality: 100,
+    succeeded_but_no_video_url: 100,
+    provider_not_configured: 85,
+};
+const VIDEO_OVERLAY_HIDE_STATES = new Set(['succeeded', 'ready']);
+
+function snapVideoDuration(value) {
+    const n = Number(value);
+    if (!isFinite(n) || n <= 0) return DEFAULT_VIDEO_DURATION_SECONDS;
+    let best = VIDEO_DURATION_OPTIONS[0];
+    let bestDiff = Math.abs(n - best);
+    for (const opt of VIDEO_DURATION_OPTIONS) {
+        const d = Math.abs(n - opt);
+        if (d < bestDiff) { best = opt; bestDiff = d; }
+    }
+    return best;
+}
+
+function setVideoDurationSelectorActive(seconds) {
+    const snapped = snapVideoDuration(seconds);
+    currentVideoDurationSeconds = snapped;
+    document.querySelectorAll('.video-duration-option').forEach((btn) => {
+        const v = parseInt(btn.getAttribute('data-duration'), 10);
+        const active = v === snapped;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+}
+
+function getCurrentVideoDurationSeconds() {
+    return currentVideoDurationSeconds || DEFAULT_VIDEO_DURATION_SECONDS;
+}
+
+/**
+ * v0.6.1 — Render or hide the video player overlay progress bar based on
+ * the current VideoJob status. Hidden in Prompt Mode and when status is
+ * succeeded/ready. Shown during submitted/pending/running/downloading.
+ * failed / blocked_fallback_prompt / provider_not_configured render at
+ * their fixed percentages with an explanatory message and stay visible
+ * until the user navigates away.
+ */
+function renderVideoOverlayProgress(job) {
+    const overlay = document.getElementById('video-progress-overlay');
+    if (!overlay) return;
+    if (currentAppMode !== 'video' || !job || !job.status) {
+        overlay.classList.add('hidden');
+        overlay.setAttribute('hidden', '');
+        return;
+    }
+    const status = String(job.status || '').toLowerCase();
+    if (VIDEO_OVERLAY_HIDE_STATES.has(status)) {
+        overlay.classList.add('hidden');
+        overlay.setAttribute('hidden', '');
+        return;
+    }
+    const pct = VIDEO_OVERLAY_STATUS_PERCENT[status];
+    if (pct === undefined || pct === null) {
+        overlay.classList.add('hidden');
+        overlay.setAttribute('hidden', '');
+        return;
+    }
+    overlay.classList.remove('hidden');
+    overlay.removeAttribute('hidden');
+    const fill = document.getElementById('video-progress-overlay-fill');
+    if (fill) fill.style.width = `${pct}%`;
+    const pctEl = document.getElementById('video-progress-overlay-percent');
+    if (pctEl) pctEl.textContent = `${pct}%`;
+    const stageEl = document.getElementById('video-progress-overlay-stage');
+    if (stageEl) stageEl.textContent = job.stage || status;
+    const provEl = document.getElementById('video-progress-overlay-provider');
+    if (provEl) provEl.textContent = job.provider || '—';
+    const durEl = document.getElementById('video-progress-overlay-duration');
+    if (durEl) {
+        durEl.textContent = (job.duration_seconds !== null && job.duration_seconds !== undefined)
+            ? `${job.duration_seconds}s` : '—';
+    }
+    const titleEl = document.getElementById('video-progress-overlay-title');
+    const msgEl = document.getElementById('video-progress-overlay-message');
+    if (status === 'failed') {
+        if (titleEl) titleEl.textContent = 'Video generation failed';
+        if (msgEl) msgEl.textContent = job.error_message || 'Video generation failed.';
+    } else if (status === 'blocked_fallback_prompt') {
+        if (titleEl) titleEl.textContent = 'Submit blocked';
+        if (msgEl) msgEl.textContent = job.error_message
+            || 'Real APX submit was blocked because the compiled assets look like a fallback.';
+    } else if (status === 'blocked_prompt_quality') {
+        if (titleEl) titleEl.textContent = 'Prompt quality blocked';
+        if (msgEl) msgEl.textContent = job.error_message
+            || 'Real APX submit was blocked because the compiled Seedance prompt did not pass the v0.6.2 quality gate.';
+    } else if (status === 'provider_not_configured') {
+        if (titleEl) titleEl.textContent = 'Provider not configured';
+        if (msgEl) msgEl.textContent = 'APX real provider is not configured. Mock/contract preview only.';
+    } else if (status === 'cancelled') {
+        if (titleEl) titleEl.textContent = 'Video job cancelled';
+        if (msgEl) msgEl.textContent = '';
+    } else if (status === 'succeeded_but_no_video_url') {
+        if (titleEl) titleEl.textContent = 'Succeeded without URL';
+        if (msgEl) msgEl.textContent = job.error_message || 'APX returned status=3 but no video_url.';
+    } else {
+        if (titleEl) titleEl.textContent = 'Generating video...';
+        if (msgEl) msgEl.textContent = job.message || '';
+    }
+}
+
+/**
+ * v0.6.1 — When switching history records, clear any leftover video element
+ * src, currentVideoDownloadUrl-related state, and stale paths on
+ * currentVideoRecord/currentVideoJob so the next record cannot inherit the
+ * previous record's video.
+ */
+function clearVideoPlayerStateForRecordSwitch() {
+    try {
+        const v = document.getElementById('video-element');
+        if (v) {
+            v.pause();
+            v.removeAttribute('src');
+            v.load();
+        }
+    } catch (e) { /* ignore */ }
+    if (currentVideoRecord) {
+        currentVideoRecord.video_file_path = null;
+        currentVideoRecord.video_url = null;
+        currentVideoRecord.video_status = null;
+    }
+    if (currentVideoJob) {
+        currentVideoJob.result_video_path = null;
+        currentVideoJob.result_video_url = null;
+    }
+    const overlay = document.getElementById('video-progress-overlay');
+    if (overlay) {
+        overlay.classList.add('hidden');
+        overlay.setAttribute('hidden', '');
+    }
+}
+
 /**
  * Build the API URL for the active app mode.
  *   apiUrl('/history')           -> '/api/history'  (prompt mode)
@@ -492,6 +644,8 @@ function renderHistoryRecord(item) {
     // v0.5.3: in Video Mode, fetch the latest VideoJob and render the
     // status panel inside the Video tab. Prompt Mode skips this entirely.
     if (currentAppMode === 'video' && currentHistoryId != null) {
+        // v0.6.1: clear leftover video src + stale paths before binding new record.
+        clearVideoPlayerStateForRecordSwitch();
         currentVideoRecord = item || null;
         currentVideoJob = null;
         renderVideoJobStatus(null);
@@ -1802,26 +1956,28 @@ function switchPromptViewMode(mode) {
 // ============================================================
 
 /**
- * Visual stages for Video Mode generation. The actual /api/video/generate
- * call is synchronous on the backend, so the UI advances through these
- * stages on a timer to give the user visible feedback. The final stage
- * resolves based on the real response (either provider_not_configured or
- * an error). Indices correspond to the rendered list.
+ * v0.6.2 — Real Video Mode generation stages. The home page polls
+ * /api/video/generate/runs/{run_id} once per second and renders the
+ * actual stage that is in flight on the backend (no more setInterval
+ * fake-advance). The labels below mirror the backend's VIDEO_RUN_STAGES
+ * tuple so the UI can render even before the first poll lands.
+ *
+ * The list is exported on `window` so the stability checker can detect it.
  */
 const VIDEO_GENERATION_STEPS = [
-    { key: 'analyzing_topic', label: 'Analyzing topic' },
-    { key: 'verifying_answer', label: 'Verifying answer' },
-    { key: 'writing_video_script', label: 'Writing video script' },
-    { key: 'building_storyboard', label: 'Building storyboard' },
-    { key: 'creating_provider_prompt', label: 'Creating provider prompt' },
-    { key: 'preparing_provider_request', label: 'Preparing provider request' },
-    { key: 'submitting_video_job', label: 'Submitting video job' },
-    { key: 'saving_assets', label: 'Saving assets' },
-    { key: 'completed', label: 'Done' },
+    { key: 'validate_topic', label: 'Validate topic' },
+    { key: 'build_llm_content_package', label: 'Build LLM content package' },
+    { key: 'parse_package_output', label: 'Parse package output' },
+    { key: 'create_video_history_record', label: 'Create video history record' },
+    { key: 'build_video_assets', label: 'Build video assets' },
+    { key: 'compile_seedance_prompt', label: 'Compile Seedance prompt' },
+    { key: 'validate_prompt_quality', label: 'Validate prompt quality' },
+    { key: 'submit_video_job', label: 'Submit video job' },
+    { key: 'open_video_status_panel', label: 'Open video status panel' },
 ];
 
-let _videoProgressTimer = null;
-let _videoProgressIndex = 0;
+let _videoRunPollTimer = null;
+let _videoRunCurrentRunId = null;
 
 // v0.5.5 — Render the Provider Contract Summary block shown at the bottom
 // of the Overview tab in Video Mode. Initial render uses static defaults
@@ -1850,29 +2006,112 @@ function refreshProviderContractSummary(historyId) {
         .then(payload => {
             if (!payload || !payload.success) return;
             const el = document.getElementById('provider-contract-summary');
-            if (!el) return;
-            const expected = el.getAttribute('data-history-id');
-            if (expected && String(historyId) !== expected) return;
-            const statusEl = el.querySelector('[data-field="contract-status"]');
-            if (statusEl) {
-                statusEl.textContent = payload.contract_ready ? 'Ready' : 'Validation Failed';
+            if (el) {
+                const expected = el.getAttribute('data-history-id');
+                if (!expected || String(historyId) === expected) {
+                    const statusEl = el.querySelector('[data-field="contract-status"]');
+                    if (statusEl) {
+                        statusEl.textContent = payload.contract_ready ? 'Ready' : 'Validation Failed';
+                    }
+                    const compilerEl = el.querySelector('[data-field="prompt-compiler-status"]');
+                    if (compilerEl) {
+                        compilerEl.textContent = payload.prompt_compiler_ready ? 'Ready' : 'Not Available';
+                    }
+                    const latestEl = el.querySelector('[data-field="latest-job-status"]');
+                    if (latestEl) {
+                        const provider = payload.latest_job_provider || '—';
+                        const status = payload.latest_job_status || '—';
+                        latestEl.textContent = `${provider} / ${status}`;
+                    }
+                    const realEl = el.querySelector('[data-field="real-video-generated"]');
+                    if (realEl) {
+                        realEl.textContent = payload.real_video_generated ? 'Yes' : 'No';
+                    }
+                }
             }
-            const compilerEl = el.querySelector('[data-field="prompt-compiler-status"]');
-            if (compilerEl) {
-                compilerEl.textContent = payload.prompt_compiler_ready ? 'Ready' : 'Not Available';
-            }
-            const latestEl = el.querySelector('[data-field="latest-job-status"]');
-            if (latestEl) {
-                const provider = payload.latest_job_provider || '—';
-                const status = payload.latest_job_status || '—';
-                latestEl.textContent = `${provider} / ${status}`;
-            }
-            const realEl = el.querySelector('[data-field="real-video-generated"]');
-            if (realEl) {
-                realEl.textContent = payload.real_video_generated ? 'Yes' : 'No';
-            }
+            renderProviderEvidencePanel(historyId, payload);
         })
         .catch(() => {});
+}
+
+function renderProviderEvidencePanel(historyId, payload) {
+    const panel = document.getElementById('provider-evidence-panel');
+    if (!panel) return;
+    if (currentHistoryId != null && historyId != null && Number(currentHistoryId) !== Number(historyId)) {
+        return;
+    }
+    const evidence = (payload && payload.provider_evidence) || null;
+    if (!evidence) {
+        panel.classList.add('hidden');
+        panel.setAttribute('hidden', '');
+        return;
+    }
+    panel.classList.remove('hidden');
+    panel.removeAttribute('hidden');
+
+    const set = (key, value, opts) => {
+        const el = panel.querySelector(`[data-evidence="${key}"]`);
+        if (!el) return;
+        el.classList.remove('provider-evidence-yes', 'provider-evidence-no');
+        if (opts && typeof opts.bool === 'boolean') {
+            el.textContent = opts.bool ? 'Yes' : 'No';
+            el.classList.add(opts.bool ? 'provider-evidence-yes' : 'provider-evidence-no');
+            return;
+        }
+        if (value === null || value === undefined || value === '') {
+            el.textContent = '—';
+        } else {
+            el.textContent = String(value);
+        }
+    };
+
+    set('provider', evidence.provider);
+    // v0.6.2-hotfix — defense-in-depth. If the backend says Yes but the
+    // job is in an explicit pre-submit blocked state, override to No so
+    // the panel can never lie about whether APX was actually called.
+    const BLOCKED_STATUSES_FOR_API_CALL = new Set([
+        'blocked_prompt_quality',
+        'blocked_fallback_prompt',
+        'blocked_before_submit',
+        'provider_not_configured',
+        'failed_prompt_quality',
+    ]);
+    const realApiCall = !!evidence.real_api_call
+        && !BLOCKED_STATUSES_FOR_API_CALL.has(String(evidence.job_status || '').toLowerCase());
+    set('real_api_call', null, { bool: realApiCall });
+    set('provider_job_id', evidence.provider_job_id);
+    set('job_status', evidence.job_status);
+    set('has_remote_video_url', null, { bool: !!evidence.has_remote_video_url });
+    set('real_video_downloaded', null, { bool: !!evidence.real_video_downloaded });
+    set('real_video_available', null, { bool: !!evidence.real_video_available });
+    set('local_video_filename', evidence.local_video_filename);
+    set(
+        'duration_seconds',
+        evidence.duration_seconds != null ? `${evidence.duration_seconds}s` : null,
+    );
+    const qpEl = panel.querySelector('[data-evidence="prompt_quality"]');
+    if (qpEl) {
+        qpEl.classList.remove('provider-evidence-yes', 'provider-evidence-no');
+        if (evidence.prompt_quality_passed === true) {
+            qpEl.textContent = 'Passed';
+            qpEl.classList.add('provider-evidence-yes');
+        } else if (evidence.prompt_quality_passed === false) {
+            qpEl.textContent = 'Blocked';
+            qpEl.classList.add('provider-evidence-no');
+        } else {
+            qpEl.textContent = '—';
+        }
+    }
+    const blockRow = panel.querySelector('.provider-evidence-block-reason');
+    if (blockRow) {
+        if (evidence.block_reason) {
+            blockRow.classList.remove('hidden');
+            const blockEl = blockRow.querySelector('[data-evidence="block_reason"]');
+            if (blockEl) blockEl.textContent = evidence.block_reason;
+        } else {
+            blockRow.classList.add('hidden');
+        }
+    }
 }
 
 function _videoProgressEls() {
@@ -1885,23 +2124,28 @@ function _videoProgressEls() {
     };
 }
 
-function _renderVideoProgressList(currentIdx, finalState) {
+function _renderVideoProgressListFromStages(stages, finalState) {
     const { list } = _videoProgressEls();
     if (!list) return;
-    const html = VIDEO_GENERATION_STEPS.map((step, idx) => {
+    const stageMap = {};
+    (stages || []).forEach((s) => {
+        if (s && s.key) stageMap[s.key] = s;
+    });
+    const html = VIDEO_GENERATION_STEPS.map((step) => {
+        const live = stageMap[step.key] || null;
         let cls = 'pending';
-        if (finalState === 'failed' && idx === currentIdx) {
-            cls = 'failed';
-        } else if (finalState === 'not-configured' && idx === VIDEO_GENERATION_STEPS.length - 1) {
-            cls = 'not-configured';
-        } else if (idx < currentIdx) {
-            cls = 'done';
-        } else if (idx === currentIdx) {
-            cls = 'active';
+        if (live) {
+            if (live.status === 'done') cls = 'done';
+            else if (live.status === 'running') cls = 'active';
+            else if (live.status === 'failed') cls = 'failed';
         }
+        if (finalState === 'failed' && cls === 'active') cls = 'failed';
+        const ms = (live && typeof live.duration_ms === 'number')
+            ? `<span class="video-progress-step-time">${live.duration_ms} ms</span>` : '';
         return `<li class="video-progress-step ${cls}" data-step="${step.key}">
             <span class="video-progress-step-marker"></span>
             <span class="video-progress-step-label">${step.label}</span>
+            ${ms}
         </li>`;
     }).join('');
     list.innerHTML = html;
@@ -1914,37 +2158,80 @@ function startVideoGenerationProgress() {
     panel.classList.remove('hidden');
     if (spinner) spinner.classList.add('hidden');
     if (loadingText) loadingText.textContent = 'Generating your video assets...';
-    _videoProgressIndex = 0;
-    _renderVideoProgressList(0, null);
-    if (message) message.textContent = VIDEO_GENERATION_STEPS[0].label + '...';
-    if (_videoProgressTimer) clearInterval(_videoProgressTimer);
-    _videoProgressTimer = setInterval(advanceVideoGenerationProgress, 1500);
+    _renderVideoProgressListFromStages([], null);
+    if (message) message.textContent = 'Preparing...';
 }
 
-function advanceVideoGenerationProgress() {
-    // Auto-advance up to but not including the final 'saving_assets' step;
-    // completion / failure is driven by the actual API response.
-    const ceiling = VIDEO_GENERATION_STEPS.length - 2;
-    if (_videoProgressIndex < ceiling) {
-        _videoProgressIndex += 1;
-        _renderVideoProgressList(_videoProgressIndex, null);
-        const { message } = _videoProgressEls();
-        if (message) message.textContent = VIDEO_GENERATION_STEPS[_videoProgressIndex].label + '...';
+function _stopVideoRunPolling() {
+    if (_videoRunPollTimer) {
+        clearTimeout(_videoRunPollTimer);
+        _videoRunPollTimer = null;
     }
+}
+
+async function _pollVideoRun(runId, onComplete, onFailure) {
+    if (!runId) return;
+    if (_videoRunCurrentRunId !== runId) return;
+    try {
+        const resp = await fetch(`/api/video/generate/runs/${runId}`);
+        if (!resp.ok) {
+            if (typeof onFailure === 'function') {
+                onFailure({ error: `Run lookup failed (HTTP ${resp.status})` });
+            }
+            return;
+        }
+        const data = await resp.json();
+        if (!data || !data.success || !data.run) {
+            if (typeof onFailure === 'function') {
+                onFailure({ error: (data && data.error) || 'Run lookup returned no payload.' });
+            }
+            return;
+        }
+        const run = data.run;
+        _renderVideoProgressListFromStages(run.stages || [], run.status === 'failed' ? 'failed' : null);
+        const { message } = _videoProgressEls();
+        if (message) {
+            const running = (run.stages || []).find(s => s && s.status === 'running');
+            const lastDone = [...(run.stages || [])].reverse().find(s => s && s.status === 'done');
+            if (run.status === 'failed') {
+                message.textContent = run.error || 'Video generation failed.';
+            } else if (running) {
+                message.textContent = running.label + '...';
+            } else if (lastDone) {
+                message.textContent = lastDone.label + ' done.';
+            } else {
+                message.textContent = 'Preparing...';
+            }
+        }
+        if (run.status === 'completed') {
+            if (typeof onComplete === 'function') onComplete(run.result || {});
+            return;
+        }
+        if (run.status === 'failed') {
+            if (typeof onFailure === 'function') onFailure({ error: run.error || 'Video generation failed.' });
+            return;
+        }
+        _videoRunPollTimer = setTimeout(() => _pollVideoRun(runId, onComplete, onFailure), 1000);
+    } catch (err) {
+        if (typeof onFailure === 'function') onFailure({ error: `Run poll error: ${err.message}` });
+    }
+}
+
+function startVideoRunPolling(runId, onComplete, onFailure) {
+    _stopVideoRunPolling();
+    _videoRunCurrentRunId = runId;
+    _pollVideoRun(runId, onComplete, onFailure);
 }
 
 function completeVideoGenerationProgress(videoJob) {
-    if (_videoProgressTimer) {
-        clearInterval(_videoProgressTimer);
-        _videoProgressTimer = null;
-    }
-    const finalState = (videoJob && videoJob.status === 'provider_not_configured') ? 'not-configured' : null;
-    _videoProgressIndex = VIDEO_GENERATION_STEPS.length - 1;
-    _renderVideoProgressList(_videoProgressIndex, finalState);
+    _stopVideoRunPolling();
     const { message } = _videoProgressEls();
     if (message) {
         if (videoJob && videoJob.status === 'provider_not_configured') {
             message.textContent = 'Content assets, compiled Seedance prompt, and payload preview were generated, but the APX real provider is not configured. Set APX_VIDEO_ENABLED=true and APX_VIDEO_API_KEY in .env to enable real generation.';
+        } else if (videoJob && videoJob.status === 'blocked_prompt_quality') {
+            message.textContent = videoJob.error_message
+                || 'Real APX submit was blocked because the compiled Seedance prompt did not pass the v0.6.2 quality gate.';
         } else if (videoJob && videoJob.status === 'blocked_fallback_prompt') {
             message.textContent = videoJob.error_message
                 || 'Real APX submit was blocked because the compiled assets look like a fallback. Review the assets or set APX_VIDEO_ALLOW_FALLBACK_SUBMIT=true to override.';
@@ -1959,21 +2246,14 @@ function completeVideoGenerationProgress(videoJob) {
 }
 
 function failVideoGenerationProgress(errorText) {
-    if (_videoProgressTimer) {
-        clearInterval(_videoProgressTimer);
-        _videoProgressTimer = null;
-    }
-    _renderVideoProgressList(_videoProgressIndex, 'failed');
+    _stopVideoRunPolling();
     const { message } = _videoProgressEls();
     if (message) message.textContent = errorText || 'Video generation failed.';
 }
 
 function resetVideoGenerationProgress() {
-    if (_videoProgressTimer) {
-        clearInterval(_videoProgressTimer);
-        _videoProgressTimer = null;
-    }
-    _videoProgressIndex = 0;
+    _stopVideoRunPolling();
+    _videoRunCurrentRunId = null;
     const { panel, list, message, spinner } = _videoProgressEls();
     if (panel) {
         panel.classList.add('hidden');
@@ -1992,6 +2272,7 @@ function resetVideoGenerationProgress() {
  */
 function renderVideoJobStatus(job) {
     const panel = document.getElementById('video-job-status-panel');
+    renderVideoOverlayProgress(job);
     if (!panel) return;
     if (!job) {
         panel.classList.add('hidden');
@@ -2031,9 +2312,11 @@ function renderVideoJobStatus(job) {
     const msgEl = document.getElementById('video-job-message');
     if (msgEl) {
         if (job.status === 'submitted' || job.status === 'pending' || job.status === 'running') {
-            msgEl.textContent = 'Video generation is running. Click Refresh to update status.';
+            msgEl.textContent = 'Video generation is running. Click Refresh Status to update.';
         } else if (job.status === 'succeeded' || job.status === 'ready') {
             msgEl.textContent = 'Video generated and saved locally.';
+        } else if (job.status === 'blocked_prompt_quality' || job.status === 'blocked_before_submit') {
+            msgEl.textContent = 'Prompt quality blocked before APX submit. No real video API call was made. Please regenerate after fixing the prompt quality issue.';
         } else if (job.status === 'blocked_fallback_prompt') {
             msgEl.textContent = job.error_message
                 || 'Real APX submit was blocked because the compiled assets look like a fallback. Set APX_VIDEO_ALLOW_FALLBACK_SUBMIT=true to override.';
@@ -2055,18 +2338,117 @@ function renderVideoJobStatus(job) {
         }
     }
 
-    const btn = document.getElementById('video-job-refresh-btn');
-    if (btn) {
-        const inFlight = (job.provider === 'apx_seedance')
-            && (job.status === 'submitted' || job.status === 'pending' || job.status === 'running');
-        if (inFlight) {
-            btn.hidden = false;
-            btn.disabled = false;
-            btn.textContent = 'Refresh';
-            btn.onclick = () => refreshVideoJob(job.id);
+    // v0.6.2-hotfix — always-visible action row.
+    // Refresh Status is disabled (with explanatory hint) when the job
+    // never produced a remote provider_job_id (blocked / not-configured /
+    // mock). Regenerate Video is always enabled when a job is bound.
+    const refreshBtn = document.getElementById('video-job-refresh-btn');
+    const regenBtn = document.getElementById('video-job-regenerate-btn');
+    const hintEl = document.getElementById('video-job-actions-hint');
+    const status = String(job.status || '').toLowerCase();
+    const REFRESHABLE_STATUSES = new Set([
+        'submitted', 'pending', 'running', 'downloading', 'succeeded_but_no_video_url',
+    ]);
+    const refreshable = job.provider === 'apx_seedance'
+        && !!job.provider_job_id
+        && REFRESHABLE_STATUSES.has(status);
+    const blockedNoSubmit = (
+        status === 'blocked_prompt_quality'
+        || status === 'blocked_before_submit'
+        || status === 'blocked_fallback_prompt'
+        || status === 'provider_not_configured'
+    );
+
+    if (refreshBtn) {
+        refreshBtn.hidden = false;
+        refreshBtn.removeAttribute('hidden');
+        refreshBtn.textContent = 'Refresh Status';
+        if (refreshable) {
+            refreshBtn.disabled = false;
+            refreshBtn.title = 'Poll APX for the latest job status.';
+            refreshBtn.onclick = () => refreshVideoJob(job.id);
         } else {
-            btn.hidden = true;
-            btn.onclick = null;
+            refreshBtn.disabled = true;
+            refreshBtn.title = blockedNoSubmit
+                ? 'No remote job was submitted. Fix prompt quality and regenerate.'
+                : 'Refresh is only available while a remote APX job is in flight.';
+            refreshBtn.onclick = null;
+        }
+    }
+    if (regenBtn) {
+        regenBtn.hidden = false;
+        regenBtn.removeAttribute('hidden');
+        regenBtn.disabled = false;
+        regenBtn.textContent = 'Regenerate Video';
+        regenBtn.title = 'Re-run the Video Mode pipeline for the current record using the same duration.';
+        regenBtn.onclick = () => regenerateVideoForCurrentRecord();
+    }
+    if (hintEl) {
+        if (blockedNoSubmit) {
+            hintEl.textContent = 'No remote job was submitted. Fix prompt quality and regenerate.';
+        } else if (!refreshable && status) {
+            hintEl.textContent = '';
+        } else {
+            hintEl.textContent = '';
+        }
+    }
+}
+
+/**
+ * v0.6.2-hotfix — Regenerate Video for the current Video Mode record.
+ * Reuses the existing /api/video/history/{id}/regenerate flow; always
+ * forwards the active duration_seconds so blocked records can be retried
+ * without losing the user's chosen length.
+ */
+async function regenerateVideoForCurrentRecord() {
+    const historyId = (currentVideoRecord && currentVideoRecord.id) || currentHistoryId;
+    if (!historyId) {
+        alert('No active Video Mode record to regenerate.');
+        return;
+    }
+    const regenBtn = document.getElementById('video-job-regenerate-btn');
+    if (regenBtn) {
+        regenBtn.disabled = true;
+        regenBtn.textContent = 'Regenerating...';
+    }
+    try {
+        if (typeof clearVideoPlayerStateForRecordSwitch === 'function') {
+            try { clearVideoPlayerStateForRecordSwitch(); } catch (e) {}
+        }
+        const body = {
+            feedback: '',
+            duration_seconds: getCurrentVideoDurationSeconds(),
+        };
+        const resp = await fetch(`/api/video/history/${historyId}/regenerate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!data || !data.success) {
+            alert((data && data.error) || 'Failed to regenerate video.');
+            return;
+        }
+        currentVideoJob = data.video_job || null;
+        if (data.id || data.history_id) {
+            currentHistoryId = data.history_id || data.id;
+        }
+        if (data.item) {
+            currentVideoRecord = data.item;
+        }
+        renderVideoJobStatus(currentVideoJob);
+        if (currentHistoryId != null) {
+            refreshProviderContractSummary(currentHistoryId);
+        }
+        if (typeof loadHistory === 'function') {
+            try { loadHistory(currentSearchQuery, currentDateFilter); } catch (e) {}
+        }
+    } catch (err) {
+        alert(`Regenerate failed: ${err.message}`);
+    } finally {
+        if (regenBtn) {
+            regenBtn.disabled = false;
+            regenBtn.textContent = 'Regenerate Video';
         }
     }
 }
@@ -2160,18 +2542,44 @@ async function triggerGenerate() {
     }
 
     try {
-        const generateEndpoint = currentAppMode === 'video' ? '/api/video/generate' : '/api/generate';
-        const response = await fetch(generateEndpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ title }),
-        });
+        let data = null;
+        if (currentAppMode === 'video') {
+            // v0.6.2 — kick off the run on the backend, then poll real
+            // per-stage progress and resolve when the run is complete.
+            const startResp = await fetch('/api/video/generate/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    title,
+                    duration_seconds: getCurrentVideoDurationSeconds(),
+                }),
+            });
+            const startData = await startResp.json();
+            if (!startData || !startData.success || !startData.run_id) {
+                throw new Error((startData && startData.error) || 'Failed to start video run.');
+            }
+            // v0.6.2 — clear any stale video src before the new run starts
+            // so the previous record's mp4 can never bleed through.
+            if (typeof clearVideoPlayerStateForRecordSwitch === 'function') {
+                try { clearVideoPlayerStateForRecordSwitch(); } catch (e) {}
+            }
+            data = await new Promise((resolve, reject) => {
+                startVideoRunPolling(
+                    startData.run_id,
+                    (result) => resolve(result),
+                    (err) => reject(new Error((err && err.error) || 'Video run failed.')),
+                );
+            });
+        } else {
+            const response = await fetch('/api/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title }),
+            });
+            data = await response.json();
+        }
 
-        const data = await response.json();
-
-        if (data.success) {
+        if (data && data.success) {
             // Update current state
             currentSlug = data.slug || 'notebooklm_prompt';
             currentHistoryId = data.history_id || data.id || null;
@@ -3499,12 +3907,16 @@ async function triggerRegenerate() {
     errorEl.classList.add('hidden');
 
     try {
+        const regenerateBody = { feedback };
+        if (currentAppMode === 'video') {
+            regenerateBody.duration_seconds = getCurrentVideoDurationSeconds();
+        }
         const response = await fetch(apiUrl(`/history/${currentHistoryId}/regenerate`), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ feedback }),
+            body: JSON.stringify(regenerateBody),
         });
 
         const data = await response.json();
@@ -3725,6 +4137,18 @@ function applyModeChrome(mode) {
 
     // v0.5.3: swap homepage circular generate button per mode.
     updateGenerateButtonForCurrentMode();
+
+    // v0.6.1: duration selector is Video-Mode-only.
+    const durSel = document.getElementById('video-duration-selector');
+    if (durSel) {
+        if (mode === 'video') {
+            durSel.classList.remove('hidden');
+            durSel.removeAttribute('hidden');
+        } else {
+            durSel.classList.add('hidden');
+            durSel.setAttribute('hidden', '');
+        }
+    }
 }
 
 /**
@@ -4047,3 +4471,18 @@ function refreshVideoPlayPauseIcons(isPlaying) {
 
 // Apply initial mode chrome on first paint.
 applyModeChrome(currentAppMode);
+
+// v0.6.1 — wire duration selector buttons. Clicking sets the active duration
+// (snapped to 5/15/30/60/90) and updates aria state. Default is 15s.
+(function wireVideoDurationSelector() {
+    const root = document.getElementById('video-duration-selector');
+    if (!root) return;
+    setVideoDurationSelectorActive(currentVideoDurationSeconds);
+    root.addEventListener('click', (e) => {
+        const btn = e.target.closest('.video-duration-option');
+        if (!btn) return;
+        const v = parseInt(btn.getAttribute('data-duration'), 10);
+        if (!isFinite(v)) return;
+        setVideoDurationSelectorActive(v);
+    });
+})();

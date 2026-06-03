@@ -10,6 +10,8 @@ import re
 import secrets
 import subprocess
 import sys
+import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -46,6 +48,9 @@ from web.db import (
 )
 from web.video_providers import MockVideoProvider, ApxSeedanceProvider
 from web.video_providers.apx_seedance_provider import _scrub_api_key as _apx_scrub_api_key
+from web.video_providers.seedance_prompt_compiler import (
+    validate_seedance_prompt_quality as _validate_seedance_prompt_quality,
+)
 
 # v0.5.4: Video Content Asset Pipeline. Generates structured assets that a
 # future real video provider integration will consume. Never calls a real
@@ -2101,6 +2106,13 @@ async def generate_review(
 class VideoGenerateRequest(BaseModel):
     """Request body for Video Mode generation."""
     title: str = Field(..., min_length=1, max_length=200, description="Video topic")
+    # v0.6.1: home-page duration selector. Allowed values 5/15/30/60/90;
+    # default 15. Off-grid values are accepted (resolve_target_duration_seconds
+    # snaps them to the nearest bucket inside the pipeline).
+    duration_seconds: Optional[int] = Field(
+        default=None, ge=3, le=120,
+        description="Target video duration; one of 5/15/30/60/90. Defaults to 15 if omitted."
+    )
 
 
 class VideoUpdateContentRequest(BaseModel):
@@ -2111,6 +2123,9 @@ class VideoUpdateContentRequest(BaseModel):
 
 class VideoRegenerateRequest(BaseModel):
     feedback: str = Field(..., min_length=1, max_length=2000)
+    # v0.6.1: optional duration override on regenerate; if omitted, the
+    # original record's duration is reused.
+    duration_seconds: Optional[int] = Field(default=None, ge=3, le=120)
 
 
 def _build_video_assets_metadata_json(pipeline_result: Dict[str, Any]) -> str:
@@ -2285,6 +2300,8 @@ def _map_job_status_to_video_status(job_status: Optional[str]) -> Optional[str]:
         return job_status
     if job_status == "blocked_fallback_prompt":
         return "blocked_fallback_prompt"
+    if job_status == "blocked_prompt_quality":
+        return "blocked_prompt_quality"
     if job_status == "succeeded_but_no_video_url":
         return "succeeded_but_no_video_url"
     return None
@@ -2382,9 +2399,9 @@ def _create_apx_video_job_for_record(
                         pass
         if target_duration_seconds is None:
             try:
-                target_duration_seconds = int(provider.public_config().get("duration") or 5)
+                target_duration_seconds = int(provider.public_config().get("duration") or 15)
             except Exception:
-                target_duration_seconds = 5
+                target_duration_seconds = 15
 
         allowed, reason = provider.check_fallback_safety(
             manifest=manifest,
@@ -2392,7 +2409,89 @@ def _create_apx_video_job_for_record(
             seedance_prompt=seedance_prompt,
         )
 
+        # v0.6.2 — Final-prompt quality gate. This runs even when the
+        # legacy fallback-safety check is happy: the gate inspects the
+        # actual prompt the runtime is about to ship to APX (CJK,
+        # ``this topic`` / ``A`` / ``AB`` / ``BAB`` / ``does not yet
+        # generate audio``, missing 16:9 / single-narrator wording, empty
+        # english_subject / english_question / correct_answer /
+        # narration / scene_plan / on-screen-text). If anything fails,
+        # APX submit is blocked. The ``APX_VIDEO_ALLOW_FALLBACK_SUBMIT``
+        # override skips this only via ``check_fallback_safety``; the
+        # quality gate itself is always evaluated and recorded so the
+        # Provider Evidence panel can surface why a submit was refused.
+        normalized_input_for_gate: Dict[str, Any] = {}
+        if isinstance(prompt_debug, dict):
+            normalized_input_for_gate = (
+                prompt_debug.get("normalized_input")
+                or (prompt_debug.get("prompt_quality") or {}).get("normalized_input")
+                or {}
+            )
+        quality_passed, quality_reasons, quality_rules = _validate_seedance_prompt_quality(
+            seedance_prompt,
+            compiled_payload={"normalized_input": normalized_input_for_gate},
+            duration_seconds=target_duration_seconds,
+        )
+
         now = datetime.utcnow()
+
+        if quality_passed is False and not provider.public_config().get("allow_fallback_submit"):
+            quality_reason_text = "; ".join(quality_reasons) or "Prompt quality check failed."
+            blocked_response = {
+                "provider": provider.provider_name,
+                "status": "blocked_prompt_quality",
+                "stage": "blocked_before_submit",
+                "progress": 0,
+                "network_call_performed": False,
+                "real_video_generated": False,
+                "real_video_downloaded": False,
+                "block_reason": quality_reason_text,
+                "prompt_quality": {
+                    "passed": False,
+                    "reasons": quality_reasons,
+                    "rules": quality_rules,
+                },
+                "message": (
+                    "Real APX submit refused because the compiled Seedance prompt "
+                    "did not pass the v0.6.2 prompt-quality gate."
+                ),
+            }
+            request_payload = {
+                "history_id": record.id,
+                "title": request_title,
+                "slug": record.slug,
+                "mode": record.mode,
+                "model": provider.public_config().get("model"),
+                "block_reason": quality_reason_text,
+                "prompt_quality_failed": True,
+            }
+            job = VideoJobRepository.create_job(
+                db=db,
+                history_id=record.id,
+                provider=provider.provider_name,
+                provider_job_id=None,
+                status="blocked_prompt_quality",
+                stage="blocked_before_submit",
+                progress=0,
+                request_payload=request_payload,
+                response_payload=blocked_response,
+                error_message=quality_reason_text,
+                submitted_at=now,
+                completed_at=now,
+                duration_seconds=target_duration_seconds,
+            )
+            try:
+                if record.video_status != "blocked_prompt_quality":
+                    record.video_status = "blocked_prompt_quality"
+                    db.add(record)
+                    db.commit()
+                    db.refresh(record)
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            return job.to_dict()
 
         if not allowed:
             blocked_response = {
@@ -2533,6 +2632,365 @@ def _create_video_job_for_record(
     if apx_job is not None:
         return apx_job
     return _create_mock_video_job_for_record(db, record, request_title)
+
+
+# ---------------------------------------------------------------------------
+# v0.6.2 — Real Video Mode generation run store
+# ---------------------------------------------------------------------------
+# The home-page generation flow used to be driven by a JS setInterval that
+# advanced through fake stages on a 1.5s timer. v0.6.2 replaces that with a
+# tiny in-memory run store: /api/video/generate/start spawns a worker thread
+# that runs the same pipeline + APX submit logic, recording per-stage timing
+# into VIDEO_GENERATION_RUNS. The frontend polls /api/video/generate/runs/
+# {run_id} every ~1s and renders the actual stage that is in flight.
+#
+# State lives only in this process (single-machine FastAPI) — sessions are
+# recreated per stage from VideoSessionLocal so there is no DB sharing
+# between threads.
+VIDEO_RUN_STAGES = (
+    ("validate_topic", "Validate topic"),
+    ("build_llm_content_package", "Build LLM content package"),
+    ("parse_package_output", "Parse package output"),
+    ("create_video_history_record", "Create video history record"),
+    ("build_video_assets", "Build video assets"),
+    ("compile_seedance_prompt", "Compile Seedance prompt"),
+    ("validate_prompt_quality", "Validate prompt quality"),
+    ("submit_video_job", "Submit video job"),
+    ("open_video_status_panel", "Open video status panel"),
+)
+
+VIDEO_GENERATION_RUNS: Dict[str, Dict[str, Any]] = {}
+VIDEO_GENERATION_RUNS_LOCK = threading.Lock()
+
+
+def _video_run_init(run_id: str, title: str, duration_seconds: Optional[int]) -> Dict[str, Any]:
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    stages = [
+        {
+            "key": key,
+            "label": label,
+            "status": "pending",
+            "started_at": None,
+            "ended_at": None,
+            "duration_ms": None,
+            "message": "",
+        }
+        for key, label in VIDEO_RUN_STAGES
+    ]
+    run = {
+        "run_id": run_id,
+        "title": title,
+        "duration_seconds": duration_seconds,
+        "status": "running",
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "completed_at": None,
+        "stages": stages,
+        "result": None,
+        "error": None,
+    }
+    with VIDEO_GENERATION_RUNS_LOCK:
+        VIDEO_GENERATION_RUNS[run_id] = run
+        # Cap the dict so a long-lived process doesn't grow unbounded — keep
+        # the 32 most-recent runs.
+        if len(VIDEO_GENERATION_RUNS) > 64:
+            old_keys = sorted(
+                VIDEO_GENERATION_RUNS.keys(),
+                key=lambda k: VIDEO_GENERATION_RUNS[k].get("created_at") or "",
+            )[: len(VIDEO_GENERATION_RUNS) - 32]
+            for k in old_keys:
+                VIDEO_GENERATION_RUNS.pop(k, None)
+    return run
+
+
+def _video_run_set_stage(
+    run_id: str, key: str, status: str, message: str = ""
+) -> None:
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    with VIDEO_GENERATION_RUNS_LOCK:
+        run = VIDEO_GENERATION_RUNS.get(run_id)
+        if not run:
+            return
+        run["updated_at"] = now_iso
+        for stage in run["stages"]:
+            if stage["key"] != key:
+                continue
+            if status == "running":
+                stage["status"] = "running"
+                stage["started_at"] = now_iso
+                if message:
+                    stage["message"] = message
+            elif status == "done":
+                stage["status"] = "done"
+                stage["ended_at"] = now_iso
+                if stage["started_at"]:
+                    try:
+                        start = datetime.fromisoformat(stage["started_at"].rstrip("Z"))
+                        end = datetime.fromisoformat(now_iso.rstrip("Z"))
+                        stage["duration_ms"] = int((end - start).total_seconds() * 1000)
+                    except Exception:
+                        stage["duration_ms"] = None
+                if message:
+                    stage["message"] = message
+            elif status == "failed":
+                stage["status"] = "failed"
+                stage["ended_at"] = now_iso
+                if message:
+                    stage["message"] = message
+            break
+
+
+def _video_run_finalize(
+    run_id: str,
+    status: str,
+    result: Optional[Dict[str, Any]] = None,
+    error: Optional[str] = None,
+) -> None:
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    with VIDEO_GENERATION_RUNS_LOCK:
+        run = VIDEO_GENERATION_RUNS.get(run_id)
+        if not run:
+            return
+        run["status"] = status
+        run["completed_at"] = now_iso
+        run["updated_at"] = now_iso
+        if result is not None:
+            run["result"] = result
+        if error is not None:
+            run["error"] = error
+
+
+def _video_run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
+    with VIDEO_GENERATION_RUNS_LOCK:
+        run = VIDEO_GENERATION_RUNS.get(run_id)
+        if run is None:
+            return None
+        # Shallow copy + nested copies of mutable fields so we never hand the
+        # caller a reference the worker is still mutating.
+        return {
+            **run,
+            "stages": [dict(s) for s in run["stages"]],
+            "result": dict(run["result"]) if isinstance(run["result"], dict) else run["result"],
+        }
+
+
+def _video_run_worker(
+    run_id: str,
+    title: str,
+    duration_seconds: Optional[int],
+) -> None:
+    from web.db import VideoSessionLocal  # local import: same as the rest of the file
+    db = None
+    try:
+        # Stage 1: validate topic
+        _video_run_set_stage(run_id, "validate_topic", "running")
+        if not title.strip():
+            _video_run_set_stage(run_id, "validate_topic", "failed", "Title cannot be empty")
+            _video_run_finalize(run_id, "failed", error="Title cannot be empty")
+            return
+        _video_run_set_stage(run_id, "validate_topic", "done")
+
+        # Stage 2: build LLM content package (delegates to the existing
+        # generate_video_package.py CLI so we mirror /api/video/generate).
+        _video_run_set_stage(run_id, "build_llm_content_package", "running")
+        slug = generate_unique_slug(title)
+        script_path = project_root / "scripts" / "generate_video_package.py"
+        if not script_path.exists():
+            _video_run_set_stage(
+                run_id, "build_llm_content_package", "failed", "generate_video_package.py missing"
+            )
+            _video_run_finalize(run_id, "failed", error="generate_video_package.py missing")
+            return
+        try:
+            result = subprocess.run(
+                [sys.executable, str(script_path), "--title", title, "--mode", "llm",
+                 "--output-slug", slug, "--overwrite"],
+                cwd=str(project_root), capture_output=True, text=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            _video_run_set_stage(
+                run_id, "build_llm_content_package", "failed", "package script timed out"
+            )
+            _video_run_finalize(run_id, "failed", error="package script timed out")
+            return
+        if result.returncode != 0:
+            _video_run_set_stage(
+                run_id, "build_llm_content_package", "failed",
+                f"package script exit {result.returncode}",
+            )
+            _video_run_finalize(
+                run_id, "failed",
+                error=f"package script exit {result.returncode}: {(result.stderr or '')[-500:]}",
+            )
+            return
+        _video_run_set_stage(run_id, "build_llm_content_package", "done")
+
+        # Stage 3: parse package output
+        _video_run_set_stage(run_id, "parse_package_output", "running")
+        output_dir = project_root / "outputs" / slug
+        prompt_file = output_dir / "notebooklm_clean_source.txt"
+        if not prompt_file.exists():
+            _video_run_set_stage(
+                run_id, "parse_package_output", "failed", "notebooklm_clean_source.txt missing"
+            )
+            _video_run_finalize(run_id, "failed", error="notebooklm_clean_source.txt missing")
+            return
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            prompt_content = f.read()
+        overview_cn = None
+        topic_json_file = output_dir / "topic.json"
+        if topic_json_file.exists():
+            try:
+                with open(topic_json_file, "r", encoding="utf-8") as f:
+                    overview_cn = json.load(f).get("overview_cn")
+            except Exception:
+                overview_cn = None
+        _video_run_set_stage(run_id, "parse_package_output", "done")
+
+        # Stage 4: create video history record
+        _video_run_set_stage(run_id, "create_video_history_record", "running")
+        model = os.getenv("AI_VIDEO_LLM_MODEL", "gpt-5-chat")
+        db = VideoSessionLocal()
+        record = VideoHistoryRepository.create_history_record(
+            db=db, title=title, slug=slug, prompt_text=prompt_content,
+            output_dir=str(output_dir), model=model, mode="video",
+            status="success", overview_cn=overview_cn, web_copy_text=None,
+        )
+        history_id = record.id
+        _video_run_set_stage(run_id, "create_video_history_record", "done")
+
+        # Stage 5: build video assets (also runs compile + writes
+        # seedance_prompt.txt under the hood, but we surface them as
+        # separate stages for the UI).
+        _video_run_set_stage(run_id, "build_video_assets", "running")
+        pipeline_result = build_video_content_assets(
+            topic=title, output_dir=output_dir, history_id=history_id,
+            target_duration_seconds=duration_seconds,
+        )
+        provider_prompt_text = pipeline_result.get("provider_prompt") or prompt_content
+        pipeline_overview_cn = pipeline_result.get("overview_cn") or overview_cn or ""
+        pipeline_preview_text = pipeline_result.get("preview_text") or ""
+        asset_metadata_json = _build_video_assets_metadata_json(pipeline_result)
+        record = VideoHistoryRepository.update_asset_pipeline_result(
+            db=db, history_id=history_id, prompt_text=provider_prompt_text,
+            preview_text=pipeline_preview_text, overview_cn=pipeline_overview_cn,
+            metadata_json=asset_metadata_json,
+        ) or record
+        _video_run_set_stage(run_id, "build_video_assets", "done")
+
+        # Stage 6: compile seedance prompt — already happened inside the
+        # pipeline above. Surface it as done so the user sees both stages.
+        _video_run_set_stage(run_id, "compile_seedance_prompt", "running")
+        compiled_prompt_ready = bool(pipeline_result.get("seedance_prompt_ready"))
+        _video_run_set_stage(
+            run_id, "compile_seedance_prompt",
+            "done" if compiled_prompt_ready else "failed",
+            "" if compiled_prompt_ready else "Compiler did not produce a ready prompt.",
+        )
+
+        # Stage 7: validate prompt quality (offline gate; the same gate
+        # _create_apx_video_job_for_record runs before APX submit).
+        _video_run_set_stage(run_id, "validate_prompt_quality", "running")
+        normalized_for_gate = (
+            (pipeline_result.get("seedance_prompt_debug") or {}).get("normalized_input") or {}
+        )
+        gate_passed, gate_reasons, _gate_rules = _validate_seedance_prompt_quality(
+            pipeline_result.get("seedance_prompt") or "",
+            compiled_payload={"normalized_input": normalized_for_gate},
+            duration_seconds=duration_seconds,
+        )
+        if gate_passed:
+            _video_run_set_stage(run_id, "validate_prompt_quality", "done", "Quality gate passed.")
+        else:
+            _video_run_set_stage(
+                run_id, "validate_prompt_quality", "done",
+                "Quality gate failed: " + "; ".join(gate_reasons),
+            )
+
+        # Stage 8: submit video job (APX when configured, otherwise Mock,
+        # otherwise blocked_prompt_quality if the gate failed).
+        _video_run_set_stage(run_id, "submit_video_job", "running")
+        video_job_dict = _create_video_job_for_record(db, record, title)
+        _video_run_set_stage(run_id, "submit_video_job", "done")
+
+        # Stage 9: open video status panel — sentinel that signals the UI
+        # to switch from the home-page run progress into the Video Output
+        # tab + Video Job status panel.
+        _video_run_set_stage(run_id, "open_video_status_panel", "running")
+        _video_run_set_stage(run_id, "open_video_status_panel", "done")
+
+        result_payload = {
+            "success": True,
+            "id": record.id,
+            "history_id": record.id,
+            "title": title,
+            "slug": slug,
+            "topic_group_id": record.topic_group_id,
+            "version_number": record.version_number,
+            "prompt": record.prompt_text,
+            "raw_text": record.prompt_text,
+            "prompt_text": record.prompt_text,
+            "preview_text": record.preview_text,
+            "overview_cn": record.overview_cn,
+            "video_status": record.video_status,
+            "video_duration_seconds": record.video_duration_seconds,
+            "video_job": video_job_dict,
+            "video_assets": pipeline_result.get("video_assets"),
+            "provider_prompt": pipeline_result.get("provider_prompt"),
+            "seedance_prompt_ready": compiled_prompt_ready,
+            "prompt_quality_passed": gate_passed,
+            "prompt_quality_reasons": gate_reasons,
+            "output_dir": str(output_dir),
+        }
+        _video_run_finalize(run_id, "completed", result=result_payload)
+    except Exception as exc:
+        try:
+            _video_run_finalize(run_id, "failed", error=f"Worker error: {exc}")
+        except Exception:
+            pass
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+@app.post("/api/video/generate/start")
+async def video_generate_start(request: VideoGenerateRequest) -> JSONResponse:
+    """v0.6.2 — kick off a Video Mode generation run in the background and
+    return a ``run_id`` immediately. The home-page progress UI polls
+    ``GET /api/video/generate/runs/{run_id}`` to render real per-stage
+    progress instead of advancing on a fake setInterval timer."""
+    title = (request.title or "").strip()
+    if not title:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Title cannot be empty"},
+        )
+    duration_seconds = request.duration_seconds
+    run_id = uuid.uuid4().hex
+    _video_run_init(run_id, title, duration_seconds)
+    thread = threading.Thread(
+        target=_video_run_worker,
+        args=(run_id, title, duration_seconds),
+        name=f"video-run-{run_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return JSONResponse(content={"success": True, "run_id": run_id})
+
+
+@app.get("/api/video/generate/runs/{run_id}")
+async def video_generate_run_status(run_id: str) -> JSONResponse:
+    """Return the current snapshot of a Video Mode generation run."""
+    snap = _video_run_snapshot(run_id)
+    if not snap:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": f"Run {run_id} not found"},
+        )
+    return JSONResponse(content={"success": True, "run": snap})
 
 
 def _build_video_generate_provider_contract_response(
@@ -2741,6 +3199,11 @@ async def video_generate(
                 web_copy_text=None,
             )
 
+            # v0.6.1: pull the user-selected duration from the request body
+            # (5/15/30/60/90, default 15). resolve_target_duration_seconds
+            # inside the pipeline still applies the env fallback chain.
+            requested_duration_seconds = request.duration_seconds
+
             # v0.5.4: build the Video Content Asset bundle for the record we
             # just created. The pipeline never raises; real video providers
             # are NOT contacted.
@@ -2748,6 +3211,7 @@ async def video_generate(
                 topic=title,
                 output_dir=output_dir,
                 history_id=record.id,
+                target_duration_seconds=requested_duration_seconds,
             )
             provider_prompt_text = pipeline_result.get('provider_prompt') or prompt_content
             pipeline_overview_cn = pipeline_result.get('overview_cn') or overview_cn or ''
@@ -3084,12 +3548,19 @@ async def video_regenerate(
                 content={"success": False, "error": "Failed to create regenerated version"},
             )
 
+        # v0.6.1: regenerate inherits the previous record's duration unless
+        # the request explicitly overrides it.
+        regen_duration_seconds = request.duration_seconds
+        if regen_duration_seconds is None and record is not None:
+            regen_duration_seconds = record.video_duration_seconds
+
         # v0.5.4: rebuild the Video Content Asset bundle for the new version.
         # Always returns a result dict; never raises.
         pipeline_result = build_video_content_assets(
             topic=new_record.title,
             output_dir=output_dir,
             history_id=new_record.id,
+            target_duration_seconds=regen_duration_seconds,
         )
         provider_prompt_text = pipeline_result.get('provider_prompt') or new_prompt
         pipeline_overview_cn = pipeline_result.get('overview_cn') or new_overview_cn or ''
@@ -4099,16 +4570,98 @@ async def video_get_provider_contract(
     latest_job_progress = latest_job.progress if latest_job else None
     real_provider_configured = bool(ApxSeedanceProvider().is_configured())
     is_apx_job = latest_job_provider == "apx_seedance"
-    network_call_performed = bool(
-        is_apx_job
-        and latest_job_status
-        not in (None, "blocked_fallback_prompt", "provider_not_configured")
-    )
+
+    # v0.6.2-hotfix — Real-API-call evidence is *positive* only: an APX
+    # request actually went out. Never infer Yes from "provider == apx".
+    # The block_status set below is the explicit "submission was refused"
+    # set; a job in any of these states proves no APX HTTP call was made.
+    BLOCKED_STATUSES = {
+        "blocked_prompt_quality",
+        "blocked_fallback_prompt",
+        "blocked_before_submit",
+        "provider_not_configured",
+        "failed_prompt_quality",
+    }
+    network_call_performed = False
+    if latest_job is not None and is_apx_job and latest_job_status not in BLOCKED_STATUSES:
+        # Look for hard evidence in the persisted response_payload first.
+        resp_payload = {}
+        try:
+            raw_resp = getattr(latest_job, "response_payload", None) or {}
+            if isinstance(raw_resp, dict):
+                resp_payload = raw_resp
+        except Exception:
+            resp_payload = {}
+        if resp_payload.get("network_call_performed") is True:
+            network_call_performed = True
+        elif any(
+            resp_payload.get(k) for k in ("http_status", "raw_status", "video_url")
+        ):
+            network_call_performed = True
+        elif latest_job.provider_job_id:
+            # The job has a real provider_job_id only after a successful
+            # submit returned an APX task id.
+            network_call_performed = True
+
     real_video_generated = bool(
         record.video_status == "ready" or latest_job_status == "succeeded"
     )
     safe_video_path = _resolve_safe_outputs_path(record.video_file_path)
     real_video_downloaded = bool(record.video_file_path) and safe_video_path is not None
+
+    # v0.6.2 — Provider Evidence summary. Carefully redacted: never returns
+    # API keys, full signed video URLs, request headers, or absolute disk
+    # paths. ``has_remote_video_url`` is the safe replacement for the URL.
+    prompt_quality_block = None
+    if isinstance(seedance_prompt_debug, dict):
+        prompt_quality_block = seedance_prompt_debug.get("prompt_quality") or {}
+    quality_passed = bool(prompt_quality_block and prompt_quality_block.get("passed"))
+    quality_reasons_full = (
+        list(prompt_quality_block.get("reasons") or [])
+        if isinstance(prompt_quality_block, dict)
+        else []
+    )
+    has_remote_video_url = False
+    block_reason_for_panel: Optional[str] = None
+    if latest_job is not None:
+        try:
+            resp = (latest_job.response_payload or {}) if hasattr(latest_job, 'response_payload') else {}
+            if isinstance(resp, dict):
+                if resp.get("video_url"):
+                    has_remote_video_url = True
+                if resp.get("block_reason"):
+                    block_reason_for_panel = str(resp.get("block_reason"))
+        except Exception:
+            pass
+        if not block_reason_for_panel and getattr(latest_job, "error_message", None):
+            block_reason_for_panel = latest_job.error_message
+    duration_for_evidence = None
+    if latest_job is not None:
+        duration_for_evidence = getattr(latest_job, "duration_seconds", None)
+    if duration_for_evidence is None:
+        duration_for_evidence = record.video_duration_seconds
+    provider_job_id_for_panel = getattr(latest_job, "provider_job_id", None) if latest_job else None
+    local_video_filename: Optional[str] = None
+    if record.video_file_path:
+        try:
+            local_video_filename = Path(record.video_file_path).name
+        except Exception:
+            local_video_filename = None
+
+    provider_evidence = {
+        "provider": latest_job_provider or ("apx_seedance" if real_provider_configured else "mock"),
+        "real_api_call": network_call_performed,
+        "provider_job_id": provider_job_id_for_panel,
+        "job_status": latest_job_status,
+        "has_remote_video_url": has_remote_video_url,
+        "real_video_downloaded": real_video_downloaded,
+        "real_video_available": bool(record.video_file_path) and safe_video_path is not None,
+        "local_video_filename": local_video_filename,
+        "duration_seconds": duration_for_evidence,
+        "prompt_quality_passed": quality_passed,
+        "prompt_quality_reasons": quality_reasons_full,
+        "block_reason": block_reason_for_panel,
+    }
 
     return {
         "success": True,
@@ -4129,6 +4682,7 @@ async def video_get_provider_contract(
         "network_call_performed": network_call_performed,
         "real_video_generated": real_video_generated,
         "real_video_downloaded": real_video_downloaded,
+        "provider_evidence": provider_evidence,
         "provider_request_preview": provider_request_preview,
         "seedance_payload_preview": seedance_payload_preview,
         "provider_contract_validation": provider_contract_validation,

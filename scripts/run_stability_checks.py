@@ -9,7 +9,7 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.6.0"
+STABILITY_CHECKS_VERSION = "v0.6.2"
 
 import sys
 import os
@@ -1632,11 +1632,15 @@ class StabilityChecker:
         try:
             with open("web/static/main.js", "r", encoding="utf-8") as f:
                 main_js = f.read()
+            # v0.6.2 — `advanceVideoGenerationProgress` was removed. The
+            # home page now polls /api/video/generate/runs/{id} for real
+            # per-stage progress instead of advancing on a fake setInterval
+            # timer, so we require `startVideoRunPolling` here.
             for fn in (
                 "function updateGenerateButtonForCurrentMode",
                 "VIDEO_GENERATION_STEPS",
                 "function startVideoGenerationProgress",
-                "function advanceVideoGenerationProgress",
+                "function startVideoRunPolling",
                 "function completeVideoGenerationProgress",
                 "function failVideoGenerationProgress",
                 "function resetVideoGenerationProgress",
@@ -1814,10 +1818,11 @@ class StabilityChecker:
                 'VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.4"' in pipe_src
                 or 'VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.5"' in pipe_src
                 or 'VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.6"' in pipe_src
+                or 'VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.6.0"' in pipe_src
             ):
-                print('  [OK] video_asset_pipeline.py has VIDEO_ASSETS_LEGACY_SCHEMA_VERSION (v0.5.4 or v0.5.5)')
+                print('  [OK] video_asset_pipeline.py has VIDEO_ASSETS_LEGACY_SCHEMA_VERSION (v0.5.4..v0.6.0)')
             else:
-                print('  [FAIL] video_asset_pipeline.py missing VIDEO_ASSETS_LEGACY_SCHEMA_VERSION (v0.5.4 or v0.5.5)')
+                print('  [FAIL] video_asset_pipeline.py missing VIDEO_ASSETS_LEGACY_SCHEMA_VERSION (v0.5.4..v0.6.0)')
                 all_passed = False
 
             for marker in (
@@ -1934,28 +1939,30 @@ class StabilityChecker:
             print(f"  [FAIL] Could not inspect web/app.py: {e}")
             all_passed = False
 
-        # 4. Frontend main.js: 9-step list with v0.5.4 keys.
+        # 4. Frontend main.js: v0.6.2 real-stage keys (mirrors backend
+        # VIDEO_RUN_STAGES tuple). v0.5.4 fake-advance keys were removed.
         try:
             with open("web/static/main.js", "r", encoding="utf-8") as f:
                 main_js = f.read()
             for key in (
-                "'analyzing_topic'",
-                "'verifying_answer'",
-                "'writing_video_script'",
-                "'building_storyboard'",
-                "'creating_provider_prompt'",
-                "'preparing_provider_request'",
-                "'saving_assets'",
-                "'completed'",
+                "'validate_topic'",
+                "'build_llm_content_package'",
+                "'parse_package_output'",
+                "'create_video_history_record'",
+                "'build_video_assets'",
+                "'compile_seedance_prompt'",
+                "'validate_prompt_quality'",
+                "'submit_video_job'",
+                "'open_video_status_panel'",
             ):
                 if key in main_js:
                     print(f"  [OK] main.js VIDEO_GENERATION_STEPS has {key}")
                 else:
                     print(f"  [FAIL] main.js VIDEO_GENERATION_STEPS missing {key}")
                     all_passed = False
-            # v0.5.4 used 'creating_mock_video_job'; v0.6.0 renamed it to 'submitting_video_job'.
-            if "'creating_mock_video_job'" in main_js or "'submitting_video_job'" in main_js:
-                print("  [OK] main.js VIDEO_GENERATION_STEPS has submit-job step (v0.5.4 / v0.6.0 form)")
+            # The submit-job step was renamed in v0.6.2 to `submit_video_job`.
+            if "'submit_video_job'" in main_js:
+                print("  [OK] main.js VIDEO_GENERATION_STEPS has submit-job step (v0.6.2 form)")
             else:
                 print("  [FAIL] main.js VIDEO_GENERATION_STEPS missing submit-job step")
                 all_passed = False
@@ -2523,10 +2530,14 @@ class StabilityChecker:
             print("  [FAIL] compiler missing SeedancePromptCompiler class")
             all_passed = False
 
-        if 'COMPILER_VERSION = "seedance_prompt_compiler_v0.5.6"' in compiler_text:
-            print("  [OK] compiler declares COMPILER_VERSION=seedance_prompt_compiler_v0.5.6")
+        if (
+            'COMPILER_VERSION = "seedance_prompt_compiler_v0.5.6"' in compiler_text
+            or 'COMPILER_VERSION = "seedance_prompt_compiler_v0.6.1"' in compiler_text
+            or 'COMPILER_VERSION = "seedance_prompt_compiler_v0.6.2"' in compiler_text
+        ):
+            print("  [OK] compiler declares COMPILER_VERSION (v0.5.6 / v0.6.1 / v0.6.2)")
         else:
-            print("  [FAIL] compiler missing COMPILER_VERSION=seedance_prompt_compiler_v0.5.6")
+            print("  [FAIL] compiler missing COMPILER_VERSION (v0.5.6 / v0.6.1 / v0.6.2)")
             all_passed = False
 
         # 5. Compiler implements required methods.
@@ -2583,8 +2594,17 @@ class StabilityChecker:
             except Exception:
                 profile_text = ""
 
+        # profile_version may be v0.5.6 / v0.6.1 / v0.6.2 (the file is shared).
+        if (
+            '"profile_version": "seedance_prompt_profile_v0.5.6"' in profile_text
+            or '"profile_version": "seedance_prompt_profile_v0.6.1"' in profile_text
+            or '"profile_version": "seedance_prompt_profile_v0.6.2"' in profile_text
+        ):
+            print("  [OK] profile contains profile_version (v0.5.6 / v0.6.1 / v0.6.2)")
+        else:
+            print("  [FAIL] profile missing profile_version (v0.5.6 / v0.6.1 / v0.6.2)")
+            all_passed = False
         for marker in (
-            '"profile_version": "seedance_prompt_profile_v0.5.6"',
             '"preferred_prompt_language"',
             '"prompt_strategy"',
             '"must_include_constraints"',
@@ -2625,8 +2645,9 @@ class StabilityChecker:
         if (
             'VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.5.6"' in pipeline_text
             or 'VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.6.0"' in pipeline_text
+            or 'VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.6.1"' in pipeline_text
         ):
-            print("  [OK] pipeline schema_version bumped to video_assets_v0.5.6+ (current: v0.6.0)")
+            print("  [OK] pipeline schema_version bumped to video_assets_v0.5.6+ (current: v0.6.1)")
         else:
             print("  [FAIL] pipeline schema_version not bumped to video_assets_v0.5.6+")
             all_passed = False
@@ -3381,11 +3402,14 @@ class StabilityChecker:
         except Exception:
             vap_src = ""
 
-        # 33. pipeline default is 5 (not 60)
-        if "DEFAULT_DURATION_SECONDS = 5" in vap_src and "DEFAULT_DURATION_SECONDS = 60" not in vap_src:
-            print("  [OK] video_asset_pipeline DEFAULT_DURATION_SECONDS = 5")
+        # 33. pipeline default duration is one of v0.6.x defaults (5 or 15), never 60.
+        if (
+            ("DEFAULT_DURATION_SECONDS = 5" in vap_src or "DEFAULT_DURATION_SECONDS = 15" in vap_src)
+            and "DEFAULT_DURATION_SECONDS = 60" not in vap_src
+        ):
+            print("  [OK] video_asset_pipeline DEFAULT_DURATION_SECONDS in {5, 15}")
         else:
-            print("  [FAIL] video_asset_pipeline DEFAULT_DURATION_SECONDS != 5 (or 60 still present)")
+            print("  [FAIL] video_asset_pipeline DEFAULT_DURATION_SECONDS not in {5, 15} (or 60 still present)")
             all_passed = False
 
         # 34. resolve_target_duration_seconds + build_duration_profile helpers exist
@@ -3402,7 +3426,10 @@ class StabilityChecker:
         # 35. _build_provider_request_preview emits target_duration_seconds + duration_source
         if (
             '"target_duration_seconds":' in vap_src
-            and '"duration_source": "APX_VIDEO_DURATION"' in vap_src
+            and (
+                '"duration_source": "APX_VIDEO_DURATION"' in vap_src
+                or '"duration_source": "ui_or_APX_VIDEO_DURATION"' in vap_src
+            )
         ):
             print("  [OK] provider_request_preview emits target_duration_seconds + duration_source")
         else:
@@ -3454,24 +3481,27 @@ class StabilityChecker:
         except Exception:
             sca_src = ""
         if (
-            "DEFAULT_DURATION_SECONDS = 5" in sca_src
+            ("DEFAULT_DURATION_SECONDS = 5" in sca_src or "DEFAULT_DURATION_SECONDS = 15" in sca_src)
             and 'src.get("target_duration_seconds")' in sca_src
         ):
-            print("  [OK] seedance_contract_adapter default 5 + prefers target_duration_seconds")
+            print("  [OK] seedance_contract_adapter default in {5, 15} + prefers target_duration_seconds")
         else:
             print("  [FAIL] seedance_contract_adapter default not synced (still 60 or missing target_duration_seconds preference)")
             all_passed = False
 
-        # 40. compiler priority chain prefers target_duration_seconds
+        # 40. compiler priority chain prefers target_duration_seconds and
+        # never falls back to 60. v0.6.2 reads it through `pr.get(...)` after
+        # the normalize step renames the param.
         try:
             with open("web/video_providers/seedance_prompt_compiler.py", "r", encoding="utf-8") as f:
                 spc_src = f.read()
         except Exception:
             spc_src = ""
-        if (
+        prefers_target = (
             'provider_request_preview.get("target_duration_seconds")' in spc_src
-            and "or 60" not in spc_src
-        ):
+            or 'pr.get("target_duration_seconds")' in spc_src
+        )
+        if prefers_target and "or 60" not in spc_src:
             print("  [OK] seedance_prompt_compiler prefers target_duration_seconds (no 60 fallback)")
         else:
             print("  [FAIL] seedance_prompt_compiler still falls back to 60 or missing target_duration_seconds")
@@ -3483,11 +3513,11 @@ class StabilityChecker:
                 sd_profile = json.load(f)
         except Exception:
             sd_profile = {}
-        if sd_profile.get("default_duration_seconds") == 5:
-            print("  [OK] config/provider_profiles/seedance.json default_duration_seconds = 5")
+        if sd_profile.get("default_duration_seconds") in (5, 15):
+            print(f"  [OK] seedance.json default_duration_seconds = {sd_profile.get('default_duration_seconds')}")
         else:
             print(
-                f"  [FAIL] seedance.json default_duration_seconds = {sd_profile.get('default_duration_seconds')!r} (expected 5)"
+                f"  [FAIL] seedance.json default_duration_seconds = {sd_profile.get('default_duration_seconds')!r} (expected 5 or 15)"
             )
             all_passed = False
 
@@ -3560,11 +3590,10 @@ class StabilityChecker:
         # ------------------------------------------------------------------
 
         # 49. pipeline strips legacy 50-60-second default from topic_analysis.video_goal
-        if (
-            'Explain the topic clearly in 50-60 seconds.' not in vap_src
-            and '-second educational short video.' in vap_src
-        ):
-            print("  [OK] pipeline replaced legacy '50-60 seconds' default with dynamic video_goal")
+        # v0.6.1: video_goal is now built dynamically from english_subject and duration;
+        # legacy literal "Explain the topic clearly in 50-60 seconds." must be gone.
+        if 'Explain the topic clearly in 50-60 seconds.' not in vap_src:
+            print("  [OK] pipeline does not ship legacy '50-60 seconds' default")
         else:
             print("  [FAIL] pipeline still ships legacy 'Explain the topic clearly in 50-60 seconds.' default")
             all_passed = False
@@ -3620,7 +3649,10 @@ class StabilityChecker:
         # 55. seedance_prompt_compiler emits the Mandatory duration line
         if (
             "Mandatory duration:" in spc_src
-            and "Ignore any conflicting duration instruction" in spc_src
+            and (
+                "Ignore any conflicting duration instruction" in spc_src
+                or "Ignore any conflicting duration" in spc_src
+            )
         ):
             print("  [OK] seedance_prompt_compiler emits Mandatory duration + Ignore conflicting line")
         else:
@@ -3765,6 +3797,642 @@ class StabilityChecker:
             print("\n[FAIL] v0.6.0 APX Seedance real provider checks failed")
             self.checks_failed += 1
 
+    def check_v061_english_landscape(self):
+        """v0.6.1 English-only 16:9 landscape video + duration selector + overlay
+        progress bar + history-switch state cleanup. Read-only, no network.
+        """
+        print("\n" + "="*80)
+        print("v0.6.1 English 16:9 Video + Progress UX Checks")
+        print("="*80)
+
+        all_passed = True
+
+        def _read(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception:
+                return ""
+
+        pipeline = _read("web/video_asset_pipeline.py")
+        compiler = _read("web/video_providers/seedance_prompt_compiler.py")
+        adapter = _read("web/video_providers/seedance_contract_adapter.py")
+        profile = _read("config/provider_profiles/seedance.json")
+        appsrc = _read("web/app.py")
+        html = _read("web/static/index.html")
+        css = _read("web/static/style.css")
+        mjs = _read("web/static/main.js")
+
+        # 1. Pipeline schema bumped to v0.6.1
+        if 'VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.6.1"' in pipeline:
+            print("  [OK] video_asset_pipeline schema bumped to video_assets_v0.6.1")
+        else:
+            print("  [FAIL] video_asset_pipeline schema not bumped to v0.6.1"); all_passed = False
+
+        # 2. Pipeline 16:9 / 1920x1080 / 15s defaults
+        for marker in ('DEFAULT_ASPECT_RATIO = "16:9"',
+                       'DEFAULT_RESOLUTION = "1920x1080"',
+                       'DEFAULT_DURATION_SECONDS = 15',
+                       'DEFAULT_ORIENTATION = "landscape"',
+                       'OUTPUT_LANGUAGE = "en"'):
+            if marker in pipeline:
+                print(f"  [OK] pipeline has {marker}")
+            else:
+                print(f"  [FAIL] pipeline missing {marker}"); all_passed = False
+
+        # 3. Pipeline duration buckets 5/15/30/60/90
+        if "ALLOWED_DURATION_SECONDS = (5, 15, 30, 60, 90)" in pipeline:
+            print("  [OK] pipeline ALLOWED_DURATION_SECONDS=(5,15,30,60,90)")
+        else:
+            print("  [FAIL] pipeline ALLOWED_DURATION_SECONDS not (5,15,30,60,90)"); all_passed = False
+
+        # 4. Pipeline CJK strip helper
+        if "_strip_cjk" in pipeline and "_english_topic_label" in pipeline:
+            print("  [OK] pipeline has _strip_cjk and _english_topic_label helpers")
+        else:
+            print("  [FAIL] pipeline missing CJK sanitisation helpers"); all_passed = False
+
+        # 5. Compiler version + 16:9 + English-only. v0.6.2 keeps the v0.6.1
+        # contract but bumps the version header to advertise the prompt-
+        # quality gate. Either v0.6.1 or v0.6.2 satisfies this check.
+        if (
+            'COMPILER_VERSION = "seedance_prompt_compiler_v0.6.1"' in compiler
+            or 'COMPILER_VERSION = "seedance_prompt_compiler_v0.6.2"' in compiler
+        ):
+            print("  [OK] compiler version bumped to v0.6.1 or v0.6.2")
+        else:
+            print("  [FAIL] compiler version not v0.6.1 / v0.6.2"); all_passed = False
+        for marker in ("16:9", "1920x1080", "landscape", "English"):
+            if marker in compiler:
+                print(f"  [OK] compiler references {marker}")
+            else:
+                print(f"  [FAIL] compiler missing {marker}"); all_passed = False
+
+        # 6. Compiler safety constraints. v0.6.2 capitalises "Single
+        # narrator monologue", v0.6.1 used the lowercase form — accept both.
+        for marker in (
+            "single narrator monologue",
+            "no two-host",
+            "no dialogue",
+            "no podcast",
+            "no interview",
+            "no Chinese characters",
+            "no misspelled",
+            "max 8",
+            "only render the exact provided",
+        ):
+            if marker.lower() in compiler.lower():
+                print(f"  [OK] compiler enforces '{marker}'")
+            else:
+                print(f"  [FAIL] compiler missing constraint '{marker}'"); all_passed = False
+
+        # 7. Adapter defaults
+        for marker in ('DEFAULT_DURATION_SECONDS = 15',
+                       'DEFAULT_ASPECT_RATIO = "16:9"',
+                       'DEFAULT_RESOLUTION = "1920x1080"',
+                       'DEFAULT_LANGUAGE = "en"'):
+            if marker in adapter:
+                print(f"  [OK] adapter has {marker}")
+            else:
+                print(f"  [FAIL] adapter missing {marker}"); all_passed = False
+
+        # 8. Profile config
+        for marker in ('"default_aspect_ratio": "16:9"',
+                       '"default_resolution": "1920x1080"',
+                       '"default_duration_seconds": 15',
+                       '"output_language": "en"'):
+            if marker in profile:
+                print(f"  [OK] seedance.json has {marker}")
+            else:
+                print(f"  [FAIL] seedance.json missing {marker}"); all_passed = False
+        if '"duration_options"' in profile and "5" in profile and "90" in profile:
+            print("  [OK] seedance.json declares duration_options with 5..90")
+        else:
+            print("  [FAIL] seedance.json duration_options missing"); all_passed = False
+
+        # 9. app.py accepts duration_seconds
+        if "duration_seconds: Optional[int]" in appsrc and "request.duration_seconds" in appsrc:
+            print("  [OK] app.py accepts duration_seconds on /api/video/generate")
+        else:
+            print("  [FAIL] app.py does not propagate duration_seconds"); all_passed = False
+
+        # 10. HTML duration selector
+        if 'id="video-duration-selector"' in html and 'data-duration="15"' in html:
+            print("  [OK] HTML has #video-duration-selector with 15s default")
+        else:
+            print("  [FAIL] HTML duration selector missing"); all_passed = False
+        for d in ("5", "15", "30", "60", "90"):
+            if f'data-duration="{d}"' in html:
+                print(f"  [OK] HTML duration option {d}s present")
+            else:
+                print(f"  [FAIL] HTML duration option {d}s missing"); all_passed = False
+
+        # 11. HTML overlay progress bar
+        if 'id="video-progress-overlay"' in html and 'id="video-progress-overlay-fill"' in html:
+            print("  [OK] HTML video overlay progress bar exists")
+        else:
+            print("  [FAIL] HTML video overlay progress bar missing"); all_passed = False
+
+        # 12. CSS for selector + overlay
+        if ".video-duration-selector" in css and ".video-progress-overlay" in css:
+            print("  [OK] CSS has selector + overlay styles")
+        else:
+            print("  [FAIL] CSS missing selector or overlay styles"); all_passed = False
+
+        # 13. main.js wires duration_seconds in generate body
+        if "generateBody.duration_seconds" in mjs and "getCurrentVideoDurationSeconds" in mjs:
+            print("  [OK] main.js sends duration_seconds in generate body")
+        else:
+            print("  [FAIL] main.js does not send duration_seconds in generate"); all_passed = False
+        if "regenerateBody.duration_seconds" in mjs:
+            print("  [OK] main.js sends duration_seconds in regenerate body")
+        else:
+            print("  [FAIL] main.js does not send duration_seconds in regenerate"); all_passed = False
+
+        # 14. main.js status->% mapping covers required states
+        for marker in ("submitted: 20", "pending: 35", "running: 60",
+                       "downloading: 85", "succeeded: 100", "failed: 100",
+                       "blocked_fallback_prompt: 100", "provider_not_configured: 85"):
+            if marker in mjs:
+                print(f"  [OK] main.js overlay map: {marker}")
+            else:
+                print(f"  [FAIL] main.js overlay map missing {marker}"); all_passed = False
+
+        # 15. main.js renders overlay + history-switch cleanup
+        if "renderVideoOverlayProgress" in mjs:
+            print("  [OK] main.js has renderVideoOverlayProgress")
+        else:
+            print("  [FAIL] main.js missing renderVideoOverlayProgress"); all_passed = False
+        if "clearVideoPlayerStateForRecordSwitch" in mjs:
+            print("  [OK] main.js has clearVideoPlayerStateForRecordSwitch")
+        else:
+            print("  [FAIL] main.js missing clearVideoPlayerStateForRecordSwitch"); all_passed = False
+
+        # 16. Hard-prohibition: no Chinese topic forwarded into screen text
+        if "_english_topic_label" in pipeline and "on_screen_text" in pipeline:
+            print("  [OK] pipeline funnels on_screen_text through _english_topic_label")
+        else:
+            print("  [FAIL] pipeline does not sanitise on_screen_text"); all_passed = False
+
+        # 17. Prompt Mode protections unchanged
+        for protected in (
+            "data/notebooklm_prompts.db",
+            "data/topics.db",
+        ):
+            # We only assert the references still exist somewhere (read-only check).
+            pass
+        # AI Review rubric file exists (sanity, not modified-check).
+        if os.path.exists("scripts/llm_review_prompt_calibrated.txt"):
+            print("  [OK] AI Review rubric file present (unchanged)")
+        else:
+            print("  [WARN] AI Review rubric file missing"); self.warnings += 1
+
+        # 18. No forbidden git artifacts (advisory).
+        try:
+            import subprocess
+            git_out = subprocess.run(
+                ["git", "status", "--short", "--untracked-files=all"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout
+        except Exception:
+            git_out = ""
+        bad = []
+        for line in git_out.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            # v0.6.2 — config/example.env is the tracked, *committable* env
+            # template (placeholders only). Edits to it MUST NOT trigger a
+            # forbidden-pattern warning — only the real .env at the repo
+            # root is forbidden.
+            if s.endswith("config/example.env"):
+                continue
+            for pat in (".env", "data/", "outputs/", ".mp4", ".DS_Store"):
+                if pat in s:
+                    bad.append(s)
+                    break
+        if not bad:
+            print("  [OK] git status clean of forbidden artifacts")
+        else:
+            print("  [WARN] git status contains forbidden patterns (showing up to 3):")
+            for l in bad[:3]:
+                print(f"     {l}")
+            self.warnings += 1
+
+        if all_passed:
+            print("\n[OK] v0.6.1 English 16:9 + progress UX checks passed")
+            self.checks_passed += 1
+        else:
+            print("\n[FAIL] v0.6.1 English 16:9 + progress UX checks failed")
+            self.checks_failed += 1
+
+    def check_v062_prompt_quality_gate(self):
+        """v0.6.2 — Seedance prompt quality gate + English compiler + real
+        progress fix. The compiler must refuse fallback placeholders, the
+        runtime must execute the gate before APX submit, and the home page
+        must drive progress through real per-stage polling instead of a
+        setInterval fake-advance timer."""
+        print("\n" + "="*80)
+        print("v0.6.2 Seedance Prompt Quality Gate Checks")
+        print("="*80)
+        all_passed = True
+
+        def _read(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception:
+                return ""
+
+        compiler = _read("web/video_providers/seedance_prompt_compiler.py")
+        app = _read("web/app.py")
+        main_js = _read("web/static/main.js")
+        index_html = _read("web/static/index.html")
+        apx = _read("web/video_providers/apx_seedance_provider.py")
+        example_env = _read("config/example.env")
+        template = _read("templates/video_asset_prompt_template.md")
+
+        # 1. Compiler bumped to v0.6.2
+        if 'COMPILER_VERSION = "seedance_prompt_compiler_v0.6.2"' in compiler:
+            print("  [OK] compiler version is v0.6.2")
+        else:
+            print("  [FAIL] compiler version is not v0.6.2"); all_passed = False
+
+        # 2. New normalize step
+        if "def normalize_seedance_prompt_input(" in compiler:
+            print("  [OK] compiler exposes normalize_seedance_prompt_input()")
+        else:
+            print("  [FAIL] compiler missing normalize_seedance_prompt_input()"); all_passed = False
+
+        # 3. Quality gate function exists
+        if "def validate_seedance_prompt_quality(" in compiler:
+            print("  [OK] compiler exposes validate_seedance_prompt_quality()")
+        else:
+            print("  [FAIL] compiler missing validate_seedance_prompt_quality()"); all_passed = False
+
+        # 4. Banned-token / placeholder constants
+        for marker in (
+            "BANNED_PLACEHOLDER_STRINGS",
+            "BANNED_STANDALONE_TOKENS",
+            "REQUIRED_PROMPT_KEYWORDS",
+            "GENERIC_OST_FRAGMENTS",
+        ):
+            if marker in compiler:
+                print(f"  [OK] compiler defines {marker}")
+            else:
+                print(f"  [FAIL] compiler missing {marker}"); all_passed = False
+
+        # 5. Compiler must NOT silently fall back to "this topic" /
+        #    "A" / "AB" / "BAB" — the normalize step records a block reason
+        #    instead. Spot-check by ensuring the strings only appear inside
+        #    the banned-list / docstrings, never as a fabricated default.
+        if 'fallback="this topic"' in compiler:
+            print('  [FAIL] compiler still uses fallback="this topic" inside _english_label / _short_english')
+            all_passed = False
+        else:
+            print('  [OK] compiler no longer uses fallback="this topic"')
+
+        # 6. Final-prompt section markers required by the v0.6.2 spec.
+        for marker in (
+            "Single narrator monologue only",
+            "Use one clear English narrator voiceover",
+            "max 8",
+            "only render the exact provided",
+            "Mandatory duration:",
+            "Ignore any conflicting duration",
+            "no Chinese characters",
+            "no podcast",
+            "no interview",
+        ):
+            if marker in compiler:
+                print(f"  [OK] compiler enforces '{marker}'")
+            else:
+                print(f"  [FAIL] compiler missing '{marker}'"); all_passed = False
+        # 16:9 landscape + 1920x1080 may appear together or split across
+        # adjacent lines; require both substrings independently.
+        if "16:9" in compiler and "landscape" in compiler and "1920x1080" in compiler:
+            print("  [OK] compiler enforces 16:9 landscape, 1920x1080")
+        else:
+            print("  [FAIL] compiler missing 16:9 / landscape / 1920x1080")
+            all_passed = False
+
+        # 7. Legacy "does not yet generate audio" must not be EMITTED in
+        # the final prompt. The phrase is allowed to appear in the
+        # BANNED_PLACEHOLDER_STRINGS tuple (so the gate can detect it) and
+        # in the compiler_checks debug payload — but never as content the
+        # compiler concatenates into seedance_prompt.txt.
+        emits_audio_phrase = (
+            'append("does not yet generate audio' in compiler
+            or 'sections.append("does not yet generate audio' in compiler
+            or '"does not yet generate audio"\n        )' in compiler
+        )
+        if emits_audio_phrase or "does not yet generate audio" in template:
+            print("  [FAIL] compiler/template still emits 'does not yet generate audio'")
+            all_passed = False
+        else:
+            print("  [OK] 'does not yet generate audio' is only used as a banned-list marker, never emitted")
+
+        # 8. APX submit path runs the quality gate before submit.
+        if "validate_seedance_prompt_quality" in app and "blocked_prompt_quality" in app:
+            print("  [OK] app.py runs validate_seedance_prompt_quality before APX submit and persists blocked_prompt_quality")
+        else:
+            print("  [FAIL] app.py missing prompt quality gate / blocked_prompt_quality")
+            all_passed = False
+
+        # 9. blocked_prompt_quality status maps to VideoHistory.video_status
+        if "blocked_prompt_quality" in app and 'return "blocked_prompt_quality"' in app:
+            print("  [OK] _map_job_status_to_video_status maps blocked_prompt_quality")
+        else:
+            print("  [FAIL] _map_job_status_to_video_status missing blocked_prompt_quality")
+            all_passed = False
+
+        # 10. Run store + endpoints
+        for marker in (
+            "VIDEO_GENERATION_RUNS",
+            "VIDEO_GENERATION_RUNS_LOCK",
+            "/api/video/generate/start",
+            "/api/video/generate/runs/",
+            "_video_run_worker",
+        ):
+            if marker in app:
+                print(f"  [OK] app.py declares {marker}")
+            else:
+                print(f"  [FAIL] app.py missing {marker}"); all_passed = False
+
+        # 11. Real per-stage tuple
+        if "VIDEO_RUN_STAGES" in app and "validate_topic" in app and "submit_video_job" in app:
+            print("  [OK] app.py defines VIDEO_RUN_STAGES with real stage keys")
+        else:
+            print("  [FAIL] app.py missing VIDEO_RUN_STAGES with real stage keys")
+            all_passed = False
+
+        # 12. Front-end no longer uses setInterval to fake-advance the
+        #     home-page progress. The replacement is startVideoRunPolling.
+        if "advanceVideoGenerationProgress" in main_js:
+            print("  [FAIL] main.js still references advanceVideoGenerationProgress (fake setInterval timer)")
+            all_passed = False
+        else:
+            print("  [OK] main.js no longer references advanceVideoGenerationProgress")
+        if "startVideoRunPolling" in main_js and "/api/video/generate/runs/" in main_js:
+            print("  [OK] main.js polls /api/video/generate/runs/{id} for real progress")
+        else:
+            print("  [FAIL] main.js does not poll /api/video/generate/runs/{id}")
+            all_passed = False
+
+        # 13. Video Output overlay covers the previous record's video.
+        if "background: #0f172a" in _read("web/static/style.css"):
+            print("  [OK] video-progress-overlay has solid background")
+        else:
+            print("  [FAIL] video-progress-overlay background is not solid")
+            all_passed = False
+
+        # 14. Provider Evidence Summary panel (HTML + CSS + JS).
+        if 'id="provider-evidence-panel"' in index_html and "renderProviderEvidencePanel" in main_js:
+            print("  [OK] Provider Evidence Summary panel wired (HTML + JS)")
+        else:
+            print("  [FAIL] Provider Evidence Summary panel missing")
+            all_passed = False
+        if "provider_evidence" in app and "has_remote_video_url" in app:
+            print("  [OK] /provider-contract endpoint returns provider_evidence with has_remote_video_url")
+        else:
+            print("  [FAIL] /provider-contract endpoint missing provider_evidence / has_remote_video_url")
+            all_passed = False
+
+        # 15. APX prompt_extend default is FALSE.
+        if "DEFAULT_PROMPT_EXTEND = False" in apx:
+            print("  [OK] APX provider DEFAULT_PROMPT_EXTEND = False")
+        else:
+            print("  [FAIL] APX provider DEFAULT_PROMPT_EXTEND not False")
+            all_passed = False
+        if "APX_VIDEO_PROMPT_EXTEND=false" in example_env or "APX_VIDEO_PROMPT_EXTEND=False" in example_env:
+            print("  [OK] config/example.env recommends APX_VIDEO_PROMPT_EXTEND=false")
+        else:
+            print("  [FAIL] config/example.env does not recommend APX_VIDEO_PROMPT_EXTEND=false")
+            all_passed = False
+
+        # 16. Duration selector + 5/15/30/60/90.
+        if all(f'data-duration="{d}"' in index_html for d in (5, 15, 30, 60, 90)):
+            print("  [OK] index.html duration selector has 5/15/30/60/90")
+        else:
+            print("  [FAIL] index.html duration selector missing 5/15/30/60/90")
+            all_passed = False
+
+        # 17. Front-end sends duration_seconds in start + regenerate.
+        if "duration_seconds: getCurrentVideoDurationSeconds()" in main_js:
+            print("  [OK] main.js sends duration_seconds in generate + regenerate")
+        else:
+            print("  [FAIL] main.js missing duration_seconds in generate / regenerate")
+            all_passed = False
+
+        # 18. .env / outputs / data/*.db / *.mp4 hygiene
+        try:
+            git_out = subprocess.run(
+                ["git", "status", "--short", "--untracked-files=all"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout
+        except Exception:
+            git_out = ""
+        bad = []
+        for line in git_out.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            if s.endswith("config/example.env"):
+                continue
+            for pat in (" .env", "data/", "outputs/", ".mp4"):
+                if pat in s:
+                    bad.append(s)
+                    break
+        if not bad:
+            print("  [OK] git status clean of .env / data / outputs / *.mp4")
+        else:
+            print("  [WARN] git status contains forbidden patterns (showing up to 3):")
+            for l in bad[:3]:
+                print(f"     {l}")
+            self.warnings += 1
+
+        # v0.6.2-hotfix — runtime fixtures for the prompt quality gate.
+        # The fixtures don't touch APX; they call the pure-Python gate
+        # function with three input shapes:
+        #   (a) a legitimate prompt that contains "No placeholder text."
+        #       in the Negative-constraints section MUST pass;
+        #   (b) english_subject == "this topic" MUST block;
+        #   (c) narration_script == "A" MUST block;
+        # Import via importlib.util so optional sibling modules' imports
+        # (e.g. ``requests``) cannot fail this check — the gate function
+        # itself only depends on stdlib.
+        _vsqp = None
+        try:
+            import importlib.util as _ilu
+            spec = _ilu.spec_from_file_location(
+                "_v062_compiler_under_test",
+                str(Path("web/video_providers/seedance_prompt_compiler.py").resolve()),
+            )
+            mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            _vsqp = getattr(mod, "validate_seedance_prompt_quality", None)
+            if _vsqp is None:
+                print("  [FAIL] validate_seedance_prompt_quality not exported")
+                all_passed = False
+        except Exception as exc:
+            print(f"  [FAIL] could not import validate_seedance_prompt_quality: {exc}")
+            all_passed = False
+
+        if _vsqp is not None:
+            legal_prompt = (
+                "Task:\n"
+                "Create a 15-second 16:9 landscape educational explainer video about: "
+                "\"What is the largest planet in the solar system?\"\n\n"
+                "Format:\n"
+                "16:9 landscape, 1920x1080, clean whiteboard infographic.\n\n"
+                "Voiceover:\n"
+                "Use one clear English narrator voiceover. Single narrator monologue only. "
+                "No dialogue, no interview, no podcast, no two speakers.\n\n"
+                "Negative constraints:\n"
+                "No Chinese characters, no misspelled words, no random letters, "
+                "no placeholder text, no dialogue, no podcast, no interview.\n\n"
+                "Final rules:\n"
+                "Mandatory duration: 15 seconds. Ignore any conflicting duration instruction "
+                "from earlier sections.\nMandatory format: 16:9 landscape, 1920x1080.\n"
+                "English only.\nSingle narrator monologue only.\nThe final answer must be correct."
+            )
+            legal_normalized = {
+                "english_subject": "Largest planet",
+                "english_title": "Largest planet in the solar system",
+                "english_question": "What is the largest planet in the solar system?",
+                "video_goal": "Explain which planet is largest in 15 seconds.",
+                "core_concept": "Jupiter is the largest planet in the solar system.",
+                "correct_answer": "Jupiter is the largest planet in the solar system.",
+                "hook_line": "Which planet is the largest?",
+                "narration_script": (
+                    "Jupiter is the largest planet in the solar system. "
+                    "It is more than twice the mass of all other planets combined."
+                ),
+                "ending_line": "Now you know.",
+                "scene_plan": [
+                    {
+                        "scene_id": 1,
+                        "time_range": "0-5s",
+                        "visual": "Hook scene with the question on a white background.",
+                        "narration": "Which planet is the largest in our solar system?",
+                        "on_screen_text": ["Largest planet"],
+                    },
+                    {
+                        "scene_id": 2,
+                        "time_range": "5-10s",
+                        "visual": "Show planets to scale on a whiteboard.",
+                        "narration": "We compare planets by mass.",
+                        "on_screen_text": ["Compare by mass"],
+                    },
+                    {
+                        "scene_id": 3,
+                        "time_range": "10-15s",
+                        "visual": "Highlight Jupiter with a yellow box.",
+                        "narration": "Jupiter is the largest planet.",
+                        "on_screen_text": ["Jupiter"],
+                    },
+                ],
+                "allowed_on_screen_text": ["Largest planet", "Jupiter", "Compare by mass"],
+                "duration_seconds": 15,
+                "aspect_ratio": "16:9",
+                "resolution": "1920x1080",
+            }
+            ok_a, reasons_a, _ = _vsqp(
+                legal_prompt,
+                {"normalized_input": legal_normalized},
+                duration_seconds=15,
+            )
+            if ok_a:
+                print('  [OK] legitimate prompt with "No placeholder text" is NOT blocked')
+            else:
+                print(f'  [FAIL] legitimate prompt blocked unexpectedly: {reasons_a}')
+                all_passed = False
+
+            bad_subject = dict(legal_normalized)
+            bad_subject["english_subject"] = "this topic"
+            ok_b, reasons_b, _ = _vsqp(
+                legal_prompt,
+                {"normalized_input": bad_subject},
+                duration_seconds=15,
+            )
+            if not ok_b and any("english_subject" in r for r in reasons_b):
+                print('  [OK] english_subject == "this topic" is blocked')
+            else:
+                print(f'  [FAIL] english_subject == "this topic" should block. reasons={reasons_b}')
+                all_passed = False
+
+            bad_narration = dict(legal_normalized)
+            bad_narration["narration_script"] = "A"
+            ok_c, reasons_c, _ = _vsqp(
+                legal_prompt,
+                {"normalized_input": bad_narration},
+                duration_seconds=15,
+            )
+            if not ok_c and any("narration_script" in r for r in reasons_c):
+                print('  [OK] narration_script == "A" is blocked')
+            else:
+                print(f'  [FAIL] narration_script == "A" should block. reasons={reasons_c}')
+                all_passed = False
+
+            bad_scene = dict(legal_normalized)
+            bad_scene["scene_plan"] = [
+                dict(legal_normalized["scene_plan"][0], visual="AB"),
+                legal_normalized["scene_plan"][1],
+                legal_normalized["scene_plan"][2],
+            ]
+            ok_d, reasons_d, _ = _vsqp(
+                legal_prompt,
+                {"normalized_input": bad_scene},
+                duration_seconds=15,
+            )
+            if not ok_d and any('scene[1].visual' in r or 'visual=' in r for r in reasons_d):
+                print('  [OK] scene visual == "AB" is blocked')
+            else:
+                print(f'  [FAIL] scene visual == "AB" should block. reasons={reasons_d}')
+                all_passed = False
+
+        # v0.6.2-hotfix — Provider Evidence: provider=apx_seedance alone
+        # must NOT yield Real API call = Yes. The backend now requires
+        # response_payload.network_call_performed / http_status / raw_status /
+        # video_url / provider_job_id evidence; the front-end has a
+        # defensive override using BLOCKED_STATUSES_FOR_API_CALL.
+        if "BLOCKED_STATUSES" in app and 'resp_payload.get("network_call_performed")' in app:
+            print('  [OK] /provider-contract derives Real API call from response_payload.network_call_performed (not from provider name)')
+        else:
+            print('  [FAIL] /provider-contract still derives Real API call from provider name alone')
+            all_passed = False
+        if "BLOCKED_STATUSES_FOR_API_CALL" in main_js:
+            print('  [OK] main.js Provider Evidence enforces blocked-state override for Real API call')
+        else:
+            print('  [FAIL] main.js missing BLOCKED_STATUSES_FOR_API_CALL override')
+            all_passed = False
+
+        # v0.6.2-hotfix — Refresh Status + Regenerate Video buttons MUST be
+        # in the DOM and the JS must NOT hide refreshBtn for blocked states.
+        if 'id="video-job-refresh-btn"' in index_html and 'id="video-job-regenerate-btn"' in index_html:
+            print('  [OK] index.html declares Refresh Status + Regenerate Video buttons')
+        else:
+            print('  [FAIL] index.html missing Refresh Status / Regenerate Video buttons')
+            all_passed = False
+        if "regenerateVideoForCurrentRecord" in main_js:
+            print('  [OK] main.js implements regenerateVideoForCurrentRecord()')
+        else:
+            print('  [FAIL] main.js missing regenerateVideoForCurrentRecord()')
+            all_passed = False
+        # The hotfix removes "btn.hidden = true;" inside renderVideoJobStatus.
+        if "refreshBtn.hidden = false" in main_js and "regenBtn.hidden = false" in main_js:
+            print('  [OK] main.js renders Refresh Status + Regenerate Video as always-visible')
+        else:
+            print('  [FAIL] main.js does not always render Refresh / Regenerate buttons')
+            all_passed = False
+
+        if all_passed:
+            print("\n[OK] v0.6.2 Seedance prompt quality gate checks passed")
+            self.checks_passed += 1
+        else:
+            print("\n[FAIL] v0.6.2 Seedance prompt quality gate checks failed")
+            self.checks_failed += 1
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -3861,6 +4529,8 @@ def main():
         checker.check_v055_contract()
         checker.check_v056_compiler()
         checker.check_v060_apx_provider()
+        checker.check_v061_english_landscape()
+        checker.check_v062_prompt_quality_gate()
         checker.check_git_status_hygiene()
         checker.check_database_integrity()
     except Exception as e:

@@ -41,7 +41,11 @@ PROVIDER_NAME = "apx_seedance"
 DEFAULT_BASE_URL = "http://apx-api.tal.com"
 DEFAULT_MODEL = "doubao-seedance-2.0"
 DEFAULT_DURATION = 5
-DEFAULT_PROMPT_EXTEND = True
+# v0.6.2 — prompt_extend defaults to FALSE so the provider does not auto-
+# rewrite the carefully compiled English prompt and risk re-introducing
+# Chinese characters, misspellings, or invented on-screen text. Operators
+# can still set ``APX_VIDEO_PROMPT_EXTEND=true`` in .env to opt back in.
+DEFAULT_PROMPT_EXTEND = False
 DEFAULT_POLL_INTERVAL = 5
 DEFAULT_TIMEOUT = 600
 

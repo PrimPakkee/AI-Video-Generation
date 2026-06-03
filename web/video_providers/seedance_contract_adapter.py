@@ -32,12 +32,16 @@ PAYLOAD_PREVIEW_LEGACY_SCHEMA_VERSION = "seedance_payload_preview_v0.5.5"
 LIFECYCLE_PREVIEW_SCHEMA_VERSION = "provider_lifecycle_preview_v0.5.5"
 PROVIDER_CONTRACT_SCHEMA_VERSION = "seedance_contract_v0.5.5"
 
-DEFAULT_DURATION_SECONDS = 5
-DEFAULT_ASPECT_RATIO = "9:16"
-DEFAULT_RESOLUTION = "1080p"
+DEFAULT_DURATION_SECONDS = 15
+DEFAULT_ASPECT_RATIO = "16:9"
+DEFAULT_ORIENTATION = "landscape"
+DEFAULT_RESOLUTION = "1920x1080"
 DEFAULT_FPS = 24
-DEFAULT_LANGUAGE = "zh-CN"
-DEFAULT_STYLE = "clean whiteboard line-art educational short video"
+DEFAULT_LANGUAGE = "en"
+DEFAULT_STYLE = (
+    "clean educational explainer video, white background, simple line art and "
+    "infographics, English on-screen text only, yellow highlights, smooth camera"
+)
 
 
 def _utc_now_iso() -> str:

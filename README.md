@@ -188,7 +188,7 @@ http://127.0.0.1:8000
 
 ### 当前版本状态
 
-- **当前版本阶段**：`v0.6.0 — APX Seedance Real Provider Integration`
+- **当前版本阶段**：`v0.6.2 — Seedance Prompt Quality Gate + English Compiler + Real Progress Fix`
 - **已完成**：
   - Prompt Mode v0.4.10 全部能力（Prompt 生成、历史、版本、视图、AI Review、Regenerate、本地 Web 应用）；
   - Video Mode 独立框架（v0.5.2）：独立数据库 / API / 6 tab / 播放器骨架 / 全局 tooltip portal；
@@ -196,9 +196,11 @@ http://127.0.0.1:8000
   - Video Content Asset Pipeline（v0.5.4）：LLM 驱动的 7 个内容资产、Download All 升级、9 步进度面板、`AI_VIDEO_LLM_*` 配置体系；
   - Seedance Provider Contract Adapter（v0.5.5）：dry-run 契约层、3 个新契约文件、4 个 dry-run API 端点、Provider Contract Summary 区块、stage 升级到 `contract_ready`；
   - Seedance Prompt Compiler（v0.5.6）：离线 prompt 编译器、provider profile (`config/provider_profiles/seedance.json`)、3 个新资产文件（`seedance_prompt.txt` / `seedance_negative_prompt.txt` / `seedance_prompt_debug.json`）、`payload.prompt` 优先取自 compiled prompt；
-  - **APX Seedance Real Provider（v0.6.0，当前版本）**：首次接入公司 APX 异步视频网关（底层 `doubao-seedance-2.0`），新增 `web/video_providers/apx_seedance_provider.py`（仅此文件允许真实网络调用）、`POST /v1/async/chat` 提交 + `GET /v1/async/results/{id}` 轮询 + 成功后下载 `response.video_url` 到 `outputs/<slug>/video.mp4` 并通过 `/api/video/history/{id}/asset/video` 在前端播放本地 mp4；新增 `blocked_fallback_prompt` 安全状态避免在 fallback 资产上烧 APX 配额；`api-key` 永不入库 / 不写入 metadata / 不出现在 Download All；通过 `APX_VIDEO_ENABLED` + `APX_VIDEO_API_KEY` 显式开启，否则自动 fallback 到 v0.5.3 Mock。
-- **正在进行**：v0.6.0 上线后的真实视频回归与 Video Review 独立评分协议设计。
-- **尚未完成**：批量批处理、retry / cancel 真实 job、独立 Video Review 协议（计划在 v0.6.x 完成）。
+  - **APX Seedance Real Provider（v0.6.0）**：首次接入公司 APX 异步视频网关（底层 `doubao-seedance-2.0`），新增 `web/video_providers/apx_seedance_provider.py`（仅此文件允许真实网络调用）、`POST /v1/async/chat` 提交 + `GET /v1/async/results/{id}` 轮询 + 成功后下载 `response.video_url` 到 `outputs/<slug>/video.mp4` 并通过 `/api/video/history/{id}/asset/video` 在前端播放本地 mp4；新增 `blocked_fallback_prompt` 安全状态避免在 fallback 资产上烧 APX 配额；`api-key` 永不入库 / 不写入 metadata / 不出现在 Download All；通过 `APX_VIDEO_ENABLED` + `APX_VIDEO_API_KEY` 显式开启，否则自动 fallback 到 v0.5.3 Mock。
+  - **English-only 16:9 视频规范 + 进度 UX 加固（v0.6.1）**：管线 / 编译器 / 契约适配器 / `seedance.json` 全链路锁定 16:9 横屏 1920x1080，输出语言固定 `en`，中文题目通过 `_english_topic_label` 转成英文 subject 再注入 on-screen text；首页新增 5 / 15 / 30 / 60 / 90 时长选择器（默认 15s）；视频播放区新增覆盖式进度条；切换历史记录时清空 `<video>.src` 与残留路径。
+  - **Seedance Prompt Quality Gate + 真实进度修复（v0.6.2，当前版本）**：APX 真实接口已经在 v0.6.0 接通，但回看真实 `submit_payload.prompt` 出现了大量占位符（`this topic` / `A` / `AB` / `BAB` / `Question` / `Answer` / `Why?`）。v0.6.2 重写 `seedance_prompt_compiler.py`：新增 `normalize_seedance_prompt_input(...)` 把上游资产抽取成 English-only 结构化输入，**绝不再 fallback 成 `this topic` / `A` / `AB` / `BAB`**；最终 prompt 改为紧凑的 Task / Format / Voiceover / Core explanation / Scene plan / Allowed on-screen text only / Text rules / Motion / Negative constraints / Final rules 段落格式，删除「does not yet generate audio」相关文案，正向要求英文旁白。新增 `validate_seedance_prompt_quality()` default-deny gate，真实 APX submit 前调用：失败时创建 `blocked_prompt_quality` VideoJob 并**绝不调用 APX**。新增 `/api/video/generate/start` + `/api/video/generate/runs/{id}` 真实 run store + 9 个真实阶段，前端彻底删除 1.5s setInterval 假动画。新增 Provider Evidence Summary 面板。`APX_VIDEO_PROMPT_EXTEND` 默认改为 `false`。Schema bump：`seedance_prompt_compiler_v0.6.2` / `seedance_prompt_profile_v0.6.2` / `seedance_prompt_debug_v0.6.2`。本版本仍**不调用真实 APX、不生成真实视频**（详见 [`docs/v0.6.2_seedance_prompt_quality_gate.md`](docs/v0.6.2_seedance_prompt_quality_gate.md)）。
+- **正在进行**：v0.6.2 自检通过后，下一步是真实视频回归与 Video Review 独立评分协议设计。
+- **尚未完成**：批量批处理、retry / cancel 真实 job、独立 Video Review 协议、deterministic subtitle overlay（计划在 v0.6.x / v0.7.x 完成）。
 
 ---
 
@@ -213,9 +215,11 @@ http://127.0.0.1:8000
 | **v0.5.5** | Seedance Provider Contract Adapter (dry-run) + 3 个契约文件 + 4 个 dry-run API（已完成） |
 | **v0.5.6** | Seedance Prompt Compiler (dry-run) + provider profile + 3 个新资产文件 + Overview Compiler 行（已完成） |
 | **v0.5.x（继续）** | Web Copy 模板预设、播放器交互细节 |
-| **v0.6.0** | APX Seedance Real Provider：首次接入公司 APX 异步视频网关（底层 `doubao-seedance-2.0`），真实 submit / poll / 下载 mp4 / 前端播放本地视频，`blocked_fallback_prompt` 安全状态保护 fallback 资产，api-key 不入库（当前版本） |
-| **v0.6.1** | Video Job 真实 retry / cancel、批量批处理、独立 Video Review prompt / schema |
-| **v0.6.2+** | 失败状态机细化、回归基线收敛 |
+| **v0.6.0** | APX Seedance Real Provider：首次接入公司 APX 异步视频网关（底层 `doubao-seedance-2.0`），真实 submit / poll / 下载 mp4 / 前端播放本地视频，`blocked_fallback_prompt` 安全状态保护 fallback 资产，api-key 不入库（已完成） |
+| **v0.6.1** | English-only 16:9 横屏视频规范、5/15/30/60/90 时长选择器、覆盖式进度条、history-switch 残留清理（已完成） |
+| **v0.6.2** | Seedance Prompt Quality Gate（默认拒绝 `this topic` / `A` / `AB` / `BAB`）、English compiler 重写、`/api/video/generate/start` 真实 run store、Provider Evidence Summary、`APX_VIDEO_PROMPT_EXTEND` 默认 `false`（当前版本） |
+| **v0.6.3** | Video Job 真实 retry / cancel、批量批处理、独立 Video Review prompt / schema |
+| **v0.6.4+** | 失败状态机细化、deterministic subtitle overlay、回归基线收敛 |
 | **v0.7.x – v1.0** | 用户登录、用户空间、权限管控、产品化 |
 
 未来可继续扩展：

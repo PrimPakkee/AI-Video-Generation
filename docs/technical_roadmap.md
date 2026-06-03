@@ -4,7 +4,7 @@
 
 本文档详细规划了从当前版本（V0）到端到端自动化（V4）的完整技术路线。每个 Phase 都有明确的技术目标、实现方案、技术栈和成功标准。
 
-## 当前里程碑（v0.6.0）
+## 当前里程碑（v0.6.2）
 
 - **Prompt Mode**：v0.4.10 已冻结，所有保护边界继续生效（详见
   [`prompt_mode_freeze_spec.md`](./prompt_mode_freeze_spec.md)）。
@@ -33,7 +33,35 @@
   prompt；Overview 新增 *Seedance Prompt Compiler: Ready / Not Available*
   行（详见
   [`v0.5.6_seedance_prompt_compiler.md`](./v0.5.6_seedance_prompt_compiler.md)）。
-- **APX Seedance Real Provider（当前 v0.6.0）**：首次接入公司 APX 异步视频
+- **English-only 16:9 视频规范 + 进度 UX 加固（v0.6.1）**：管线、编译器、
+  契约适配器与 provider profile 全部锁定到 16:9 / 1920x1080 / 15s 默认；
+  输出语言固定 `en`，中文题目通过 `_english_topic_label` 转成英文 subject 再
+  进入 on-screen text；首页新增 5 / 15 / 30 / 60 / 90 时长选择器并按档位决定
+  场景数与字数；视频播放区新增覆盖式进度条；切换历史记录会清空上一条的
+  视频残留路径与 `<video>.src`。Schema bump：`video_assets_v0.6.1` /
+  `seedance_prompt_compiler_v0.6.1` / `seedance_prompt_profile_v0.6.1`。
+- **Seedance Prompt Quality Gate + 真实进度修复（当前 v0.6.2）**：APX 真实
+  接口已经在 v0.6.0 接通，但回看真实 `submit_payload.prompt` 出现了大量
+  占位符（`this topic` / `A` / `AB` / `BAB` / `Question` / `Answer` / `Why?`），
+  说明内容资产到 Seedance prompt 的编译层是坏的，且真实调用前没有质量门禁。
+  v0.6.2 重写 `seedance_prompt_compiler.py`：新增
+  `normalize_seedance_prompt_input(...)` 把上游内容资产抽取为 English-only
+  结构化输入，**绝不再 fallback 成 `this topic` / `A` / `AB` / `BAB`**；
+  最终 prompt 改为紧凑的 Task / Format / Voiceover / Core explanation /
+  Scene plan / Allowed on-screen text only / Text rules / Motion /
+  Negative constraints / Final rules 段落格式，删除「does not yet generate
+  audio」相关文案，正向要求英文旁白。新增
+  `validate_seedance_prompt_quality(...)` default-deny gate，真实 APX
+  submit 前调用：失败时创建 `blocked_prompt_quality` VideoJob 并**绝不
+  调用 APX**。新增 `/api/video/generate/start` + `/api/video/generate/runs/{id}`
+  真实 run store + 9 个真实阶段，前端彻底删除 1.5s setInterval 假动画；
+  新增 Provider Evidence Summary 面板（绝不暴露 API key / signed video
+  URL / 绝对路径）。`APX_VIDEO_PROMPT_EXTEND` 默认改为 `false`。Schema
+  bump：`seedance_prompt_compiler_v0.6.2` / `seedance_prompt_profile_v0.6.2` /
+  `seedance_prompt_debug_v0.6.2`（详见
+  [`v0.6.2_seedance_prompt_quality_gate.md`](./v0.6.2_seedance_prompt_quality_gate.md)）。
+  本版本仍**不调用真实 APX、不生成真实视频**。
+- **APX Seedance Real Provider（v0.6.0）**：首次接入公司 APX 异步视频
   网关（底层 `doubao-seedance-2.0`），新增
   `web/video_providers/apx_seedance_provider.py`（仅此文件允许真实网络调用），
   把 v0.5.6 编译好的 `seedance_prompt.txt` 真正打到
@@ -46,9 +74,10 @@
   在 fallback 资产上烧掉 APX 配额。`api-key` 永不入库 / 不写入 metadata /
   不出现在 Download All（详见
   [`v0.6.0_apx_seedance_real_provider.md`](./v0.6.0_apx_seedance_real_provider.md)）。
-- **下一阶段**：基于 v0.6.0 的真实视频产物，引入 Video Review 独立评分
-  协议、批量批处理、retry / cancel 真实 job、以及更细的失败状态机；
-  Mock provider 与 prompt compiler 继续保留作为离线测试与回归基线。
+- **下一阶段（v0.6.3+）**：基于 v0.6.2 的 prompt 质量门禁与真实进度
+  框架，引入 Video Review 独立评分协议、批量批处理、retry / cancel 真实
+  job、deterministic subtitle overlay（保证字幕零错字），以及更细的失败
+  状态机；Mock provider 与 prompt compiler 继续保留作为离线测试与回归基线。
 
 ---
 
