@@ -44,7 +44,8 @@ from web.db import (
     VideoHistoryRepository,
     VideoJobRepository,
 )
-from web.video_providers import MockVideoProvider
+from web.video_providers import MockVideoProvider, ApxSeedanceProvider
+from web.video_providers.apx_seedance_provider import _scrub_api_key as _apx_scrub_api_key
 
 # v0.5.4: Video Content Asset Pipeline. Generates structured assets that a
 # future real video provider integration will consume. Never calls a real
@@ -2194,6 +2195,22 @@ def _create_mock_video_job_for_record(
         }
         response_payload = provider.submit(request_payload)
 
+        # v0.6.0 duration sync: read target duration from the asset bundle so
+        # the Mock job's duration_seconds matches the manifest the operator
+        # already saw on disk.
+        try:
+            mock_assets = _load_apx_assets_for_record(record)
+            mock_manifest = mock_assets.get("manifest") if isinstance(mock_assets, dict) else None
+            mock_target = (
+                mock_manifest.get("target_duration_seconds")
+                if isinstance(mock_manifest, dict) else None
+            )
+            mock_duration: Optional[int] = (
+                int(mock_target) if isinstance(mock_target, (int, float)) else None
+            )
+        except Exception:
+            mock_duration = None
+
         now = datetime.utcnow()
         job = VideoJobRepository.create_job(
             db=db,
@@ -2208,7 +2225,23 @@ def _create_mock_video_job_for_record(
             error_message=None,
             submitted_at=now,
             completed_at=now,
+            duration_seconds=mock_duration,
         )
+        # v0.6.0 duration sync: keep VideoHistory.video_duration_seconds in
+        # line with the manifest target so the Mock and APX paths look
+        # identical in the operator UI.
+        try:
+            if mock_duration is not None and record.video_duration_seconds != mock_duration:
+                record.video_duration_seconds = mock_duration
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
         # v0.5.3: sync VideoHistory.video_status with the freshly-created job so
         # the record no longer reads `not_generated` once a Mock job exists.
         # Mapping is intentionally minimal (no full state machine in v0.5.3).
@@ -2232,10 +2265,11 @@ def _create_mock_video_job_for_record(
 
 
 def _map_job_status_to_video_status(job_status: Optional[str]) -> Optional[str]:
-    """v0.5.3: minimal mapping from VideoJob.status to VideoHistory.video_status.
+    """v0.5.3 → v0.6.0: map VideoJob.status to VideoHistory.video_status.
 
-    For v0.5.3 the only status produced in practice is `provider_not_configured`
-    (Mock provider). The other branches keep the mapping forward-compatible.
+    v0.6.0 adds the APX states: submitted / pending / running / succeeded /
+    blocked_fallback_prompt / succeeded_but_no_video_url. The mapping keeps
+    the Video Mode UI in sync with the latest job state.
     """
     if not job_status:
         return None
@@ -2247,7 +2281,349 @@ def _map_job_status_to_video_status(job_status: Optional[str]) -> Optional[str]:
         return "failed"
     if job_status == "cancelled":
         return "cancelled"
+    if job_status in ("submitted", "pending", "running"):
+        return job_status
+    if job_status == "blocked_fallback_prompt":
+        return "blocked_fallback_prompt"
+    if job_status == "succeeded_but_no_video_url":
+        return "succeeded_but_no_video_url"
     return None
+
+
+def _load_apx_assets_for_record(record: VideoHistory) -> Dict[str, Any]:
+    """Load seedance_prompt.txt + manifest + payload preview + prompt debug
+    from ``outputs/<slug>/video_assets/``. All values default to empty so the
+    APX provider's fallback safety check still runs even when files are
+    missing (it will block in that case).
+    """
+    output_dir = record.output_dir or ""
+    base = Path(output_dir)
+    if not base.is_absolute():
+        base = project_root / base
+    assets_dir = base / "video_assets"
+
+    seedance_prompt = ""
+    manifest: Dict[str, Any] = {}
+    payload_preview: Dict[str, Any] = {}
+    prompt_debug: Dict[str, Any] = {}
+
+    try:
+        sp = assets_dir / "seedance_prompt.txt"
+        if sp.exists():
+            with open(sp, "r", encoding="utf-8") as f:
+                seedance_prompt = f.read()
+    except Exception:
+        seedance_prompt = ""
+
+    def _safe_json(p: Path) -> Dict[str, Any]:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    manifest = _safe_json(assets_dir / "generation_manifest.json")
+    payload_preview = _safe_json(assets_dir / "seedance_payload_preview.json")
+    prompt_debug = _safe_json(assets_dir / "seedance_prompt_debug.json")
+
+    return {
+        "output_dir": str(base),
+        "assets_dir": str(assets_dir),
+        "seedance_prompt": seedance_prompt,
+        "manifest": manifest,
+        "payload_preview": payload_preview,
+        "prompt_debug": prompt_debug,
+    }
+
+
+def _create_apx_video_job_for_record(
+    db: Session,
+    record: VideoHistory,
+    request_title: str,
+) -> Optional[Dict[str, Any]]:
+    """v0.6.0: create an APX Seedance VideoJob for a freshly-saved record.
+
+    Returns ``None`` when the APX provider is not configured (caller should
+    fall back to ``_create_mock_video_job_for_record``). Otherwise calls
+    ``check_fallback_safety`` and either persists a ``blocked_fallback_prompt``
+    job (refusing to burn credits on placeholder content) or calls
+    ``ApxSeedanceProvider.submit`` and persists a ``submitted`` job. The API
+    key is never written into request_json / response_json — the provider
+    redacts before returning.
+    """
+    try:
+        provider = ApxSeedanceProvider()
+        if not provider.is_configured():
+            return None
+
+        assets = _load_apx_assets_for_record(record)
+        seedance_prompt = assets["seedance_prompt"]
+        manifest = assets["manifest"]
+        prompt_debug = assets["prompt_debug"]
+
+        # v0.6.0 duration sync: read target duration from manifest first, then
+        # prompt_debug.prompt_metrics, then provider config (APX_VIDEO_DURATION).
+        target_duration_seconds: Optional[int] = None
+        try:
+            mtd = manifest.get("target_duration_seconds") if isinstance(manifest, dict) else None
+            if isinstance(mtd, (int, float)):
+                target_duration_seconds = int(mtd)
+        except Exception:
+            target_duration_seconds = None
+        if target_duration_seconds is None and isinstance(prompt_debug, dict):
+            pm = prompt_debug.get("prompt_metrics")
+            if isinstance(pm, dict):
+                pmd = pm.get("duration_seconds")
+                if isinstance(pmd, (int, float)):
+                    try:
+                        target_duration_seconds = int(pmd)
+                    except Exception:
+                        pass
+        if target_duration_seconds is None:
+            try:
+                target_duration_seconds = int(provider.public_config().get("duration") or 5)
+            except Exception:
+                target_duration_seconds = 5
+
+        allowed, reason = provider.check_fallback_safety(
+            manifest=manifest,
+            prompt_debug=prompt_debug,
+            seedance_prompt=seedance_prompt,
+        )
+
+        now = datetime.utcnow()
+
+        if not allowed:
+            blocked_response = {
+                "provider": provider.provider_name,
+                "status": "blocked_fallback_prompt",
+                "stage": "blocked_before_submit",
+                "progress": 0,
+                "network_call_performed": False,
+                "real_video_generated": False,
+                "real_video_downloaded": False,
+                "block_reason": reason,
+                "message": (
+                    "Real APX submit refused because the compiled assets look "
+                    "like a fallback. Set APX_VIDEO_ALLOW_FALLBACK_SUBMIT=true "
+                    "to override."
+                ),
+            }
+            request_payload = {
+                "history_id": record.id,
+                "title": request_title,
+                "slug": record.slug,
+                "mode": record.mode,
+                "model": provider.public_config().get("model"),
+                "block_reason": reason,
+            }
+            job = VideoJobRepository.create_job(
+                db=db,
+                history_id=record.id,
+                provider=provider.provider_name,
+                provider_job_id=None,
+                status="blocked_fallback_prompt",
+                stage="blocked_before_submit",
+                progress=0,
+                request_payload=request_payload,
+                response_payload=blocked_response,
+                error_message=reason,
+                submitted_at=now,
+                completed_at=now,
+                duration_seconds=target_duration_seconds,
+            )
+            try:
+                if record.video_status != "blocked_fallback_prompt":
+                    record.video_status = "blocked_fallback_prompt"
+                    db.add(record)
+                    db.commit()
+                    db.refresh(record)
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            return job.to_dict()
+
+        # Allowed: real submit. Pass the target duration explicitly so the
+        # APX submit payload matches the asset bundle (no drift).
+        submit_result = provider.submit(seedance_prompt, duration_seconds=target_duration_seconds)
+        # Build the request_payload snapshot (sanitized).
+        request_payload = {
+            "history_id": record.id,
+            "title": request_title,
+            "slug": record.slug,
+            "mode": record.mode,
+            "submit_payload": _apx_scrub_api_key(submit_result.get("request") or {}),
+            "endpoint": "POST /v1/async/chat",
+        }
+        response_payload = {
+            **{k: v for k, v in submit_result.items() if k != "request"},
+        }
+        # Defensive: the provider already redacts — apply again to be sure.
+        response_payload = _apx_scrub_api_key(response_payload)
+
+        status_value = submit_result.get("status") or "submitted"
+        stage_value = submit_result.get("stage") or "submitted"
+        progress_value = int(submit_result.get("progress") or 10)
+
+        job = VideoJobRepository.create_job(
+            db=db,
+            history_id=record.id,
+            provider=provider.provider_name,
+            provider_job_id=submit_result.get("provider_job_id"),
+            status=status_value,
+            stage=stage_value,
+            progress=progress_value,
+            request_payload=request_payload,
+            response_payload=response_payload,
+            error_message=(
+                submit_result.get("message") if status_value == "failed" else None
+            ),
+            submitted_at=now,
+            completed_at=now if status_value == "failed" else None,
+            duration_seconds=target_duration_seconds,
+        )
+
+        # v0.6.0 duration sync: keep VideoHistory.video_duration_seconds in
+        # sync with the target so /history rows show the same number that
+        # the asset manifest, prompt, and submit payload carried.
+        try:
+            if target_duration_seconds is not None and record.video_duration_seconds != target_duration_seconds:
+                record.video_duration_seconds = target_duration_seconds
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+        try:
+            mapped = _map_job_status_to_video_status(job.status)
+            if mapped and record.video_status != mapped:
+                record.video_status = mapped
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+        except Exception as sync_exc:
+            print(f"[Video Mode] Warning: failed to sync video_status (apx): {sync_exc}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+        return job.to_dict()
+    except Exception as exc:
+        print(f"[Video Mode] Warning: failed to create APX VideoJob: {exc}")
+        return None
+
+
+def _create_video_job_for_record(
+    db: Session,
+    record: VideoHistory,
+    request_title: str,
+) -> Optional[Dict[str, Any]]:
+    """v0.6.0 dispatcher: prefer the APX provider when configured, otherwise
+    fall back to the Mock provider so the UI keeps showing a status panel.
+    """
+    apx_job = _create_apx_video_job_for_record(db, record, request_title)
+    if apx_job is not None:
+        return apx_job
+    return _create_mock_video_job_for_record(db, record, request_title)
+
+
+def _build_video_generate_provider_contract_response(
+    video_job_dict: Optional[Dict[str, Any]],
+    pipeline_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build a v0.6.0-aware provider_contract + message pair for /api/video/generate
+    and /api/video/history/{id}/regenerate responses.
+
+    Returned dict:
+        {"provider_contract": {...}, "message": "..."}
+
+    Never reflects raw API key / Authorization headers — only status/stage/progress
+    fields surfaced from VideoJob.to_dict() and pipeline-derived flags.
+    """
+    job = video_job_dict or {}
+    provider = job.get("provider")
+    status = job.get("status")
+    stage = job.get("stage")
+    progress = job.get("progress")
+
+    contract_validation = pipeline_result.get('provider_contract_validation') or {}
+    contract_ready = bool(contract_validation.get('valid'))
+    prompt_compiler_ready = bool(pipeline_result.get('seedance_prompt_ready'))
+    prompt_compiler_version = pipeline_result.get('seedance_prompt_compiler_version')
+
+    is_apx = provider == "apx_seedance"
+    apx_inflight_or_terminal = status in (
+        "submitted", "pending", "running",
+        "succeeded", "failed", "succeeded_but_no_video_url",
+    )
+    network_call_performed = bool(
+        is_apx and apx_inflight_or_terminal and status != "blocked_fallback_prompt"
+    )
+
+    if is_apx:
+        future_provider = "apx_seedance"
+    else:
+        future_provider = "seedance"
+
+    if status == "blocked_fallback_prompt":
+        message = (
+            "APX Seedance submit was blocked because prompt assets require human review. "
+            "Resolve the warnings and regenerate before retrying."
+        )
+    elif is_apx and status == "submitted":
+        message = (
+            "APX Seedance job submitted. Open the Video tab and click Refresh to "
+            "poll status and download the video when ready."
+        )
+    elif is_apx and status in ("pending", "running"):
+        message = (
+            "APX Seedance job is in flight. Open the Video tab and click Refresh "
+            "to poll status and download the video when ready."
+        )
+    elif is_apx and status == "succeeded":
+        message = "APX Seedance job succeeded. Local video.mp4 download is in progress or complete."
+    elif is_apx and status == "succeeded_but_no_video_url":
+        message = (
+            "APX Seedance job succeeded but no video_url was returned. "
+            "No real video file was downloaded."
+        )
+    elif is_apx and status == "failed":
+        message = "APX Seedance job failed. See the latest job error for details."
+    elif provider == "mock" or status == "provider_not_configured":
+        message = (
+            "Content assets were generated, but APX real provider is not configured. "
+            "Set APX_VIDEO_ENABLED=true and APX_VIDEO_API_KEY to enable real generation."
+        )
+    else:
+        message = (
+            "Content assets and compiled Seedance prompt are ready. "
+            "No video job has been submitted yet."
+        )
+
+    return {
+        "provider_contract": {
+            "future_provider": future_provider,
+            "provider": provider,
+            "provider_job_status": status,
+            "provider_job_stage": stage,
+            "provider_job_progress": progress,
+            "contract_ready": contract_ready,
+            "prompt_compiler_ready": prompt_compiler_ready,
+            "prompt_compiler_version": prompt_compiler_version,
+            "network_call_performed": network_call_performed,
+            "real_video_generated": False,
+            "real_video_downloaded": False,
+        },
+        "message": message,
+    }
 
 
 @app.post("/api/video/generate")
@@ -2258,15 +2634,24 @@ async def video_generate(
     """
     Generate a Video Mode entry.
 
-    Video Mode still reuses ``scripts/generate_video_package.py`` for the first
-    package stage. After that, v0.5.6 runs the Video Content Asset Pipeline,
-    which generates Seedance prompt compiler assets (compiled prompt, negative
-    prompt, debug payload) and dry-run contract assets (payload preview,
-    contract validation, lifecycle preview). No real video provider is invoked
-    in v0.5.6 — real Seedance provider calls are reserved for v0.6.0. The
-    Prompt Mode database is not touched; only the Video Mode database
-    (``data/video_history.db``) and ``outputs/<slug>/video_assets/`` are
-    written.
+    Video Mode reuses ``scripts/generate_video_package.py`` for the first
+    package stage and then runs the Video Content Asset Pipeline, which writes
+    structured Seedance assets (compiled prompt, negative prompt, debug
+    payload) and dry-run contract assets (payload preview, contract
+    validation, lifecycle preview).
+
+    v0.6.0 provider behavior:
+      - When ``APX_VIDEO_ENABLED=true`` and ``APX_VIDEO_API_KEY`` is set, the
+        endpoint submits an APX Seedance async task (``POST /v1/async/chat``)
+        carrying the v0.5.6 compiled Seedance prompt.
+      - When APX is not configured, the system falls back to
+        ``MockVideoProvider`` and produces no real video.
+      - This endpoint returns immediately after submit; it does NOT wait for
+        the video to finish rendering. Polling and downloading happen through
+        ``POST /api/video/jobs/{id}/refresh``.
+      - The Prompt Mode database is not touched; only the Video Mode database
+        (``data/video_history.db``) and ``outputs/<slug>/video_assets/`` are
+        written.
     """
     title = request.title.strip()
     if not title:
@@ -2378,9 +2763,11 @@ async def video_generate(
                 metadata_json=asset_metadata_json,
             ) or record
 
-            # v0.5.3: auto-create a Mock VideoJob so the frontend can render a
-            # provider_not_configured status panel. No real provider invoked.
-            video_job_dict = _create_mock_video_job_for_record(db, record, title)
+            # v0.6.0: create a VideoJob — APX Seedance provider when
+            # configured, otherwise fall back to the Mock shell. /api/video/generate
+            # never blocks waiting for the video to finish; the frontend polls
+            # via /api/video/jobs/{id}/refresh.
+            video_job_dict = _create_video_job_for_record(db, record, title)
             return JSONResponse(content={
                 'success': True,
                 'id': record.id,
@@ -2433,20 +2820,7 @@ async def video_generate(
                     'seedance_prompt_profile_version'
                 ),
                 'seedance_prompt_ready': bool(pipeline_result.get('seedance_prompt_ready')),
-                'provider_contract': {
-                    'future_provider': 'seedance',
-                    'contract_ready': bool((pipeline_result.get('provider_contract_validation') or {}).get('valid')),
-                    'prompt_compiler_ready': bool(pipeline_result.get('seedance_prompt_ready')),
-                    'prompt_compiler_version': pipeline_result.get('seedance_prompt_compiler_version'),
-                    'network_call_performed': False,
-                    'real_video_generated': False,
-                    'real_video_downloaded': False,
-                },
-                'message': (
-                    'Seedance prompt compiler + contract adapter are ready in v0.5.6. '
-                    'Content assets, compiled Seedance prompt, and payload preview were '
-                    'generated, but no real video API was called.'
-                ),
+                **_build_video_generate_provider_contract_response(video_job_dict, pipeline_result),
             })
         except Exception as e:
             print(f"[Video Mode] Warning: failed to save: {e}")
@@ -2731,9 +3105,9 @@ async def video_regenerate(
             metadata_json=asset_metadata_json,
         ) or new_record
 
-        # v0.5.3: auto-create a Mock VideoJob for the new version so the UI
-        # can show a provider_not_configured status panel after regenerate.
-        video_job_dict = _create_mock_video_job_for_record(db, new_record, new_record.title)
+        # v0.6.0: create a VideoJob for the new version — APX when configured,
+        # Mock fallback otherwise. Non-blocking; client refreshes for status.
+        video_job_dict = _create_video_job_for_record(db, new_record, new_record.title)
         return JSONResponse(content={
             "success": True,
             "id": new_record.id,
@@ -2786,21 +3160,7 @@ async def video_regenerate(
                 'seedance_prompt_profile_version'
             ),
             "seedance_prompt_ready": bool(pipeline_result.get('seedance_prompt_ready')),
-            "provider_contract": {
-                'future_provider': 'seedance',
-                'contract_ready': bool((pipeline_result.get('provider_contract_validation') or {}).get('valid')),
-                'prompt_compiler_ready': bool(pipeline_result.get('seedance_prompt_ready')),
-                'prompt_compiler_version': pipeline_result.get('seedance_prompt_compiler_version'),
-                'network_call_performed': False,
-                'real_video_generated': False,
-                'real_video_downloaded': False,
-            },
-            "message": (
-                'Seedance prompt compiler + contract adapter are ready. Content '
-                'assets, compiled Seedance prompt, and payload preview were '
-                'generated, but no real video API was called. Real Seedance '
-                'provider calls are reserved for v0.6.0.'
-            ),
+            **_build_video_generate_provider_contract_response(video_job_dict, pipeline_result),
         })
 
     except subprocess.TimeoutExpired:
@@ -2969,10 +3329,12 @@ async def video_download_all(
     """
     Read-only Download All for Video Mode.
 
-    Mirrors the v0.4.10 contract for Prompt Mode: package raw_text.txt /
-    preview.txt / overview.txt / web_copy.txt / metadata.json. Does NOT touch
-    any DB writes; does NOT download/produce any video file. The bundle never
-    includes mp4 / mov / video URL or token.
+    v0.6.0 semantics: package raw_text.txt / preview.txt / overview.txt /
+    web_copy.txt / metadata.json plus the structured video_assets/* bundle.
+    When the latest VideoJob is APX Seedance and the record holds a local
+    video.mp4 (and optionally a cover) under project_root/outputs, those
+    files are also included. The bundle never includes the API key, request
+    headers, or the remote APX video_url.
     """
     import io
     import zipfile
@@ -3071,6 +3433,39 @@ async def video_download_all(
                 except ValueError:
                     continue
 
+    # v0.6.0: surface latest VideoJob (APX or Mock) and check whether a real
+    # local mp4 exists inside project_root/outputs/. The remote APX video_url,
+    # api-key, request headers, request_json/response_json are NEVER exported.
+    latest_job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+    latest_job_provider = latest_job.provider if latest_job else None
+    latest_job_status = latest_job.status if latest_job else None
+    latest_job_stage = latest_job.stage if latest_job else None
+    latest_job_progress = latest_job.progress if latest_job else None
+
+    is_apx = latest_job_provider == "apx_seedance"
+    network_call_performed = bool(
+        is_apx and latest_job_status not in (None, "blocked_fallback_prompt", "provider_not_configured")
+    )
+
+    safe_video_path = _resolve_safe_outputs_path(record.video_file_path)
+    safe_cover_path = _resolve_safe_outputs_path(record.video_thumbnail_path)
+    has_local_video_file = safe_video_path is not None
+    has_local_video_cover = safe_cover_path is not None
+
+    real_video_generated = bool(
+        record.video_status == "ready"
+        and has_local_video_file
+    )
+    real_video_downloaded = has_local_video_file
+    has_remote_video_url = bool(record.video_url)
+
+    if is_apx:
+        provider_status_label = "apx_seedance"
+    elif latest_job_provider:
+        provider_status_label = latest_job_provider
+    else:
+        provider_status_label = "provider_not_configured"
+
     metadata = {
         "id": record.id,
         "title": record.title,
@@ -3091,13 +3486,45 @@ async def video_download_all(
         "regenerate_feedback": record.regenerate_feedback,
         "video_status": record.video_status,
         "video_duration_seconds": record.video_duration_seconds,
-        "export_schema_version": "video_v0.5.6",
-        "legacy_export_schema_version": "video_v0.5.5",
+        "target_duration_seconds": (
+            asset_manifest.get("target_duration_seconds")
+            if isinstance(asset_manifest, dict) else None
+        ),
+        "duration_synced": bool(
+            isinstance(asset_manifest, dict)
+            and asset_manifest.get("target_duration_seconds") is not None
+            and (
+                record.video_duration_seconds is None
+                or record.video_duration_seconds == asset_manifest.get("target_duration_seconds")
+            )
+        ),
+        "duration_source": (
+            asset_manifest.get("duration_source")
+            if isinstance(asset_manifest, dict) else None
+        ),
+        "duration_profile": (
+            asset_manifest.get("duration_profile")
+            if isinstance(asset_manifest, dict) else None
+        ),
+        "export_schema_version": "video_v0.6.0",
+        "legacy_export_schema_version": "video_v0.5.6",
         # v0.5.4 additions
         "video_assets_schema_version": VIDEO_ASSETS_SCHEMA_VERSION,
         "has_video_assets": has_video_assets,
-        "provider_status": "provider_not_configured",
-        "real_video_generated": False,
+        # v0.6.0 provider state (no API key, no headers, no remote URL).
+        "provider_status": provider_status_label,
+        "provider": latest_job_provider,
+        "provider_job_status": latest_job_status,
+        "provider_job_stage": latest_job_stage,
+        "provider_job_progress": latest_job_progress,
+        "network_call_performed": network_call_performed,
+        "real_video_generated": real_video_generated,
+        "real_video_downloaded": real_video_downloaded,
+        "has_local_video_file": has_local_video_file,
+        "has_local_video_cover": has_local_video_cover,
+        "video_file_name": "video.mp4" if has_local_video_file else None,
+        "video_cover_file_name": "video_cover.jpg" if has_local_video_cover else None,
+        "has_remote_video_url": has_remote_video_url,
         "llm_used": bool(asset_manifest.get("llm_used", False)),
         "fallback_used": bool(asset_manifest.get("fallback_used", not asset_manifest.get("llm_used", False))),
         "asset_history_id": asset_manifest.get("history_id"),
@@ -3133,8 +3560,6 @@ async def video_download_all(
             if asset_manifest.get("seedance_prompt_ready")
             else "video_assets/provider_prompt.txt",
         ),
-        "real_video_downloaded": False,
-        "network_call_performed": False,
     }
 
     buf = io.BytesIO()
@@ -3161,6 +3586,21 @@ async def video_download_all(
                         zf.writestr(arcname, fp.read())
                 except Exception as e:
                     print(f"[Video Mode] download_all: skipped asset {asset_path}: {e}")
+        # v0.6.0: include the locally-saved mp4 + optional cover when they
+        # exist safely under outputs/. The remote APX video_url is never
+        # exported.
+        if safe_video_path is not None:
+            try:
+                with open(safe_video_path, 'rb') as fp:
+                    zf.writestr("video.mp4", fp.read())
+            except Exception as e:
+                print(f"[Video Mode] download_all: skipped local video.mp4: {e}")
+        if safe_cover_path is not None:
+            try:
+                with open(safe_cover_path, 'rb') as fp:
+                    zf.writestr("video_cover.jpg", fp.read())
+            except Exception as e:
+                print(f"[Video Mode] download_all: skipped local video_cover.jpg: {e}")
     buf.seek(0)
 
     safe_slug = record.slug or f"video_{record.id}"
@@ -3218,11 +3658,11 @@ async def video_create_job(
             status_code=404,
             content={"success": False, "error": f"Video history record {history_id} not found"},
         )
-    job_dict = _create_mock_video_job_for_record(db, record, record.title or "")
+    job_dict = _create_video_job_for_record(db, record, record.title or "")
     if job_dict is None:
         return JSONResponse(
             status_code=500,
-            content={"success": False, "error": "Failed to create Mock VideoJob"},
+            content={"success": False, "error": "Failed to create VideoJob"},
         )
     return {"success": True, "job": job_dict}
 
@@ -3262,8 +3702,11 @@ async def video_refresh_job(
     job_id: int,
     db: Session = Depends(get_video_db),
 ) -> Dict[str, Any]:
-    """Refresh a job by polling the (mock) provider. v0.5.3 always yields a
-    `provider_not_configured` shell — no network call is made."""
+    """Refresh a job. v0.6.0: when the job's provider is ``apx_seedance``,
+    poll the APX gateway and on success download the mp4 + cover into
+    ``outputs/<slug>/``, then update VideoJob + VideoHistory. The Mock
+    branch keeps its v0.5.3 ``provider_not_configured`` semantics.
+    """
     job = VideoJobRepository.get_job(db, job_id)
     if not job:
         return JSONResponse(
@@ -3271,18 +3714,20 @@ async def video_refresh_job(
             content={"success": False, "error": f"VideoJob {job_id} not found"},
         )
 
+    if job.status in ("succeeded", "failed", "cancelled"):
+        return {"success": True, "job": job.to_dict()}
+
+    if job.provider == "apx_seedance":
+        return _refresh_apx_job(db, job)
+
     if job.provider != "mock":
-        # v0.5.3 ships only the mock provider. Real providers are out of scope.
         return JSONResponse(
             status_code=501,
             content={
                 "success": False,
-                "error": f"Provider '{job.provider}' is not connected. Real Seedance provider calls are reserved for v0.6.0.",
+                "error": f"Provider '{job.provider}' is not supported by /refresh.",
             },
         )
-
-    if job.status in ("succeeded", "failed", "cancelled"):
-        return {"success": True, "job": job.to_dict()}
 
     provider = MockVideoProvider()
     response_payload = provider.get_status(job.provider_job_id or "")
@@ -3294,6 +3739,258 @@ async def video_refresh_job(
         progress=int(response_payload.get("progress") or 0),
         response_payload=response_payload,
     )
+    return {"success": True, "job": updated.to_dict() if updated else None}
+
+
+def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
+    """v0.6.0 APX refresh branch.
+
+    Calls ``ApxSeedanceProvider.poll`` once per request. When status maps to
+    ``succeeded``, atomically downloads the mp4 + (optional) cover into the
+    record's ``output_dir``, updates the job with sanitized response_json +
+    result paths, and syncs the VideoHistory row to ``ready``. The provider
+    redacts API keys before returning, and we never persist headers.
+    """
+    provider = ApxSeedanceProvider()
+    if not provider.is_configured():
+        # The provider was once configured (we have a job for it) but env
+        # vars have since been cleared. Return an unchanged snapshot rather
+        # than mutate state.
+        return {"success": True, "job": job.to_dict()}
+
+    if not job.provider_job_id:
+        updated = VideoJobRepository.update_job_status(
+            db,
+            job_id=job.id,
+            status="failed",
+            stage="poll_failed",
+            progress=0,
+            error_message="Cannot poll: provider_job_id is empty.",
+        )
+        return {"success": True, "job": updated.to_dict() if updated else None}
+
+    record = VideoHistoryRepository.get_history_record(db, job.history_id)
+    if not record:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "VideoHistory not found for job."},
+        )
+
+    poll_result = provider.poll(job.provider_job_id)
+    poll_response_clean = _apx_scrub_api_key(
+        {k: v for k, v in poll_result.items() if k != "request"}
+    )
+
+    status_value = poll_result.get("status") or "running"
+    stage_value = poll_result.get("stage") or "running"
+    progress_value = int(poll_result.get("progress") or 60)
+
+    # In-flight (pending/running): just persist the snapshot.
+    if status_value in ("pending", "running"):
+        updated = VideoJobRepository.update_job_status(
+            db,
+            job_id=job.id,
+            status=status_value,
+            stage=stage_value,
+            progress=progress_value,
+            response_payload=poll_response_clean,
+        )
+        try:
+            mapped = _map_job_status_to_video_status(status_value)
+            if mapped and record.video_status != mapped:
+                record.video_status = mapped
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return {"success": True, "job": updated.to_dict() if updated else None}
+
+    # Failure path.
+    if status_value == "failed":
+        err = poll_result.get("error_message") or poll_result.get("message") or "APX failed."
+        updated = VideoJobRepository.update_job_status(
+            db,
+            job_id=job.id,
+            status="failed",
+            stage="failed",
+            progress=int(poll_result.get("progress") or 100),
+            response_payload=poll_response_clean,
+            error_message=err,
+            completed_at=datetime.utcnow(),
+        )
+        try:
+            if record.video_status != "failed":
+                record.video_status = "failed"
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return {"success": True, "job": updated.to_dict() if updated else None}
+
+    # APX 200 but no video_url found in the body.
+    if status_value == "succeeded_but_no_video_url":
+        updated = VideoJobRepository.update_job_status(
+            db,
+            job_id=job.id,
+            status="succeeded_but_no_video_url",
+            stage="video_url_missing",
+            progress=int(poll_result.get("progress") or 90),
+            response_payload=poll_response_clean,
+            error_message="APX status=3 but response.video_url was not found.",
+        )
+        try:
+            if record.video_status != "succeeded_but_no_video_url":
+                record.video_status = "succeeded_but_no_video_url"
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return {"success": True, "job": updated.to_dict() if updated else None}
+
+    # Succeeded — download mp4 (and cover when present).
+    output_dir = record.output_dir or ""
+    base = Path(output_dir)
+    if not base.is_absolute():
+        base = project_root / base
+
+    # Path-safety: refuse to write anywhere outside project_root/outputs.
+    try:
+        outputs_root = (project_root / "outputs").resolve()
+        base_resolved = base.resolve()
+        base_resolved.relative_to(outputs_root)
+    except (ValueError, Exception):
+        err_msg = "Refused to download video outside project outputs directory."
+        updated = VideoJobRepository.update_job_status(
+            db,
+            job_id=job.id,
+            status="failed",
+            stage="download_failed",
+            progress=95,
+            response_payload=_apx_scrub_api_key(
+                {**poll_response_clean, "download_blocked": err_msg}
+            ),
+            error_message=err_msg,
+            completed_at=datetime.utcnow(),
+        )
+        try:
+            if record.video_status != "failed":
+                record.video_status = "failed"
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return {"success": True, "job": updated.to_dict() if updated else None}
+
+    base_str = str(base_resolved)
+
+    video_url = poll_result.get("video_url")
+    cover_url = poll_result.get("video_cover_url")
+
+    download_result = provider.download_video(video_url or "", base_str)
+    cover_result = provider.download_cover(cover_url, base_str) if cover_url else None
+
+    if not download_result.get("real_video_downloaded"):
+        # Treat as a soft failure on the job side: status stays succeeded
+        # remotely, but our local state is failed because we couldn't save.
+        err_msg = download_result.get("message") or "Video download failed."
+        updated = VideoJobRepository.update_job_status(
+            db,
+            job_id=job.id,
+            status="failed",
+            stage="download_failed",
+            progress=95,
+            response_payload=_apx_scrub_api_key(
+                {**poll_response_clean, "download_result": download_result}
+            ),
+            error_message=err_msg,
+            completed_at=datetime.utcnow(),
+        )
+        try:
+            if record.video_status != "failed":
+                record.video_status = "failed"
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return {"success": True, "job": updated.to_dict() if updated else None}
+
+    result_video_path = download_result.get("result_video_path")
+    result_thumbnail_path = (cover_result or {}).get("result_thumbnail_path")
+
+    # Persist DB rows.
+    final_response = _apx_scrub_api_key({
+        **poll_response_clean,
+        "download_result": {
+            "real_video_downloaded": True,
+            "result_video_path": result_video_path,
+            "result_thumbnail_path": result_thumbnail_path,
+            "video_url": video_url,
+            "video_cover_url": cover_url,
+        },
+    })
+
+    updated = VideoJobRepository.update_job_status(
+        db,
+        job_id=job.id,
+        status="succeeded",
+        stage="video_ready",
+        progress=100,
+        response_payload=final_response,
+        result_video_path=result_video_path,
+        result_video_url=video_url,
+        result_thumbnail_path=result_thumbnail_path,
+        completed_at=datetime.utcnow(),
+    )
+
+    try:
+        record.video_status = "ready"
+        if result_video_path:
+            record.video_file_path = result_video_path
+        if result_thumbnail_path:
+            record.video_thumbnail_path = result_thumbnail_path
+        if video_url:
+            record.video_url = video_url
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    except Exception as sync_exc:
+        print(f"[Video Mode] Warning: failed to sync video_status to ready: {sync_exc}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+    # Optional confirm DELETE.
+    try:
+        confirm_result = provider.confirm(job.provider_job_id)
+        if confirm_result.get("network_call_performed"):
+            print(
+                f"[Video Mode] APX confirm DELETE for job {job.id}: "
+                f"confirmed={confirm_result.get('confirmed')}"
+            )
+    except Exception as exc:
+        print(f"[Video Mode] APX confirm error (non-fatal): {exc}")
+
     return {"success": True, "job": updated.to_dict() if updated else None}
 
 
@@ -3392,10 +4089,36 @@ async def video_get_provider_contract(
         provider_contract_validation and provider_contract_validation.get("valid")
     )
     prompt_compiler_ready = bool(seedance_prompt_text.strip())
+
+    # v0.6.0: surface live VideoJob state and APX configuration. We never
+    # return the API key, request headers, or the remote APX video_url.
+    latest_job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+    latest_job_provider = latest_job.provider if latest_job else None
+    latest_job_status = latest_job.status if latest_job else None
+    latest_job_stage = latest_job.stage if latest_job else None
+    latest_job_progress = latest_job.progress if latest_job else None
+    real_provider_configured = bool(ApxSeedanceProvider().is_configured())
+    is_apx_job = latest_job_provider == "apx_seedance"
+    network_call_performed = bool(
+        is_apx_job
+        and latest_job_status
+        not in (None, "blocked_fallback_prompt", "provider_not_configured")
+    )
+    real_video_generated = bool(
+        record.video_status == "ready" or latest_job_status == "succeeded"
+    )
+    safe_video_path = _resolve_safe_outputs_path(record.video_file_path)
+    real_video_downloaded = bool(record.video_file_path) and safe_video_path is not None
+
     return {
         "success": True,
         "history_id": history_id,
-        "future_provider": "seedance",
+        "future_provider": "apx_seedance" if real_provider_configured else "seedance",
+        "real_provider_configured": real_provider_configured,
+        "latest_job_provider": latest_job_provider,
+        "latest_job_status": latest_job_status,
+        "latest_job_stage": latest_job_stage,
+        "latest_job_progress": latest_job_progress,
         "contract_ready": contract_ready,
         "prompt_compiler_ready": prompt_compiler_ready,
         "prompt_compiler_version": (
@@ -3403,9 +4126,9 @@ async def video_get_provider_contract(
             if seedance_prompt_debug
             else None
         ),
-        "network_call_performed": False,
-        "real_video_generated": False,
-        "real_video_downloaded": False,
+        "network_call_performed": network_call_performed,
+        "real_video_generated": real_video_generated,
+        "real_video_downloaded": real_video_downloaded,
         "provider_request_preview": provider_request_preview,
         "seedance_payload_preview": seedance_payload_preview,
         "provider_contract_validation": provider_contract_validation,
@@ -3424,6 +4147,7 @@ async def video_get_provider_contract(
             "has_seedance_prompt_debug": seedance_prompt_debug is not None,
             "contract_ready": contract_ready,
             "prompt_compiler_ready": prompt_compiler_ready,
+            "real_provider_configured": real_provider_configured,
         },
     }
 
@@ -3482,11 +4206,17 @@ async def video_dry_run_download(
 @app.get("/api/video/history/{history_id}/asset/video")
 async def video_asset_video(
     history_id: int,
+    download: bool = False,
     db: Session = Depends(get_video_db),
 ) -> Any:
     """Serve the video asset for a Video Mode record, if and only if a real
-    file exists under project_root/outputs. v0.5.3 never produces a real
-    video, so this endpoint returns 404 in normal use.
+    file exists under project_root/outputs.
+
+    v0.6.0 download hotfix: the optional ``download`` query parameter
+    (``?download=1``) instructs FastAPI to set Content-Disposition with a
+    safe slug-derived filename so the single-file Download button can
+    trigger a real save dialog. The streamed bytes are unchanged; only the
+    filename header changes. Local absolute paths are never exposed.
     """
     record = VideoHistoryRepository.get_history_record(db, history_id)
     if not record:
@@ -3506,6 +4236,16 @@ async def video_asset_video(
         return JSONResponse(
             status_code=404,
             content={"success": False, "error": "Video asset is not available."},
+        )
+
+    if download:
+        raw_slug = (record.slug or "").strip()
+        safe_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_slug).strip("._") if raw_slug else ""
+        download_filename = f"{safe_slug}.mp4" if safe_slug else "video.mp4"
+        return FileResponse(
+            str(safe_path),
+            media_type="video/mp4",
+            filename=download_filename,
         )
 
     return FileResponse(str(safe_path), media_type="video/mp4")

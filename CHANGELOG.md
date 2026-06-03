@@ -2,6 +2,101 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.6.0 - APX Seedance Real Provider Integration
+
+> 本版本首次接入公司内部 APX 异步视频网关（底层调用 `doubao-seedance-2.0`），
+> 把 v0.5.6 已经 ready 的 `seedance_prompt.txt` / `seedance_payload_preview.json`
+> 真正打到远端：`POST /v1/async/chat` 提交 → `GET /v1/async/results/{id}` 轮询
+> → 成功后下载 `response.video_url` 到 `outputs/<slug>/video.mp4` →
+> 写入 `video_history.video_file_path` → 前端通过
+> `/api/video/history/{id}/asset/video` 播放本地 mp4。**真实网络调用仅允许出现
+> 在 `web/video_providers/apx_seedance_provider.py` 内部**，且必须由
+> `APX_VIDEO_ENABLED=true` + `APX_VIDEO_API_KEY` 显式开启；未配置时自动 fallback
+> 到 v0.5.3 的 Mock provider。Prompt Mode 数据库 schema、主提示词、NotebookLM
+> 主模板、AI Review 评分标准均未变动；不新增 `seedance_provider.py`，不新增
+> `video_review` 表。
+
+### 新增
+- 新增 `web/video_providers/apx_seedance_provider.py`，类 `ApxSeedanceProvider`：
+  `provider_name="apx_seedance"`、`network_enabled=True`、`PROVIDER_NAME` /
+  `SUBMIT_PATH="/v1/async/chat"` / `RESULTS_PATH="/v1/async/results"` /
+  `STATUS_MAP={1:"pending",2:"running",3:"succeeded",4:"failed"}` /
+  `DEFAULT_DURATION=5`（NOT 60）/ `DEFAULT_MODEL="doubao-seedance-2.0"`。
+  暴露 `load_config` / `is_configured` / `build_submit_payload` /
+  `check_fallback_safety` / `submit` / `poll` / `download_video` /
+  `download_cover` / `confirm` 等方法。Submit body 仅包含
+  `{model, prompt, duration, prompt_extend}`，不含 `negative_prompt` /
+  `extra_body` / `img_url` / `seed`。Headers 仅包含 `api-key` /
+  `X-APX-Model` / `Content-Type: application/json; charset=utf-8`。
+- 新增 fallback prompt 安全防护：当 `generation_manifest.json.llm_used=false`、
+  `fallback_used=true`、`seedance_prompt_ready≠true`、prompt 中包含
+  `需要人工核对` / `Human review required`、或 debug warnings 中包含
+  `missing` 时，默认拒绝真实 submit，job 写入 `status=blocked_fallback_prompt`，
+  绝不烧 APX 配额；可通过 `APX_VIDEO_ALLOW_FALLBACK_SUBMIT=true` 显式覆盖。
+- 新增下载安全：`download_video` / `download_cover` 拒绝非 http(s) URL，
+  对文件名做 `[^A-Za-z0-9._-]→_` 清洗，使用 `target.relative_to(out_dir)`
+  阻止 path traversal，并通过 `.part → rename` 实现原子下载，避免半截 mp4。
+- 新增 API key 脱敏：`_scrub_api_key` 递归遮蔽
+  `api-key` / `api_key` / `apikey` / `authorization` / `x-api-key`，
+  在落入 `request_json` / `response_json` 前完成；`load_config()` 只暴露
+  `api_key_configured: bool`，绝不返回真实 key；headers 永不写入快照。
+- 新增 `config/provider_profiles/apx_seedance.json`（`apx_seedance_profile_v0.6.0`），
+  把 transport / 状态映射 / fallback 规则等 operator-facing 配置文件化，
+  保持 forward-compatible。
+- 新增 `docs/v0.6.0_apx_seedance_real_provider.md`，记录 surface、状态机、
+  环境变量、安全防护、人工烟雾测试步骤。
+- 新增环境变量（仅记录在 `.env.example`，不放真值）：
+  `APX_VIDEO_ENABLED` / `APX_VIDEO_BASE_URL` / `APX_VIDEO_API_KEY` /
+  `APX_VIDEO_MODEL` / `APX_VIDEO_DURATION` / `APX_VIDEO_PROMPT_EXTEND` /
+  `APX_VIDEO_POLL_INTERVAL_SECONDS` / `APX_VIDEO_TIMEOUT_SECONDS` /
+  `APX_VIDEO_CONFIRM_AFTER_DOWNLOAD` / `APX_VIDEO_ALLOW_FALLBACK_SUBMIT`。
+
+### 后端
+- `web/app.py` 新增 `_load_apx_assets_for_record`（读取
+  `outputs/<slug>/video_assets/seedance_prompt.txt` /
+  `generation_manifest.json` / `seedance_payload_preview.json` /
+  `seedance_prompt_debug.json`），`_create_apx_video_job_for_record`（APX
+  分支），`_create_video_job_for_record`（dispatcher：APX 已配置 → 走 APX，
+  否则 fallback Mock），`_refresh_apx_job`（poll → 成功后 download_video +
+  download_cover → 更新 VideoJob 与 VideoHistory，可选 confirm DELETE）。
+- `/api/video/generate` / `/api/video/regenerate` / `POST /api/video/history/{id}/jobs`
+  全部改为调用新的 dispatcher，实现 APX 优先、Mock 兜底。
+- `/api/video/jobs/{id}/refresh` 增加 `apx_seedance` 分支：返回最新 job 状态；
+  成功路径将 mp4 落到 `outputs/<slug>/video.mp4`，把
+  `video_history.video_status="ready"`、`video_file_path` / `video_thumbnail_path`
+  / `video_url` 同步到 DB。
+- `/api/video/generate` 不阻塞等待视频生成完成；前端通过 Refresh 按钮主动
+  推动状态机。
+
+### 前端
+- `web/static/main.js` 的 `renderVideoJobStatus()` 支持 `submitted` /
+  `pending` / `running` / `succeeded` / `ready` / `failed` /
+  `blocked_fallback_prompt` / `succeeded_but_no_video_url` /
+  `provider_not_configured`，对运行中的 APX job 显示 Refresh 按钮，调用
+  `POST /api/video/jobs/{id}/refresh` 并在成功后将 `<video>` 的 src 指向
+  `/api/video/history/{id}/asset/video`。
+- `web/static/index.html` 在 Video Job 紧凑状态条加入 `Refresh` 按钮，
+  `web/static/style.css` 加入对应样式（无侵入式视觉变化）。
+
+### 自检
+- `scripts/run_stability_checks.py` bumped 到 `v0.6.0`，新增
+  `check_v060_apx_provider`：apx_seedance_provider 文件 + 类 + 方法存在性、
+  `/v1/async` 路径、`STATUS_MAP` 1/2/3/4 映射、`DEFAULT_DURATION=5`、
+  10 个 `APX_VIDEO_*` env 变量名引用、API key 脱敏函数存在、fallback 安全
+  防护存在、apx_seedance_provider.py 之外无 requests/httpx/urllib 真实网络
+  调用、web/app.py 已 wire 上 APX dispatcher、main.js 已实现
+  `refreshVideoJob()` 与新状态、Prompt Mode 文件未被 APX 写入、
+  仓库工作树不含 `.env` / `data/*.db` / `outputs/` / `*.mp4`、
+  submit body 形态正确、必需 headers 齐全、v0.6.0 文档存在。
+
+### 安全 / 边界（与既往版本一致并继续生效）
+- 不修改 Prompt Mode 数据库 schema、Prompt Mode 主提示词、NotebookLM
+  Prompt 主模板、AI Review 评分标准。
+- 不新增 `video_review` 表。
+- 不新增 `seedance_provider.py`。
+- 不在 `apx_seedance_provider.py` 之外触发任何真实网络调用。
+- 不打印 / 不存储 / 不导出 API key；`.env` 不入库；自动测试不触达真实 APX。
+
 ## v0.5.6 - Seedance Prompt Compiler (Dry-Run)
 
 > 本版本在 v0.5.5「Seedance Provider Contract Adapter」之上新增 **Seedance

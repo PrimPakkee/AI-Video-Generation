@@ -279,8 +279,10 @@
                                         </div>
                                         <div class="video-job-compact-meta">
                                             <span>Stage: <span id="video-job-stage">—</span></span>
+                                            <span>Duration: <span id="video-job-duration" class="video-job-compact-mono">—</span></span>
                                             <span>Job ID: <span id="video-job-provider-id" class="video-job-compact-mono">—</span></span>
                                             <span>Updated: <span id="video-job-updated">—</span></span>
+                                            <button type="button" id="video-job-refresh-btn" class="video-job-refresh-btn" hidden>Refresh</button>
                                         </div>
                                         <div id="video-job-message" class="video-job-compact-message"></div>
                                     </div>
@@ -293,7 +295,7 @@
                                                         <polygon points="6 4 20 12 6 20 6 4"/>
                                                     </svg>
                                                 </button>
-                                                <p class="video-placeholder-text">Video preview is not available yet. Content assets, compiled Seedance prompt, and contract preview were generated, but the real video provider is not connected. Real Seedance provider calls are reserved for v0.6.0.</p>
+                                                <p class="video-placeholder-text">Video preview will appear here after the APX Seedance job succeeds and the local video.mp4 is downloaded. When APX is not configured, generation falls back to the Mock provider and no real video is produced.</p>
                                             </div>
                                             <div class="video-controls" id="video-controls" hidden>
                                                 <button type="button" class="video-control-btn" id="video-play-btn" aria-label="Play / pause">

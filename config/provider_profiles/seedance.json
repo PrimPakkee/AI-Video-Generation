@@ -4,7 +4,7 @@
   "future_provider": "seedance",
   "profile_version": "seedance_prompt_profile_v0.5.6",
   "preferred_prompt_language": "en",
-  "default_duration_seconds": 60,
+  "default_duration_seconds": 5,
   "default_aspect_ratio": "9:16",
   "default_resolution": "1080x1920",
   "default_fps": 24,
@@ -62,8 +62,8 @@
     "Final Constraints"
   ],
   "notes": [
-    "This profile drives the v0.5.6 SeedancePromptCompiler.",
-    "It is a static configuration only; no real Seedance API is contacted.",
-    "Real submit/poll/download is reserved for v0.6.0."
+    "This profile drives the v0.6.0 SeedancePromptCompiler.",
+    "It is a static configuration only; no real Seedance API is contacted from this file.",
+    "default_duration_seconds is only a last-resort fallback; APX_VIDEO_DURATION is the single source of truth at runtime."
   ]
 }

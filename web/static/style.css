@@ -3021,6 +3021,25 @@ body.dark-mode .web-copy-empty-state {
     display: none;
 }
 
+.video-job-refresh-btn {
+    border: 1px solid #d0d7de;
+    background: #fff;
+    color: #24292f;
+    border-radius: 4px;
+    padding: 1px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    line-height: 1.4;
+}
+.video-job-refresh-btn:hover:not([disabled]) {
+    background: #f6f8fa;
+}
+.video-job-refresh-btn[disabled] {
+    cursor: default;
+    color: #8c959f;
+    background: #f6f8fa;
+}
+
 .video-job-status-pill {
     display: inline-flex;
     align-items: center;

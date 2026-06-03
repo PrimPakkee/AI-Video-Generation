@@ -1,4 +1,4 @@
-# Video Content Asset Prompt — v0.5.4
+# Video Content Asset Prompt — v0.6.0
 
 You are an expert educational short-video content designer. Given a single
 topic, produce **strict JSON only** that downstream code will parse and render
@@ -15,9 +15,19 @@ script, do NOT produce a podcast outline, and do NOT produce dialogue.
    text MUST be in Chinese (zh-CN). The `provider_prompt` field MUST be in
    English regardless, because downstream video models (e.g. Seedance) work
    most reliably with English prompts.
-4. The video is for TikTok / YouTube Shorts / Instagram Reels: ~50–60 seconds,
-   9:16 vertical, single narrator, monologue, white background with line-art
-   educational visuals.
+4. The video is for TikTok / YouTube Shorts / Instagram Reels:
+   target duration `{{DURATION_SECONDS}}` seconds (single source of truth — comes
+   from `APX_VIDEO_DURATION`), 9:16 vertical, single narrator, monologue, white
+   background with line-art educational visuals.
+   - If duration is 5–10 seconds: write an ULTRA SHORT video. Do NOT write a
+     full 60-second explanation. 2–3 scenes only.
+   - If duration is 11–20 seconds: quick answer (3–4 scenes).
+   - If duration is 21–35 seconds: standard short (5–6 scenes).
+   - If duration is 36–60 seconds: full explanation (6–9 scenes).
+   - If duration is >60 seconds: extended explanation (8–12 scenes).
+   `storyboard.duration_seconds` MUST equal `{{DURATION_SECONDS}}`. Time ranges
+   across scenes MUST sum to `{{DURATION_SECONDS}}` and stay within
+   `0–{{DURATION_SECONDS}}s`.
 5. Hard constraints — these MUST be respected and reflected in the storyboard
    and provider_prompt:
    - single narrator
@@ -40,7 +50,12 @@ script, do NOT produce a podcast outline, and do NOT produce dialogue.
 
 - Topic: `{{TOPIC}}`
 - Detected language: `{{LANGUAGE}}` (`zh-CN` / `en` / `mixed`)
-- Target duration seconds: `{{DURATION_SECONDS}}` (default 60)
+- Target duration: `{{DURATION_SECONDS}}` seconds (single source of truth, from
+  `APX_VIDEO_DURATION`)
+- Duration profile: `{{DURATION_PROFILE_NAME}}`
+- Recommended scene count: `{{SCENE_COUNT_MIN}}`–`{{SCENE_COUNT_MAX}}`
+- Recommended narration word count: `{{WORD_COUNT_MIN}}`–`{{WORD_COUNT_MAX}}`
+- Duration strategy: `{{DURATION_STRATEGY_INSTRUCTION}}`
 - Aspect ratio: `{{ASPECT_RATIO}}` (default 9:16)
 - Style: `{{STYLE}}` (default `clean whiteboard line-art educational short video`)
 
@@ -75,7 +90,7 @@ script, do NOT produce a podcast outline, and do NOT produce dialogue.
     "ending": "..."
   },
   "storyboard": {
-    "duration_seconds": 60,
+    "duration_seconds": {{DURATION_SECONDS}},
     "aspect_ratio": "9:16",
     "style": "clean whiteboard line-art educational short video",
     "scenes": [
@@ -110,11 +125,14 @@ script, do NOT produce a podcast outline, and do NOT produce dialogue.
 
 ## Scene requirements
 
-- `storyboard.scenes` MUST contain at least 5 scenes.
+- `storyboard.scenes` MUST contain at least `{{SCENE_COUNT_MIN}}` scenes and at
+  most `{{SCENE_COUNT_MAX}}` scenes (matches the duration profile).
 - Each scene MUST include: `scene_id`, `time_range`, `visual`, `narration`,
   `on_screen_text`. `camera` and `notes` are optional but encouraged.
-- Time ranges across scenes should be contiguous and roughly sum to
-  `storyboard.duration_seconds`.
+- Time ranges across scenes MUST be contiguous and MUST sum to
+  `storyboard.duration_seconds`, which MUST equal `{{DURATION_SECONDS}}`.
+- Total narration words across `script.narration` and per-scene narration
+  should fall between `{{WORD_COUNT_MIN}}` and `{{WORD_COUNT_MAX}}`.
 
 ## Provider prompt requirements
 

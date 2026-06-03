@@ -20,9 +20,38 @@ The compiler is the v0.5.6 contract layer. v0.6.0 will read the produced
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+_LEGACY_DURATION_PATTERNS = [
+    (re.compile(r"50\s*[-–]\s*60\s*seconds?", re.IGNORECASE), "{d} seconds"),
+    (re.compile(r"60\s*[-–]\s*second", re.IGNORECASE), "{d}-second"),
+    (re.compile(r"60\s*seconds?", re.IGNORECASE), "{d} seconds"),
+    (re.compile(r"\bone\s+minute\b", re.IGNORECASE), "{d} seconds"),
+    (re.compile(r"50\s*[-–]\s*60\s*秒"), "{d} 秒"),
+    (re.compile(r"60\s*秒"), "{d} 秒"),
+    (re.compile(r"一分钟"), "{d} 秒"),
+]
+
+
+def _sync_duration_text(text: Any, target_duration_seconds: int) -> str:
+    if text is None:
+        return ""
+    s = str(text)
+    if not s:
+        return ""
+    try:
+        d = int(target_duration_seconds)
+    except Exception:
+        d = 5
+    if d <= 0:
+        d = 5
+    for pattern, replacement in _LEGACY_DURATION_PATTERNS:
+        s = pattern.sub(replacement.format(d=d), s)
+    return s
 
 
 COMPILER_VERSION = "seedance_prompt_compiler_v0.5.6"
@@ -224,11 +253,16 @@ class SeedancePromptCompiler:
     ) -> str:
         profile = self.profile or {}
         duration = (
-            storyboard.get("duration_seconds")
+            provider_request_preview.get("target_duration_seconds")
             or provider_request_preview.get("duration_seconds")
+            or storyboard.get("duration_seconds")
             or profile.get("default_duration_seconds")
-            or 60
+            or 5
         )
+        try:
+            duration = int(duration)
+        except Exception:
+            duration = 5
         aspect_ratio = (
             storyboard.get("aspect_ratio")
             or provider_request_preview.get("aspect_ratio")
@@ -253,9 +287,12 @@ class SeedancePromptCompiler:
         )
 
         core_concept = _safe_str(topic_analysis.get("core_concept"), topic)
-        video_goal = _safe_str(
-            topic_analysis.get("video_goal"),
-            f"Explain {topic} clearly in a {duration}-second educational short video.",
+        video_goal = _sync_duration_text(
+            _safe_str(
+                topic_analysis.get("video_goal"),
+                f"Explain {topic} clearly in a {duration}-second educational short video.",
+            ),
+            duration,
         )
         target_audience = _safe_str(
             topic_analysis.get("target_audience"), "students and short-video viewers"
@@ -386,6 +423,8 @@ class SeedancePromptCompiler:
             "- The final answer shown on screen must match the correct answer above.",
             "- Visuals must support the narration, not contradict or distract from it.",
             "- Output must remain a single-narrator educational short video.",
+            f"- Mandatory duration: {duration} seconds.",
+            "- Ignore any conflicting duration instruction from earlier content.",
         ])
         sections.append("\n".join(constraint_lines))
 
@@ -473,11 +512,16 @@ class SeedancePromptCompiler:
         scene_count = len([s for s in scenes if isinstance(s, dict)])
 
         duration_seconds = (
-            sb.get("duration_seconds")
+            pr.get("target_duration_seconds")
             or pr.get("duration_seconds")
+            or sb.get("duration_seconds")
             or profile.get("default_duration_seconds")
-            or 0
+            or 5
         )
+        try:
+            duration_seconds = int(duration_seconds)
+        except Exception:
+            duration_seconds = 5
         aspect_ratio = (
             sb.get("aspect_ratio")
             or pr.get("aspect_ratio")

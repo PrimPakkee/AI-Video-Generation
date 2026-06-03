@@ -32,7 +32,7 @@ PAYLOAD_PREVIEW_LEGACY_SCHEMA_VERSION = "seedance_payload_preview_v0.5.5"
 LIFECYCLE_PREVIEW_SCHEMA_VERSION = "provider_lifecycle_preview_v0.5.5"
 PROVIDER_CONTRACT_SCHEMA_VERSION = "seedance_contract_v0.5.5"
 
-DEFAULT_DURATION_SECONDS = 60
+DEFAULT_DURATION_SECONDS = 5
 DEFAULT_ASPECT_RATIO = "9:16"
 DEFAULT_RESOLUTION = "1080p"
 DEFAULT_FPS = 24
@@ -212,9 +212,15 @@ class SeedanceContractAdapter:
             )
             negative_from_compiler = False
 
-        duration = src.get("duration_seconds") if isinstance(
-            src.get("duration_seconds"), (int, float)
-        ) else DEFAULT_DURATION_SECONDS
+        target_dur = src.get("target_duration_seconds")
+        if isinstance(target_dur, (int, float)):
+            duration = int(target_dur)
+        elif isinstance(src.get("duration_seconds"), (int, float)):
+            duration = int(src["duration_seconds"])
+        else:
+            sb = src.get("storyboard") if isinstance(src.get("storyboard"), dict) else None
+            sb_dur = sb.get("duration_seconds") if isinstance(sb, dict) else None
+            duration = int(sb_dur) if isinstance(sb_dur, (int, float)) else DEFAULT_DURATION_SECONDS
         aspect_ratio = src.get("aspect_ratio") if isinstance(
             src.get("aspect_ratio"), str
         ) and src.get("aspect_ratio") else DEFAULT_ASPECT_RATIO

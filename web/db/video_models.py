@@ -199,7 +199,35 @@ class VideoJob(VideoBase):
     metadata_json = Column(Text, nullable=True)
 
     def to_dict(self) -> dict:
-        """Convert to a JSON-friendly dict for API responses."""
+        """Convert to a JSON-friendly dict for API responses.
+
+        v0.6.0: safely surface a small set of provider-friendly fields
+        (`message`, `http_status`, `raw_status`) extracted from the persisted
+        response_json, so the frontend can show the human-readable APX
+        message. The full request_json / response_json are NEVER returned,
+        and the redaction performed at write time means no API key /
+        Authorization header / x-api-key can leak even if read from disk.
+        """
+        message: str | None = None
+        http_status: int | None = None
+        raw_status: int | None = None
+        try:
+            if self.response_json:
+                import json as _json
+                parsed = _json.loads(self.response_json)
+                if isinstance(parsed, dict):
+                    msg = parsed.get('message')
+                    if isinstance(msg, str):
+                        message = msg
+                    hs = parsed.get('http_status')
+                    if isinstance(hs, int):
+                        http_status = hs
+                    rs = parsed.get('raw_status')
+                    if isinstance(rs, int):
+                        raw_status = rs
+        except Exception:
+            pass
+
         return {
             'id': self.id,
             'history_id': self.history_id,
@@ -209,6 +237,9 @@ class VideoJob(VideoBase):
             'stage': self.stage,
             'progress': self.progress,
             'error_message': self.error_message,
+            'message': message,
+            'http_status': http_status,
+            'raw_status': raw_status,
             'result_video_path': self.result_video_path,
             'result_video_url': self.result_video_url,
             'result_thumbnail_path': self.result_thumbnail_path,

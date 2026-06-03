@@ -42,9 +42,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.5.6"
-VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.5"
-DEFAULT_DURATION_SECONDS = 60
+VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.6.0"
+VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.6"
+# v0.6.0 duration sync: APX_VIDEO_DURATION is the single source of truth for
+# Video Mode duration. The legacy 60s default is only a last-resort fallback;
+# resolve_target_duration_seconds() should always be used in practice.
+DEFAULT_DURATION_SECONDS = 5
 DEFAULT_ASPECT_RATIO = "9:16"
 DEFAULT_STYLE = "clean whiteboard line-art educational short video"
 DEFAULT_FPS = 24
@@ -96,6 +99,203 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# v0.6.0 — duration sync helpers ---------------------------------------------
+
+def resolve_target_duration_seconds(raw: Any = None, default: int = 5) -> int:
+    """Single source of truth for Video Mode duration.
+
+    Priority: explicit ``raw`` arg → ``APX_VIDEO_DURATION`` env → ``default``.
+    Always returns a clean int; illegal values fall back to ``default``.
+    Values < 3 are normalised to 5 (APX rejects shorter clips). Values > 120
+    are clamped to 60 to avoid prompt bloat.
+    """
+    candidate: Any = raw
+    if candidate is None or (isinstance(candidate, str) and not candidate.strip()):
+        candidate = os.environ.get("APX_VIDEO_DURATION")
+    if candidate is None or (isinstance(candidate, str) and not candidate.strip()):
+        candidate = default
+    try:
+        value = int(str(candidate).strip())
+    except Exception:
+        value = default
+    if value < 3:
+        return 5
+    if value > 120:
+        return 60
+    return value
+
+
+def build_duration_profile(duration_seconds: int) -> Dict[str, Any]:
+    """Return the recommended scene/word-count strategy for a given duration."""
+    d = int(duration_seconds or 5)
+    if d <= 10:
+        return {
+            "profile_name": "smoke_ultra_short",
+            "duration_seconds": d,
+            "scene_count_min": 2,
+            "scene_count_max": 3,
+            "word_count_min": 12,
+            "word_count_max": 35,
+            "instruction": (
+                "Ultra-short smoke-test video. Focus on one visual hook and one "
+                "answer. Do not write a full 60-second explanation."
+            ),
+        }
+    if d <= 20:
+        return {
+            "profile_name": "quick_answer",
+            "duration_seconds": d,
+            "scene_count_min": 3,
+            "scene_count_max": 4,
+            "word_count_min": 35,
+            "word_count_max": 70,
+            "instruction": "Quick short video. Hook, one compact reasoning step, answer.",
+        }
+    if d <= 35:
+        return {
+            "profile_name": "standard_short",
+            "duration_seconds": d,
+            "scene_count_min": 5,
+            "scene_count_max": 6,
+            "word_count_min": 70,
+            "word_count_max": 120,
+            "instruction": "Standard short video. Full but compressed reasoning.",
+        }
+    if d <= 60:
+        return {
+            "profile_name": "full_explanation",
+            "duration_seconds": d,
+            "scene_count_min": 6,
+            "scene_count_max": 9,
+            "word_count_min": 120,
+            "word_count_max": 190,
+            "instruction": (
+                "Full educational short. Hook, setup, reasoning, answer reveal, takeaway."
+            ),
+        }
+    return {
+        "profile_name": "extended_explanation",
+        "duration_seconds": d,
+        "scene_count_min": 8,
+        "scene_count_max": 12,
+        "word_count_min": 180,
+        "word_count_max": 280,
+        "instruction": (
+            "Extended educational video. Keep visual structure clear and avoid "
+            "overloading the video model."
+        ),
+    }
+
+
+# v0.6.0 — duration hardening helpers ----------------------------------------
+
+_LEGACY_DURATION_PATTERNS = [
+    (re.compile(r"50\s*[-–]\s*60\s*seconds", re.IGNORECASE), "{d}-second"),
+    (re.compile(r"50\s*[-–]\s*60\s*second", re.IGNORECASE), "{d}-second"),
+    (re.compile(r"60\s*[-–]\s*second", re.IGNORECASE), "{d}-second"),
+    (re.compile(r"\b60\s*seconds\b", re.IGNORECASE), "{d} seconds"),
+    (re.compile(r"\b60\s*sec\b", re.IGNORECASE), "{d} sec"),
+    (re.compile(r"\bone\s*minute\b", re.IGNORECASE), "{d} seconds"),
+    (re.compile(r"\ba\s*minute\b", re.IGNORECASE), "{d} seconds"),
+    (re.compile(r"50\s*[-–]\s*60\s*秒"), "{d} 秒"),
+    (re.compile(r"60\s*秒"), "{d} 秒"),
+    (re.compile(r"一分钟"), "{d} 秒"),
+]
+
+
+def _sync_duration_text(text: Any, target_duration_seconds: int) -> str:
+    """Replace legacy 50–60 / 60-second / one-minute phrasing with the target."""
+    if text is None:
+        return ""
+    s = str(text)
+    if not s:
+        return ""
+    d = int(target_duration_seconds or DEFAULT_DURATION_SECONDS)
+    for pattern, replacement in _LEGACY_DURATION_PATTERNS:
+        s = pattern.sub(replacement.format(d=d), s)
+    return s
+
+
+_TIME_RANGE_PATTERN = re.compile(
+    r"(\d+)\s*[-–]\s*(\d+)\s*(?:s|sec|seconds|秒)", re.IGNORECASE
+)
+
+
+def _timing_plan_exceeds_duration(
+    timing_plan: Any, target_duration_seconds: int
+) -> bool:
+    """True iff timing_plan is missing/invalid or its end times overshoot target."""
+    if not isinstance(timing_plan, list):
+        return True
+    d = int(target_duration_seconds or DEFAULT_DURATION_SECONDS)
+    if d <= 10 and len(timing_plan) > 4:
+        return True
+    if d <= 20 and len(timing_plan) > 5:
+        return True
+    parsed_any = False
+    for item in timing_plan:
+        if not isinstance(item, str):
+            continue
+        m = _TIME_RANGE_PATTERN.search(item)
+        if not m:
+            continue
+        parsed_any = True
+        try:
+            end_t = int(m.group(2))
+        except Exception:
+            continue
+        if end_t > d:
+            return True
+    if not parsed_any:
+        return False
+    return False
+
+
+def _assign_scene_time_ranges(
+    scenes: List[Dict[str, Any]],
+    target_duration_seconds: int,
+) -> List[Dict[str, Any]]:
+    """Force every scene's time_range onto a contiguous 0..target schedule."""
+    d = int(target_duration_seconds or DEFAULT_DURATION_SECONDS)
+    cleaned: List[Dict[str, Any]] = []
+    for sc in scenes:
+        if isinstance(sc, dict):
+            cleaned.append(dict(sc))
+    n = len(cleaned)
+    if n == 0:
+        return cleaned
+    per = max(1, d // n)
+    for idx, sc in enumerate(cleaned, start=1):
+        start_t = (idx - 1) * per
+        end_t = idx * per if idx < n else d
+        if start_t >= d:
+            start_t = max(0, d - 1)
+        if end_t > d:
+            end_t = d
+        sc["scene_id"] = sc.get("scene_id", idx)
+        sc["time_range"] = f"{start_t}-{end_t}s"
+    return cleaned
+
+
+def _sync_provider_prompt_duration(
+    provider_prompt: Any, target_duration_seconds: int
+) -> str:
+    """Strip legacy 50–60 wording and append a single Mandatory-duration line."""
+    d = int(target_duration_seconds or DEFAULT_DURATION_SECONDS)
+    s = _sync_duration_text(provider_prompt, d).strip()
+    if not s:
+        return s
+    mandatory_re = re.compile(
+        r"Mandatory duration:\s*\d+\s*seconds\.\s*Ignore any conflicting duration instruction\.?",
+        re.IGNORECASE,
+    )
+    s = mandatory_re.sub("", s).strip()
+    suffix = f"Mandatory duration: {d} seconds. Ignore any conflicting duration instruction."
+    if not s.endswith("."):
+        s += "."
+    return s + " " + suffix
+
+
 def _detect_language(topic: str) -> str:
     """Return ``zh-CN`` if the topic contains CJK characters, else ``en``."""
     if not topic:
@@ -114,7 +314,20 @@ def _read_template() -> str:
         return ""
 
 
-def _render_template(topic: str, language: str) -> str:
+def _render_template(
+    topic: str,
+    language: str,
+    target_duration_seconds: int,
+    duration_profile: Dict[str, Any],
+) -> str:
+    duration_str = str(int(target_duration_seconds))
+    profile_name = str(duration_profile.get("profile_name", ""))
+    scene_min = str(int(duration_profile.get("scene_count_min", 5)))
+    scene_max = str(int(duration_profile.get("scene_count_max", 6)))
+    word_min = str(int(duration_profile.get("word_count_min", 70)))
+    word_max = str(int(duration_profile.get("word_count_max", 120)))
+    instruction = str(duration_profile.get("instruction", ""))
+
     template = _read_template()
     if not template:
         return (
@@ -122,7 +335,11 @@ def _render_template(topic: str, language: str) -> str:
             "video on the topic below. Output JSON only, no commentary.\n\n"
             f"Topic: {topic}\n"
             f"Language: {language}\n"
-            f"Duration: {DEFAULT_DURATION_SECONDS}s\n"
+            f"Target duration: {duration_str} seconds (single source of truth)\n"
+            f"Duration profile: {profile_name}\n"
+            f"Recommended scene count: {scene_min}-{scene_max}\n"
+            f"Recommended narration word count: {word_min}-{word_max}\n"
+            f"Duration strategy: {instruction}\n"
             f"Aspect Ratio: {DEFAULT_ASPECT_RATIO}\n"
             f"Style: {DEFAULT_STYLE}\n"
         )
@@ -130,7 +347,13 @@ def _render_template(topic: str, language: str) -> str:
         template
         .replace("{{TOPIC}}", topic)
         .replace("{{LANGUAGE}}", language)
-        .replace("{{DURATION_SECONDS}}", str(DEFAULT_DURATION_SECONDS))
+        .replace("{{DURATION_SECONDS}}", duration_str)
+        .replace("{{DURATION_PROFILE_NAME}}", profile_name)
+        .replace("{{SCENE_COUNT_MIN}}", scene_min)
+        .replace("{{SCENE_COUNT_MAX}}", scene_max)
+        .replace("{{WORD_COUNT_MIN}}", word_min)
+        .replace("{{WORD_COUNT_MAX}}", word_max)
+        .replace("{{DURATION_STRATEGY_INSTRUCTION}}", instruction)
         .replace("{{ASPECT_RATIO}}", DEFAULT_ASPECT_RATIO)
         .replace("{{STYLE}}", DEFAULT_STYLE)
     )
@@ -306,6 +529,8 @@ def _validate_and_normalize(
     topic: str,
     language: str,
     warnings: List[str],
+    target_duration_seconds: int = DEFAULT_DURATION_SECONDS,
+    duration_profile: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Coerce LLM output into the canonical v0.5.4 shape.
 
@@ -316,6 +541,10 @@ def _validate_and_normalize(
     if not isinstance(parsed, dict):
         warnings.append("LLM JSON was not an object; using fallback structure.")
         parsed = {}
+
+    target_duration = int(target_duration_seconds or DEFAULT_DURATION_SECONDS)
+    if duration_profile is None:
+        duration_profile = build_duration_profile(target_duration)
 
     # topic_analysis
     ta = parsed.get("topic_analysis")
@@ -328,7 +557,13 @@ def _validate_and_normalize(
     ta.setdefault("difficulty", "medium")
     ta.setdefault("core_concept", topic)
     ta.setdefault("target_audience", "students, parents, short-video viewers")
-    ta.setdefault("video_goal", "Explain the topic clearly in 50-60 seconds.")
+    ta.setdefault(
+        "video_goal",
+        f"Explain the topic clearly in a {target_duration}-second educational short video.",
+    )
+    # Strip legacy 50–60s phrasing if the LLM (or a stale fallback) supplied it.
+    if isinstance(ta.get("video_goal"), str):
+        ta["video_goal"] = _sync_duration_text(ta["video_goal"], target_duration)
     if not isinstance(ta.get("risk_points"), list):
         ta["risk_points"] = ["Avoid wrong answer", "Avoid mismatched visuals"]
     if not isinstance(ta.get("visual_requirements"), list):
@@ -401,14 +636,10 @@ def _validate_and_normalize(
         )
         if not isinstance(script.get("on_screen_text"), list):
             script["on_screen_text"] = [topic, "问题", "答案", "为什么?"]
-        if not isinstance(script.get("timing_plan"), list):
-            script["timing_plan"] = [
-                "0-5 秒 钩子",
-                "5-15 秒 铺垫",
-                "15-30 秒 推理",
-                "30-45 秒 揭示答案",
-                "45-60 秒 收尾",
-            ]
+        if _timing_plan_exceeds_duration(script.get("timing_plan"), target_duration):
+            if isinstance(script.get("timing_plan"), list) and script["timing_plan"]:
+                warnings.append("script.timing_plan normalized to target duration.")
+            script["timing_plan"] = _build_fallback_timing_plan(target_duration, language)
         script.setdefault("ending", "如果觉得有用,关注一下,后续还有类似题目。")
     else:
         script.setdefault("hook", f"Here's something surprising about {topic}.")
@@ -424,40 +655,77 @@ def _validate_and_normalize(
                 "Answer",
                 "Why?",
             ]
-        if not isinstance(script.get("timing_plan"), list):
-            script["timing_plan"] = [
-                "0-5s hook",
-                "5-15s setup",
-                "15-30s reasoning",
-                "30-45s reveal",
-                "45-60s takeaway",
-            ]
+        if _timing_plan_exceeds_duration(script.get("timing_plan"), target_duration):
+            if isinstance(script.get("timing_plan"), list) and script["timing_plan"]:
+                warnings.append("script.timing_plan normalized to target duration.")
+            script["timing_plan"] = _build_fallback_timing_plan(target_duration, language)
         script.setdefault("ending", "Follow for more puzzles like this.")
+
+    # Strip legacy 50–60s phrasing from any LLM-supplied narration / ending.
+    if isinstance(script.get("narration"), str):
+        script["narration"] = _sync_duration_text(script["narration"], target_duration)
+    if isinstance(script.get("ending"), str):
+        script["ending"] = _sync_duration_text(script["ending"], target_duration)
 
     # storyboard
     storyboard = parsed.get("storyboard")
     if not isinstance(storyboard, dict):
         storyboard = {}
         warnings.append("storyboard missing/invalid; coerced to default.")
-    storyboard.setdefault("duration_seconds", DEFAULT_DURATION_SECONDS)
+    existing_duration = storyboard.get("duration_seconds")
+    if existing_duration is not None:
+        try:
+            existing_int = int(existing_duration)
+        except Exception:
+            existing_int = None
+        if existing_int is not None and existing_int != target_duration:
+            warnings.append(
+                "storyboard.duration_seconds normalized to target duration."
+            )
+    storyboard["duration_seconds"] = target_duration
     storyboard.setdefault("aspect_ratio", DEFAULT_ASPECT_RATIO)
     storyboard.setdefault("style", DEFAULT_STYLE)
+    scene_min = int(duration_profile.get("scene_count_min", 5))
+    scene_max = int(duration_profile.get("scene_count_max", 6))
     scenes = storyboard.get("scenes")
-    if not isinstance(scenes, list) or len(scenes) < 5:
-        warnings.append("storyboard.scenes missing or fewer than 5 entries; using fallback scene list.")
-        scenes = _fallback_scenes(topic)
+    if not isinstance(scenes, list) or len(scenes) < scene_min:
+        warnings.append(
+            f"storyboard.scenes missing or fewer than {scene_min} entries; using fallback scene list."
+        )
+        scenes = _fallback_scenes(topic, target_duration, language)
     else:
-        cleaned: List[Dict[str, Any]] = []
-        for idx, sc in enumerate(scenes, start=1):
+        overshoot = False
+        for sc in scenes:
             if not isinstance(sc, dict):
                 continue
-            sc.setdefault("scene_id", idx)
-            sc.setdefault("time_range", f"{(idx - 1) * 12}-{idx * 12}s")
-            sc.setdefault("visual", "Whiteboard line-art illustration matching the narration.")
-            sc.setdefault("narration", "Single narrator explains the next reasoning step.")
-            sc.setdefault("on_screen_text", topic if idx == 1 else "")
-            cleaned.append(sc)
-        scenes = cleaned if cleaned else _fallback_scenes(topic)
+            tr = sc.get("time_range")
+            if not isinstance(tr, str):
+                continue
+            m = _TIME_RANGE_PATTERN.search(tr)
+            if m:
+                try:
+                    if int(m.group(2)) > target_duration:
+                        overshoot = True
+                        break
+                except (TypeError, ValueError):
+                    continue
+        cleaned_input: List[Dict[str, Any]] = [sc for sc in scenes if isinstance(sc, dict)]
+        if not cleaned_input:
+            scenes = _fallback_scenes(topic, target_duration, language)
+        else:
+            scenes = _assign_scene_time_ranges(cleaned_input, target_duration)
+            for idx, sc in enumerate(scenes, start=1):
+                sc.setdefault("scene_id", idx)
+                sc.setdefault("visual", "Whiteboard line-art illustration matching the narration.")
+                sc.setdefault("narration", "Single narrator explains the next reasoning step.")
+                sc.setdefault("on_screen_text", topic if idx == 1 else "")
+        if overshoot:
+            warnings.append("storyboard.scene time_range normalized to target duration.")
+        if len(scenes) > scene_max:
+            warnings.append(
+                f"storyboard.scenes count {len(scenes)} exceeds profile max {scene_max} "
+                f"for duration {target_duration}s."
+            )
     storyboard["scenes"] = scenes
     storyboard["negative_constraints"] = list(NEGATIVE_CONSTRAINTS)
 
@@ -465,7 +733,10 @@ def _validate_and_normalize(
     provider_prompt = parsed.get("provider_prompt")
     if not isinstance(provider_prompt, str) or len(provider_prompt.strip()) < 80:
         warnings.append("provider_prompt missing or too short; using fallback prompt.")
-        provider_prompt = _build_fallback_provider_prompt(topic, ta, reasoning, script, scenes)
+        provider_prompt = _build_fallback_provider_prompt(
+            topic, ta, reasoning, script, scenes, target_duration
+        )
+    provider_prompt = _sync_provider_prompt_duration(provider_prompt, target_duration)
 
     # web_copy_placeholder
     web_copy = parsed.get("web_copy_placeholder")
@@ -486,54 +757,128 @@ def _validate_and_normalize(
     }
 
 
-def _fallback_scenes(topic: str) -> List[Dict[str, Any]]:
+def _build_fallback_timing_plan(duration_seconds: int, language: str) -> List[str]:
+    """Deterministic timing plan that always sums to duration_seconds."""
+    d = int(duration_seconds or DEFAULT_DURATION_SECONDS)
+    is_zh = str(language).lower().startswith("zh")
+    if d <= 10:
+        if is_zh:
+            return [f"0-{max(1, d // 2)} 秒 钩子+问题", f"{max(1, d // 2)}-{d} 秒 答案+收尾"]
+        return [f"0-{max(1, d // 2)}s hook+question", f"{max(1, d // 2)}-{d}s answer+takeaway"]
+    if d <= 20:
+        a = max(1, d // 4)
+        b = max(a + 1, (d * 3) // 4)
+        if is_zh:
+            return [f"0-{a} 秒 钩子", f"{a}-{b} 秒 推理", f"{b}-{d} 秒 揭示"]
+        return [f"0-{a}s hook", f"{a}-{b}s reasoning", f"{b}-{d}s reveal"]
+    if d <= 35:
+        if is_zh:
+            return [
+                f"0-{max(2, d // 8)} 秒 钩子",
+                f"{max(2, d // 8)}-{d // 3} 秒 铺垫",
+                f"{d // 3}-{(2 * d) // 3} 秒 推理",
+                f"{(2 * d) // 3}-{(5 * d) // 6} 秒 揭示",
+                f"{(5 * d) // 6}-{d} 秒 收尾",
+            ]
+        return [
+            f"0-{max(2, d // 8)}s hook",
+            f"{max(2, d // 8)}-{d // 3}s setup",
+            f"{d // 3}-{(2 * d) // 3}s reasoning",
+            f"{(2 * d) // 3}-{(5 * d) // 6}s reveal",
+            f"{(5 * d) // 6}-{d}s takeaway",
+        ]
+    if d <= 60:
+        if is_zh:
+            return [
+                "0-5 秒 钩子",
+                f"5-{d // 4} 秒 铺垫",
+                f"{d // 4}-{d // 2} 秒 推理",
+                f"{d // 2}-{(3 * d) // 4} 秒 揭示",
+                f"{(3 * d) // 4}-{d} 秒 收尾",
+            ]
+        return [
+            "0-5s hook",
+            f"5-{d // 4}s setup",
+            f"{d // 4}-{d // 2}s reasoning",
+            f"{d // 2}-{(3 * d) // 4}s reveal",
+            f"{(3 * d) // 4}-{d}s takeaway",
+        ]
+    if is_zh:
+        return [
+            "0-5 秒 钩子",
+            f"5-{d // 5} 秒 铺垫",
+            f"{d // 5}-{(2 * d) // 5} 秒 推理上",
+            f"{(2 * d) // 5}-{(3 * d) // 5} 秒 推理下",
+            f"{(3 * d) // 5}-{(4 * d) // 5} 秒 揭示",
+            f"{(4 * d) // 5}-{d} 秒 收尾",
+        ]
     return [
-        {
-            "scene_id": 1,
-            "time_range": "0-5s",
-            "visual": f"Whiteboard reveals the title '{topic}' with a hand-drawn underline.",
-            "narration": f"Here's a quick puzzle about {topic}.",
-            "on_screen_text": topic,
-            "camera": "static center",
-            "notes": "Hook scene; large readable title.",
-        },
-        {
-            "scene_id": 2,
-            "time_range": "5-15s",
-            "visual": "Hand-drawn diagram introducing the setup of the question.",
-            "narration": "Here's the setup, drawn out so you can follow along.",
-            "on_screen_text": "Setup",
-            "camera": "slow zoom in",
-            "notes": "Visual matches the reasoning, no decorative clutter.",
-        },
-        {
-            "scene_id": 3,
-            "time_range": "15-30s",
-            "visual": "Step-by-step annotations appear next to the diagram, one bullet at a time.",
-            "narration": "Single narrator walks through each reasoning step in order.",
-            "on_screen_text": "Why?",
-            "camera": "static",
-            "notes": "Each annotation matches a reasoning step.",
-        },
-        {
-            "scene_id": 4,
-            "time_range": "30-45s",
-            "visual": "Final answer drawn in a yellow highlight box.",
-            "narration": "Here's the answer, and here's why the common intuition misses it.",
-            "on_screen_text": "Answer",
-            "camera": "static",
-            "notes": "Answer must be correct; no unsupported claims.",
-        },
-        {
-            "scene_id": 5,
-            "time_range": "45-60s",
-            "visual": "Takeaway sentence written large with a hand-drawn underline.",
-            "narration": "If this clicked, follow for more puzzles like this.",
-            "on_screen_text": "Takeaway",
-            "camera": "static",
-            "notes": "Ending scene, clear CTA.",
-        },
+        "0-5s hook",
+        f"5-{d // 5}s setup",
+        f"{d // 5}-{(2 * d) // 5}s reasoning a",
+        f"{(2 * d) // 5}-{(3 * d) // 5}s reasoning b",
+        f"{(3 * d) // 5}-{(4 * d) // 5}s reveal",
+        f"{(4 * d) // 5}-{d}s takeaway",
     ]
+
+
+def _fallback_scenes(
+    topic: str,
+    duration_seconds: int = DEFAULT_DURATION_SECONDS,
+    language: str = "en",
+) -> List[Dict[str, Any]]:
+    d = int(duration_seconds or DEFAULT_DURATION_SECONDS)
+    profile = build_duration_profile(d)
+    scene_count = max(int(profile.get("scene_count_min", 2)), 2)
+    is_zh = str(language).lower().startswith("zh")
+
+    if scene_count == 2:
+        labels = [
+            ("Hook+Question" if not is_zh else "钩子+问题", topic, "Hook scene; large readable title."),
+            ("Answer" if not is_zh else "答案", "Answer", "Final answer; correct, no unsupported claims."),
+        ]
+    elif scene_count == 3:
+        labels = [
+            ("Hook" if not is_zh else "钩子", topic, "Hook scene."),
+            ("Reasoning" if not is_zh else "推理", "Why?", "Single narrator walks through reasoning."),
+            ("Answer" if not is_zh else "答案", "Answer", "Answer + takeaway."),
+        ]
+    else:
+        base = [
+            ("Hook" if not is_zh else "钩子", topic),
+            ("Setup" if not is_zh else "铺垫", "Setup"),
+            ("Reasoning" if not is_zh else "推理", "Why?"),
+            ("Reveal" if not is_zh else "揭示", "Answer"),
+            ("Takeaway" if not is_zh else "收尾", "Takeaway"),
+        ]
+        if scene_count > 5:
+            extra = [(f"Reasoning {i}" if not is_zh else f"推理 {i}", "Why?") for i in range(2, scene_count - 3)]
+            base = base[:3] + extra + base[3:]
+        base = base[:scene_count]
+        labels = [(name, ost, "Scene matches reasoning, no decorative clutter.") for name, ost in base]
+
+    per_scene = max(1, d // scene_count)
+    scenes: List[Dict[str, Any]] = []
+    for idx, (label, ost, *rest) in enumerate(labels, start=1):
+        start_t = (idx - 1) * per_scene
+        end_t = idx * per_scene if idx < scene_count else d
+        notes = rest[0] if rest else "Scene matches reasoning."
+        scenes.append({
+            "scene_id": idx,
+            "time_range": f"{start_t}-{end_t}s",
+            "visual": (
+                f"Whiteboard reveals the title '{topic}'." if idx == 1
+                else "Whiteboard line-art illustration matching the narration."
+            ),
+            "narration": (
+                f"Here's a quick puzzle about {topic}." if idx == 1
+                else "Single narrator explains the next reasoning step."
+            ),
+            "on_screen_text": ost,
+            "camera": "static" if idx != 1 else "static center",
+            "notes": notes,
+        })
+    return scenes
 
 
 def _build_fallback_provider_prompt(
@@ -542,8 +887,9 @@ def _build_fallback_provider_prompt(
     reasoning: Dict[str, Any],
     script: Dict[str, Any],
     scenes: List[Dict[str, Any]],
+    target_duration_seconds: int = DEFAULT_DURATION_SECONDS,
 ) -> str:
-    timing = " | ".join(script.get("timing_plan", [])) or "0-5s hook | 5-30s reasoning | 30-60s reveal"
+    timing = " | ".join(script.get("timing_plan", [])) or "0-5s hook | reasoning | reveal"
     scene_summary = " | ".join(
         f"{sc.get('time_range', '')}: {sc.get('visual', '')[:80]}"
         for sc in scenes
@@ -551,7 +897,7 @@ def _build_fallback_provider_prompt(
     )
     constraints = ", ".join(NEGATIVE_CONSTRAINTS)
     return (
-        f"Generate a 50-60 second 1080p 9:16 24fps educational short video about: {topic}. "
+        f"Generate a {int(target_duration_seconds)} second 1080p 9:16 24fps educational short video about: {topic}. "
         f"Core concept: {topic_analysis.get('core_concept', topic)}. "
         f"Correct answer: {reasoning.get('correct_answer', 'Human review required.')}. "
         f"Visual style: clean whiteboard line-art educational short video, white background, "
@@ -657,6 +1003,8 @@ def _build_provider_request_preview(
     provider_prompt: str,
     storyboard: Dict[str, Any],
     language: str,
+    target_duration_seconds: int = DEFAULT_DURATION_SECONDS,
+    duration_profile: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Future-Seedance contract preview. v0.5.4 NEVER sends this payload.
 
@@ -667,10 +1015,12 @@ def _build_provider_request_preview(
     ``not_connected`` and ``real_video_generated`` stays ``false`` for the
     entire v0.5.x line.
     """
-    duration = storyboard.get("duration_seconds", DEFAULT_DURATION_SECONDS)
+    duration = int(target_duration_seconds or DEFAULT_DURATION_SECONDS)
     aspect_ratio = storyboard.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     style = storyboard.get("style", DEFAULT_STYLE)
     negative_prompt = ", ".join(NEGATIVE_CONSTRAINTS)
+    if duration_profile is None:
+        duration_profile = build_duration_profile(duration)
 
     return {
         "provider": PROVIDER_NAME,
@@ -679,6 +1029,9 @@ def _build_provider_request_preview(
         "topic": topic,
         "prompt": provider_prompt,
         "duration_seconds": duration,
+        "target_duration_seconds": duration,
+        "duration_source": "APX_VIDEO_DURATION",
+        "duration_profile": duration_profile,
         "aspect_ratio": aspect_ratio,
         "resolution": DEFAULT_RESOLUTION,
         "fps": DEFAULT_FPS,
@@ -689,7 +1042,7 @@ def _build_provider_request_preview(
         "provider_status": PROVIDER_STATUS,
         "real_video_generated": False,
         "note": (
-            "This is a v0.5.x provider request preview. No real video API is called."
+            "This is a v0.6.0 provider request preview. No real video API is called."
         ),
         # Compatibility nested form retained for any caller that read the
         # earlier shape. Same data, no secrets.
@@ -697,6 +1050,7 @@ def _build_provider_request_preview(
             "topic": topic,
             "prompt": provider_prompt,
             "duration_seconds": duration,
+            "target_duration_seconds": duration,
             "aspect_ratio": aspect_ratio,
             "fps": DEFAULT_FPS,
             "resolution": DEFAULT_RESOLUTION,
@@ -722,6 +1076,8 @@ def _save_assets(
     warnings: List[str],
     llm_used: bool,
     llm_raw_text: Optional[str],
+    target_duration_seconds: int = DEFAULT_DURATION_SECONDS,
+    duration_profile: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, str], Dict[str, Any], Dict[str, Any]]:
     assets_dir.mkdir(parents=True, exist_ok=True)
 
@@ -803,6 +1159,15 @@ def _save_assets(
     _safe_write(seedance_negative_prompt_path, seedance_negative_prompt or "")
     paths["seedance_negative_prompt"] = str(seedance_negative_prompt_path)
 
+    if isinstance(seedance_prompt_debug, dict):
+        seedance_prompt_debug.setdefault("target_duration_seconds", target_duration_seconds or DEFAULT_DURATION_SECONDS)
+        seedance_prompt_debug.setdefault(
+            "duration_profile",
+            (duration_profile or build_duration_profile(target_duration_seconds or DEFAULT_DURATION_SECONDS)).get("profile_name"),
+        )
+        pm = seedance_prompt_debug.get("prompt_metrics")
+        if isinstance(pm, dict):
+            pm["duration_seconds"] = int(target_duration_seconds or DEFAULT_DURATION_SECONDS)
     seedance_prompt_debug_path = assets_dir / "seedance_prompt_debug.json"
     _safe_write(
         seedance_prompt_debug_path,
@@ -864,9 +1229,17 @@ def _save_assets(
         raw_path = assets_dir / "llm_raw_output.txt"
         paths["llm_raw_output"] = str(raw_path)
 
+    target_duration = int(target_duration_seconds or DEFAULT_DURATION_SECONDS)
+    if duration_profile is None:
+        duration_profile = build_duration_profile(target_duration)
+
     manifest = {
         "schema_version": VIDEO_ASSETS_SCHEMA_VERSION,
         "legacy_schema_version": VIDEO_ASSETS_LEGACY_SCHEMA_VERSION,
+        "target_duration_seconds": target_duration,
+        "duration_source": "APX_VIDEO_DURATION",
+        "duration_profile": duration_profile.get("profile_name"),
+        "duration_synced": True,
         "provider_contract_schema_version": PROVIDER_CONTRACT_SCHEMA_VERSION,
         "seedance_prompt_compiler_version": SEEDANCE_COMPILER_VERSION,
         "seedance_prompt_profile_version": compiler_profile_version,
@@ -939,6 +1312,7 @@ def build_video_content_assets(
     output_dir: Path | str,
     history_id: Optional[int] = None,
     llm_client: Optional[Any] = None,
+    target_duration_seconds: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Generate the full v0.5.4 video content asset bundle.
 
@@ -965,9 +1339,11 @@ def build_video_content_assets(
     llm_used = False
     llm_raw_text: Optional[str] = None
     debug: Dict[str, Any] = {}
+    duration_seconds = resolve_target_duration_seconds(target_duration_seconds)
+    duration_profile = build_duration_profile(duration_seconds)
 
     try:
-        prompt_text = _render_template(topic, language)
+        prompt_text = _render_template(topic, language, duration_seconds, duration_profile)
 
         # Note: llm_client is a forward-compatibility hook so callers can
         # inject a fake client for tests; v0.5.4 ignores it and goes through
@@ -983,9 +1359,15 @@ def build_video_content_assets(
             else:
                 llm_used = True
 
-        normalized = _validate_and_normalize(parsed or {}, topic, language, warnings)
+        normalized = _validate_and_normalize(
+            parsed or {}, topic, language, warnings,
+            target_duration_seconds=duration_seconds,
+            duration_profile=duration_profile,
+        )
         provider_request_preview = _build_provider_request_preview(
             topic, normalized["provider_prompt"], normalized["storyboard"], language,
+            target_duration_seconds=duration_seconds,
+            duration_profile=duration_profile,
         )
 
         paths, manifest, contract_bundle = _save_assets(
@@ -998,6 +1380,8 @@ def build_video_content_assets(
             warnings=warnings,
             llm_used=llm_used,
             llm_raw_text=llm_raw_text,
+            target_duration_seconds=duration_seconds,
+            duration_profile=duration_profile,
         )
 
         preview_text = _render_video_script_md(topic, normalized["script"], normalized["storyboard"])
@@ -1036,9 +1420,15 @@ def build_video_content_assets(
         # Last-resort fallback: try to write at least a minimal manifest so
         # the response can still surface what happened.
         try:
-            normalized = _validate_and_normalize({}, topic, language, warnings)
+            normalized = _validate_and_normalize(
+                {}, topic, language, warnings,
+                target_duration_seconds=duration_seconds,
+                duration_profile=duration_profile,
+            )
             provider_request_preview = _build_provider_request_preview(
                 topic, normalized["provider_prompt"], normalized["storyboard"], language,
+                target_duration_seconds=duration_seconds,
+                duration_profile=duration_profile,
             )
             paths, manifest, contract_bundle = _save_assets(
                 assets_dir=assets_dir,
@@ -1050,6 +1440,8 @@ def build_video_content_assets(
                 warnings=warnings,
                 llm_used=False,
                 llm_raw_text=llm_raw_text,
+                target_duration_seconds=duration_seconds,
+                duration_profile=duration_profile,
             )
             preview_text = _render_video_script_md(topic, normalized["script"], normalized["storyboard"])
             overview_cn = _build_design_summary_cn(topic, normalized["topic_analysis"], normalized["reasoning"])

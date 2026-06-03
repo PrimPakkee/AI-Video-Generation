@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Prompt Mode + Video Mode Stability Checks Script (v0.5.6)
+Prompt Mode + Video Mode Stability Checks Script (v0.6.0)
 
 Runs read-only checks for code and database integrity. Does not call
 external APIs and does not modify any database.
@@ -9,10 +9,11 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.5.6"
+STABILITY_CHECKS_VERSION = "v0.6.0"
 
 import sys
 import os
+import json
 import subprocess
 import sqlite3
 from pathlib import Path
@@ -46,6 +47,7 @@ class StabilityChecker:
             "web/video_providers/mock_provider.py",
             "web/video_providers/seedance_contract_adapter.py",
             "web/video_providers/seedance_prompt_compiler.py",
+            "web/video_providers/apx_seedance_provider.py",
             "web/video_asset_pipeline.py",
             "scripts/llm_topic_enhancer.py",
             "scripts/audit_and_repair_prompt_history.py",
@@ -1600,12 +1602,13 @@ class StabilityChecker:
                 print("  [FAIL] _create_mock_video_job_for_record helper missing")
                 all_passed = False
 
-            # 10. export_schema_version must be at least v0.5.3 (v0.5.4 - v0.5.6 also OK)
+            # 10. export_schema_version must be at least v0.5.3 (v0.5.4 - v0.6.0 also OK)
             if (
                 '"export_schema_version": "video_v0.5.3"' in app_src
                 or '"export_schema_version": "video_v0.5.4"' in app_src
                 or '"export_schema_version": "video_v0.5.5"' in app_src
                 or '"export_schema_version": "video_v0.5.6"' in app_src
+                or '"export_schema_version": "video_v0.6.0"' in app_src
             ):
                 print("  [OK] download_all uses export_schema_version >= video_v0.5.3")
             else:
@@ -1810,6 +1813,7 @@ class StabilityChecker:
             if (
                 'VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.4"' in pipe_src
                 or 'VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.5"' in pipe_src
+                or 'VIDEO_ASSETS_LEGACY_SCHEMA_VERSION = "video_assets_v0.5.6"' in pipe_src
             ):
                 print('  [OK] video_asset_pipeline.py has VIDEO_ASSETS_LEGACY_SCHEMA_VERSION (v0.5.4 or v0.5.5)')
             else:
@@ -1889,8 +1893,6 @@ class StabilityChecker:
                 "build_video_content_assets",
                 "VIDEO_ASSETS_SCHEMA_VERSION",
                 '"video_assets_schema_version"',
-                '"provider_status": "provider_not_configured"',
-                '"real_video_generated": False',
                 "video_assets/",
             ):
                 if marker in app_src:
@@ -1898,27 +1900,28 @@ class StabilityChecker:
                 else:
                     print(f"  [FAIL] app.py missing {marker}")
                     all_passed = False
-            # export_schema_version may be at v0.5.4 / v0.5.5 / v0.5.6 (current).
+            # v0.6.0: export_schema_version may be at v0.5.4 / v0.5.5 / v0.5.6 / v0.6.0.
             if (
                 '"export_schema_version": "video_v0.5.4"' in app_src
                 or '"export_schema_version": "video_v0.5.5"' in app_src
                 or '"export_schema_version": "video_v0.5.6"' in app_src
+                or '"export_schema_version": "video_v0.6.0"' in app_src
             ):
                 print('  [OK] app.py export_schema_version >= video_v0.5.4')
             else:
                 print('  [FAIL] app.py missing export_schema_version >= video_v0.5.4')
                 all_passed = False
-            # The user-visible "real video provider is not connected" message
-            # was reworded in v0.5.5 to "Seedance contract adapter is ready in
-            # v0.5.5." Accept either form.
+            # v0.6.0 reworded the provider-not-connected message to mention APX.
             if (
                 "Real video provider is not connected in v0.5.4" in app_src
                 or "Seedance contract adapter is ready in v0.5.5" in app_src
                 or "Seedance prompt compiler + contract adapter are ready" in app_src
+                or "APX real provider is not configured" in app_src
+                or "APX_VIDEO_ENABLED" in app_src
             ):
-                print("  [OK] app.py provider-not-connected message present (v0.5.4 / v0.5.5 / v0.5.6 form)")
+                print("  [OK] app.py provider message present (v0.5.4 / v0.5.5 / v0.5.6 / v0.6.0 form)")
             else:
-                print("  [FAIL] app.py missing provider-not-connected message (v0.5.4 / v0.5.5 / v0.5.6 form)")
+                print("  [FAIL] app.py missing provider message (v0.5.4 / v0.5.5 / v0.5.6 / v0.6.0 form)")
                 all_passed = False
             # Both generate and regenerate must call the pipeline.
             call_count = app_src.count("build_video_content_assets(")
@@ -1942,7 +1945,6 @@ class StabilityChecker:
                 "'building_storyboard'",
                 "'creating_provider_prompt'",
                 "'preparing_provider_request'",
-                "'creating_mock_video_job'",
                 "'saving_assets'",
                 "'completed'",
             ):
@@ -1951,6 +1953,12 @@ class StabilityChecker:
                 else:
                     print(f"  [FAIL] main.js VIDEO_GENERATION_STEPS missing {key}")
                     all_passed = False
+            # v0.5.4 used 'creating_mock_video_job'; v0.6.0 renamed it to 'submitting_video_job'.
+            if "'creating_mock_video_job'" in main_js or "'submitting_video_job'" in main_js:
+                print("  [OK] main.js VIDEO_GENERATION_STEPS has submit-job step (v0.5.4 / v0.6.0 form)")
+            else:
+                print("  [FAIL] main.js VIDEO_GENERATION_STEPS missing submit-job step")
+                all_passed = False
             if (
                 "Real video provider is not connected in v0.5.4" in main_js
                 or "Seedance contract adapter is ready in v0.5.5" in main_js
@@ -2189,17 +2197,20 @@ class StabilityChecker:
         garbled_docs: list = []
         forbidden_paths: list = []
 
-        # Allow-list of v0.5.4 / v0.5.5 / v0.5.6 surface untracked files that
-        # are EXPECTED (informational only; does not gate the check).
+        # Allow-list of v0.5.4 / v0.5.5 / v0.5.6 / v0.6.0 surface untracked
+        # files that are EXPECTED (informational only; does not gate).
         allowed_untracked = {
             "docs/v0.5.4_video_content_asset_pipeline.md",
             "docs/v0.5.5_seedance_provider_contract_adapter.md",
             "docs/v0.5.6_seedance_prompt_compiler.md",
+            "docs/v0.6.0_apx_seedance_real_provider.md",
             "templates/video_asset_prompt_template.md",
             "web/video_asset_pipeline.py",
             "web/video_providers/seedance_contract_adapter.py",
             "web/video_providers/seedance_prompt_compiler.py",
+            "web/video_providers/apx_seedance_provider.py",
             "config/provider_profiles/seedance.json",
+            "config/provider_profiles/apx_seedance.json",
             "tests/fixtures/seedance_contract_sample_request.json",
             "tests/fixtures/seedance_prompt_compiler_sample.json",
         }
@@ -2611,10 +2622,13 @@ class StabilityChecker:
             print("  [FAIL] pipeline does not import SeedancePromptCompiler")
             all_passed = False
 
-        if 'VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.5.6"' in pipeline_text:
-            print("  [OK] pipeline schema_version bumped to video_assets_v0.5.6")
+        if (
+            'VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.5.6"' in pipeline_text
+            or 'VIDEO_ASSETS_SCHEMA_VERSION = "video_assets_v0.6.0"' in pipeline_text
+        ):
+            print("  [OK] pipeline schema_version bumped to video_assets_v0.5.6+ (current: v0.6.0)")
         else:
-            print("  [FAIL] pipeline schema_version not bumped to video_assets_v0.5.6")
+            print("  [FAIL] pipeline schema_version not bumped to video_assets_v0.5.6+")
             all_passed = False
 
         # 11. Adapter accepts compiled prompt.
@@ -2739,13 +2753,16 @@ class StabilityChecker:
         else:
             print("  [OK] adapter has no user-visible 'not connected in v0.5.5' wording")
 
-        # 19. Forbidden APX-style provider stub must not exist.
-        forbidden_apx = "web/video_providers/apx_seedance_provider.py"
-        if not os.path.exists(forbidden_apx):
-            print(f"  [OK] {forbidden_apx} does NOT exist (real APX integration forbidden in v0.5.6)")
+        # 19. v0.6.0 lifts the v0.5.6 ban on apx_seedance_provider.py — the
+        # APX Seedance real provider is now an expected v0.6.0 deliverable.
+        # We still forbid the legacy seedance_provider.py name (covered by
+        # check #3 above).
+        apx_provider_v060 = "web/video_providers/apx_seedance_provider.py"
+        if os.path.exists(apx_provider_v060):
+            print(f"  [OK] {apx_provider_v060} present (v0.6.0 deliverable)")
         else:
-            print(f"  [FAIL] {forbidden_apx} exists; v0.5.6 forbids a real APX provider implementation")
-            all_passed = False
+            print(f"  [WARN] {apx_provider_v060} missing — v0.6.0 has not been wired yet")
+            self.warnings += 1
 
         # 20. No real network calls anywhere in adapter or pipeline either.
         for path, src in (
@@ -2771,6 +2788,981 @@ class StabilityChecker:
             self.checks_passed += 1
         else:
             print("\n[FAIL] v0.5.6 Seedance prompt compiler checks failed")
+            self.checks_failed += 1
+
+    def check_v060_apx_provider(self):
+        """v0.6.0 sanity checks for the APX Seedance Real Provider integration.
+
+        Read-only. Does not invoke any real network endpoint.
+        """
+        print("\n" + "="*80)
+        print("v0.6.0 APX Seedance Real Provider Checks")
+        print("="*80)
+
+        all_passed = True
+
+        # 1. apx_seedance_provider.py exists.
+        apx_path = "web/video_providers/apx_seedance_provider.py"
+        if os.path.exists(apx_path):
+            print(f"  [OK] {apx_path} exists")
+        else:
+            print(f"  [FAIL] missing: {apx_path}")
+            all_passed = False
+
+        apx_text = ""
+        try:
+            with open(apx_path, 'r', encoding='utf-8') as f:
+                apx_text = f.read()
+        except Exception:
+            apx_text = ""
+
+        # 2. Forbidden seedance_provider.py must NOT exist.
+        forbidden_provider = "web/video_providers/seedance_provider.py"
+        if not os.path.exists(forbidden_provider):
+            print(f"  [OK] {forbidden_provider} does NOT exist")
+        else:
+            print(f"  [FAIL] {forbidden_provider} exists; v0.6.0 forbids the legacy name")
+            all_passed = False
+
+        # 3. Class + provider_name.
+        if "class ApxSeedanceProvider" in apx_text:
+            print("  [OK] ApxSeedanceProvider class declared")
+        else:
+            print("  [FAIL] ApxSeedanceProvider class missing")
+            all_passed = False
+
+        if 'PROVIDER_NAME = "apx_seedance"' in apx_text:
+            print("  [OK] PROVIDER_NAME=apx_seedance")
+        else:
+            print("  [FAIL] PROVIDER_NAME constant missing or wrong")
+            all_passed = False
+
+        # 4. Required methods present.
+        for symbol in (
+            "load_config", "is_configured", "build_submit_payload",
+            "check_fallback_safety", "submit", "poll",
+            "download_video", "download_cover", "confirm",
+        ):
+            if f"def {symbol}" in apx_text:
+                print(f"  [OK] provider implements {symbol}()")
+            else:
+                print(f"  [FAIL] provider missing {symbol}()")
+                all_passed = False
+
+        # 5. APX endpoint paths.
+        if 'SUBMIT_PATH = "/v1/async/chat"' in apx_text:
+            print("  [OK] SUBMIT_PATH=/v1/async/chat")
+        else:
+            print("  [FAIL] SUBMIT_PATH not /v1/async/chat")
+            all_passed = False
+        if 'RESULTS_PATH = "/v1/async/results"' in apx_text:
+            print("  [OK] RESULTS_PATH=/v1/async/results")
+        else:
+            print("  [FAIL] RESULTS_PATH not /v1/async/results")
+            all_passed = False
+
+        # 6. Status mapping 1/2/3/4 → pending/running/succeeded/failed.
+        for marker in (
+            '1: "pending"',
+            '2: "running"',
+            '3: "succeeded"',
+            '4: "failed"',
+        ):
+            if marker in apx_text:
+                print(f"  [OK] STATUS_MAP contains {marker}")
+            else:
+                print(f"  [FAIL] STATUS_MAP missing {marker}")
+                all_passed = False
+
+        # 7. DEFAULT_DURATION must be 5 (NOT 60).
+        if "DEFAULT_DURATION = 5" in apx_text:
+            print("  [OK] DEFAULT_DURATION=5")
+        else:
+            print("  [FAIL] DEFAULT_DURATION must be 5 in v0.6.0")
+            all_passed = False
+
+        # 8. Required env-var names referenced.
+        for env_name in (
+            "APX_VIDEO_ENABLED",
+            "APX_VIDEO_BASE_URL",
+            "APX_VIDEO_API_KEY",
+            "APX_VIDEO_MODEL",
+            "APX_VIDEO_DURATION",
+            "APX_VIDEO_PROMPT_EXTEND",
+            "APX_VIDEO_POLL_INTERVAL_SECONDS",
+            "APX_VIDEO_TIMEOUT_SECONDS",
+            "APX_VIDEO_CONFIRM_AFTER_DOWNLOAD",
+            "APX_VIDEO_ALLOW_FALLBACK_SUBMIT",
+        ):
+            if env_name in apx_text:
+                print(f"  [OK] provider references {env_name}")
+            else:
+                print(f"  [FAIL] provider missing reference to {env_name}")
+                all_passed = False
+
+        # 9. Provider must NOT contain a hardcoded API key. We allow the
+        # placeholder string "[REDACTED]" because the scrubber emits it.
+        suspicious_lines = []
+        for line in apx_text.splitlines():
+            stripped = line.strip()
+            if "api-key" in stripped.lower() or "api_key" in stripped.lower():
+                # Allow os.environ.get(...) and dict-key/header references.
+                if (
+                    "os.environ" in line
+                    or "REDACTED" in line
+                    or 'lower()' in line
+                    or stripped.startswith("#")
+                    or '"api-key"' in line
+                    or "'api-key'" in line
+                    or '"api_key"' in line
+                    or "'api_key'" in line
+                    or "apikey" in stripped.lower() and "(" not in stripped
+                ):
+                    continue
+                # Anything that looks like an assignment to a literal string.
+                if "=" in line and ('"' in line or "'" in line):
+                    candidate = line.split("=", 1)[1].strip()
+                    # Empty / quoted-only / function call → skip.
+                    if candidate in ('""', "''", '""""', "''''", ""):
+                        continue
+                    if candidate.startswith("(") or candidate.startswith("os."):
+                        continue
+                    suspicious_lines.append(stripped)
+        if suspicious_lines:
+            print("  [FAIL] possible hardcoded api-key assignments:")
+            for s in suspicious_lines:
+                print(f"         {s}")
+            all_passed = False
+        else:
+            print("  [OK] no hardcoded api-key assignment detected")
+
+        # 10. _scrub_api_key helper present.
+        if "_scrub_api_key" in apx_text:
+            print("  [OK] _scrub_api_key redaction helper present")
+        else:
+            print("  [FAIL] _scrub_api_key redaction helper missing")
+            all_passed = False
+
+        # 11. fallback safety guard present.
+        if "check_fallback_safety" in apx_text and "_FALLBACK_PROMPT_MARKERS" in apx_text:
+            print("  [OK] fallback prompt safety guard present")
+        else:
+            print("  [FAIL] fallback prompt safety guard missing")
+            all_passed = False
+
+        # 12. Real network calls allowed ONLY in apx_seedance_provider.py.
+        # Scan the rest of the codebase for forbidden patterns.
+        forbidden_patterns = (
+            "requests.post(",
+            "requests.get(",
+            "requests.put(",
+            "requests.delete(",
+            "httpx.post(",
+            "httpx.get(",
+            "aiohttp.ClientSession",
+            "urllib.request.urlopen",
+        )
+        scan_targets = [
+            "web/app.py",
+            "web/video_asset_pipeline.py",
+            "web/video_providers/__init__.py",
+            "web/video_providers/base.py",
+            "web/video_providers/mock_provider.py",
+            "web/video_providers/seedance_contract_adapter.py",
+            "web/video_providers/seedance_prompt_compiler.py",
+        ]
+        leaks = []
+        for tgt in scan_targets:
+            if not os.path.exists(tgt):
+                continue
+            try:
+                with open(tgt, 'r', encoding='utf-8') as f:
+                    src = f.read()
+            except Exception:
+                continue
+            for pat in forbidden_patterns:
+                if pat in src:
+                    leaks.append(f"{tgt} contains {pat}")
+        if leaks:
+            print("  [FAIL] real network calls outside apx_seedance_provider.py:")
+            for ln in leaks:
+                print(f"         {ln}")
+            all_passed = False
+        else:
+            print("  [OK] no real network calls outside apx_seedance_provider.py")
+
+        # 13. web/app.py wiring.
+        try:
+            with open("web/app.py", 'r', encoding='utf-8') as f:
+                app_text = f.read()
+        except Exception:
+            app_text = ""
+
+        if "ApxSeedanceProvider" in app_text and "_create_apx_video_job_for_record" in app_text:
+            print("  [OK] web/app.py wires _create_apx_video_job_for_record")
+        else:
+            print("  [FAIL] web/app.py does not wire APX provider job creation")
+            all_passed = False
+
+        if "_refresh_apx_job" in app_text and "apx_seedance" in app_text:
+            print("  [OK] /api/video/jobs/{id}/refresh has apx_seedance branch")
+        else:
+            print("  [FAIL] /api/video/jobs/{id}/refresh missing apx_seedance branch")
+            all_passed = False
+
+        if "_create_video_job_for_record" in app_text:
+            print("  [OK] dispatcher _create_video_job_for_record present (APX → Mock fallback)")
+        else:
+            print("  [FAIL] dispatcher _create_video_job_for_record missing")
+            all_passed = False
+
+        # 14. video_review table still forbidden.
+        if "video_review" in app_text or "video_reviews" in app_text:
+            print("  [FAIL] app.py references a video_review(s) table — forbidden")
+            all_passed = False
+        else:
+            print("  [OK] no video_review table introduced")
+
+        # 15. Frontend wiring.
+        try:
+            with open("web/static/main.js", 'r', encoding='utf-8') as f:
+                main_js = f.read()
+        except Exception:
+            main_js = ""
+
+        if "refreshVideoJob" in main_js and "/api/video/jobs/" in main_js and "/refresh" in main_js:
+            print("  [OK] main.js implements refreshVideoJob() POST")
+        else:
+            print("  [FAIL] main.js missing refreshVideoJob() wiring")
+            all_passed = False
+
+        for state in ("submitted", "blocked_fallback_prompt", "succeeded_but_no_video_url"):
+            if state in main_js:
+                print(f"  [OK] main.js handles '{state}' state")
+            else:
+                print(f"  [FAIL] main.js missing handler for '{state}' state")
+                all_passed = False
+
+        # 16. NotebookLM Prompt Mode template still untouched.
+        for lm_path in ("web/db/repository.py", "web/db/models.py"):
+            try:
+                with open(lm_path, 'r', encoding='utf-8') as f:
+                    src = f.read()
+            except Exception:
+                continue
+            if "apx_seedance" in src or "ApxSeedanceProvider" in src:
+                print(f"  [FAIL] {lm_path} references APX — Prompt Mode must stay isolated")
+                all_passed = False
+                break
+        else:
+            print("  [OK] Prompt Mode files untouched by APX wiring")
+
+        # 17. data/*.db, outputs/, .env, *.mp4 must NOT be tracked anywhere
+        # in the repo work tree. (Re-uses git status hygiene heuristic.)
+        try:
+            res = subprocess.run(
+                ["git", "ls-files", "--others", "--cached", "--exclude-standard"],
+                capture_output=True, text=True, timeout=10,
+            )
+            tracked = res.stdout.splitlines() if res.returncode == 0 else []
+        except Exception:
+            tracked = []
+        forbidden_in_repo = []
+        for path in tracked:
+            p = path.strip()
+            if not p:
+                continue
+            if p == ".env" or p.startswith(".env."):
+                # .env.example is allowed (placeholders only).
+                if p != ".env.example":
+                    forbidden_in_repo.append(p)
+            if p.startswith("data/") and p.endswith(".db"):
+                forbidden_in_repo.append(p)
+            if p.startswith("outputs/"):
+                forbidden_in_repo.append(p)
+            if p.endswith(".mp4"):
+                forbidden_in_repo.append(p)
+        if forbidden_in_repo:
+            print("  [FAIL] forbidden artifacts present in repo work tree:")
+            for p in sorted(set(forbidden_in_repo)):
+                print(f"         {p}")
+            all_passed = False
+        else:
+            print("  [OK] no .env/data/*.db/outputs/*.mp4 in repo work tree")
+
+        # 18. Submit body shape: model + prompt + duration + prompt_extend.
+        if (
+            'build_submit_payload' in apx_text
+            and '"model"' in apx_text
+            and '"prompt"' in apx_text
+            and '"duration"' in apx_text
+            and '"prompt_extend"' in apx_text
+        ):
+            print("  [OK] submit body contains model/prompt/duration/prompt_extend")
+        else:
+            print("  [FAIL] submit body missing required keys")
+            all_passed = False
+
+        # 18b. v0.6.0 submit body must NOT include negative_prompt / extra_body / img_url / seed.
+        forbidden_keys = (
+            "negative_prompt",
+            "extra_body",
+            "img_url",
+        )
+        # Check only inside build_submit_payload region — naive split.
+        try:
+            after = apx_text.split("def build_submit_payload", 1)[1]
+            region = after.split("def ", 1)[0]
+        except Exception:
+            region = ""
+        bad_keys = [k for k in forbidden_keys if f'"{k}"' in region]
+        if bad_keys:
+            print(f"  [FAIL] submit body includes forbidden keys: {bad_keys}")
+            all_passed = False
+        else:
+            print("  [OK] submit body does not include negative_prompt/extra_body/img_url")
+
+        # 19. Required header names.
+        if (
+            '"api-key"' in apx_text
+            and '"X-APX-Model"' in apx_text
+            and 'application/json' in apx_text
+        ):
+            print("  [OK] provider builds api-key + X-APX-Model + Content-Type headers")
+        else:
+            print("  [FAIL] provider headers incomplete")
+            all_passed = False
+
+        # ---- v0.6.0 safety polish sub-checks --------------------------------
+
+        # 20. requirements.txt must list `requests`.
+        try:
+            with open("requirements.txt", 'r', encoding='utf-8') as f:
+                req_text = f.read()
+        except Exception:
+            req_text = ""
+        if "requests" in req_text:
+            print("  [OK] requirements.txt declares requests dependency")
+        else:
+            print("  [FAIL] requirements.txt missing requests dependency")
+            all_passed = False
+
+        # 21. check_fallback_safety must be default-deny.
+        try:
+            cfs_after = apx_text.split("def check_fallback_safety", 1)[1]
+            cfs_region = cfs_after.split("\n    def ", 1)[0]
+        except Exception:
+            cfs_region = ""
+        cfs_required = [
+            ("seedance_prompt.strip()", "default-deny: empty seedance_prompt blocked"),
+            ("generation_manifest.json is missing or empty", "default-deny: empty manifest blocked"),
+            ("seedance_prompt_debug.json is missing or empty", "default-deny: empty prompt_debug blocked"),
+            ("llm_used", "default-deny: requires llm_used=true"),
+            ("fallback_used", "default-deny: requires fallback_used=false"),
+            ("seedance_prompt_ready", "default-deny: requires seedance_prompt_ready=true"),
+            ("prompt_words", "default-deny: requires prompt_words > 0"),
+            ("compiler_checks", "default-deny: requires compiler_checks block"),
+        ]
+        for needle, label in cfs_required:
+            if needle in cfs_region:
+                print(f"  [OK] {label}")
+            else:
+                print(f"  [FAIL] {label} (needle '{needle}' missing)")
+                all_passed = False
+
+        # 22. main.js must NOT contain old v0.5.x copy.
+        for banned in (
+            "Creating mock video job",
+            "creating_mock_video_job",
+            "Disabled until v0.6.0",
+            "reserved for v0.6.0",
+        ):
+            if banned in main_js:
+                print(f"  [FAIL] main.js still contains banned copy: '{banned}'")
+                all_passed = False
+            else:
+                print(f"  [OK] main.js does not contain '{banned}'")
+
+        # 23. main.js must show Refresh prompt for in-flight states.
+        if "Click Refresh" in main_js or "click Refresh" in main_js:
+            print("  [OK] main.js prompts user to click Refresh during in-flight states")
+        else:
+            print("  [FAIL] main.js does not surface a Refresh hint for in-flight states")
+            all_passed = False
+
+        # 24. video_download_all must not hardcode real_video_generated=false /
+        # provider_status="provider_not_configured" any longer.
+        try:
+            dl_after = app_text.split("async def video_download_all", 1)[1]
+            dl_region = dl_after.split("\n@app.", 1)[0]
+        except Exception:
+            dl_region = ""
+        if '"real_video_generated": False' in dl_region:
+            print("  [FAIL] video_download_all hardcodes real_video_generated=False")
+            all_passed = False
+        else:
+            print("  [OK] video_download_all does not hardcode real_video_generated=False")
+        if 'has_local_video_file' in dl_region and 'video_file_path' in dl_region:
+            print("  [OK] video_download_all checks record.video_file_path for local mp4")
+        else:
+            print("  [FAIL] video_download_all does not detect local video_file_path")
+            all_passed = False
+        # Forbid leaking the api-key / Authorization / remote video_url.
+        if (
+            "APX_VIDEO_API_KEY" in dl_region
+            or '"api-key"' in dl_region
+            or '"Authorization"' in dl_region
+        ):
+            print("  [FAIL] video_download_all references API key / Authorization")
+            all_passed = False
+        else:
+            print("  [OK] video_download_all does not export API key / Authorization")
+
+        # 25. _refresh_apx_job must validate outputs_root before downloading.
+        try:
+            rj_after = app_text.split("def _refresh_apx_job", 1)[1]
+            rj_region = rj_after.split("\ndef ", 1)[0]
+        except Exception:
+            rj_region = ""
+        if "outputs_root" in rj_region and "relative_to" in rj_region:
+            print("  [OK] _refresh_apx_job restricts download path to project_root/outputs")
+        else:
+            print("  [FAIL] _refresh_apx_job does not restrict download path to outputs/")
+            all_passed = False
+
+        # 26. _download_to_output must verify file existence + non-zero size.
+        try:
+            dt_after = apx_text.split("def _download_to_output", 1)[1]
+            dt_region = dt_after.split("\n    def ", 1)[0]
+        except Exception:
+            dt_region = ""
+        if (
+            "st_size" in dt_region
+            and "Downloaded file is empty or missing" in dt_region
+        ):
+            print("  [OK] _download_to_output verifies file size > 0 after download")
+        else:
+            print("  [FAIL] _download_to_output does not verify file size > 0")
+            all_passed = False
+
+        # 27. VideoJob.to_dict must surface message / http_status / raw_status.
+        try:
+            with open("web/db/video_models.py", 'r', encoding='utf-8') as f:
+                vm_text = f.read()
+        except Exception:
+            vm_text = ""
+        try:
+            # Scope to the VideoJob class so VideoHistory.to_dict isn't mistakenly inspected.
+            vj_after = vm_text.split("class VideoJob(", 1)[1]
+            td_after = vj_after.split("def to_dict", 1)[1]
+            td_region = td_after.split("\n    def ", 1)[0]
+        except Exception:
+            td_region = ""
+        if (
+            "'message'" in td_region
+            and "'http_status'" in td_region
+            and "'raw_status'" in td_region
+        ):
+            print("  [OK] VideoJob.to_dict exposes message / http_status / raw_status")
+        else:
+            print("  [FAIL] VideoJob.to_dict does not expose message / http_status / raw_status")
+            all_passed = False
+        # And it MUST NOT return raw request_json / response_json.
+        if "'request_json'" in td_region or "'response_json'" in td_region:
+            print("  [FAIL] VideoJob.to_dict returns raw request_json/response_json")
+            all_passed = False
+        else:
+            print("  [OK] VideoJob.to_dict does not return raw request_json/response_json")
+
+        # 28. index.html placeholder no longer references reserved-for-v0.6.0 / disconnected.
+        try:
+            with open("web/static/index.html", "r", encoding="utf-8") as f:
+                index_html = f.read()
+        except Exception:
+            index_html = ""
+        if "reserved for v0.6.0" in index_html:
+            print("  [FAIL] index.html still contains 'reserved for v0.6.0'")
+            all_passed = False
+        else:
+            print("  [OK] index.html does not contain 'reserved for v0.6.0'")
+        if "real video provider is not connected" in index_html:
+            print("  [FAIL] index.html still says 'real video provider is not connected'")
+            all_passed = False
+        else:
+            print("  [OK] index.html does not contain 'real video provider is not connected'")
+
+        # 29. /api/video/generate + regenerate no longer hardcode dead provider_contract.
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src_v6 = f.read()
+        except Exception:
+            app_src_v6 = ""
+        if "_build_video_generate_provider_contract_response" in app_src_v6:
+            print("  [OK] app.py defines _build_video_generate_provider_contract_response helper")
+        else:
+            print("  [FAIL] app.py missing _build_video_generate_provider_contract_response helper")
+            all_passed = False
+        if "Real Seedance provider calls are reserved for v0.6.0" in app_src_v6:
+            print("  [FAIL] app.py still contains 'Real Seedance provider calls are reserved for v0.6.0'")
+            all_passed = False
+        else:
+            print("  [OK] app.py does not contain 'Real Seedance provider calls are reserved for v0.6.0'")
+        if "generated, but no real video API was called" in app_src_v6:
+            print("  [FAIL] app.py still hardcodes 'generated, but no real video API was called'")
+            all_passed = False
+        else:
+            print("  [OK] app.py does not hardcode 'generated, but no real video API was called'")
+
+        # 30. apx_seedance.json profile shape: capabilities replaces root-level
+        # real_video_generated / network_call_performed.
+        profile_path = "config/provider_profiles/apx_seedance.json"
+        try:
+            with open(profile_path, "r", encoding="utf-8") as f:
+                profile_text = f.read()
+            profile_obj = json.loads(profile_text)
+        except Exception as e:
+            profile_obj = None
+            print(f"  [FAIL] could not parse {profile_path}: {e}")
+            all_passed = False
+        if isinstance(profile_obj, dict):
+            if profile_obj.get("real_video_generated") is True:
+                print("  [FAIL] apx_seedance.json still has root real_video_generated=true")
+                all_passed = False
+            else:
+                print("  [OK] apx_seedance.json does not have root real_video_generated=true")
+            if profile_obj.get("network_call_performed") is True:
+                print("  [FAIL] apx_seedance.json still has root network_call_performed=true")
+                all_passed = False
+            else:
+                print("  [OK] apx_seedance.json does not have root network_call_performed=true")
+            caps = profile_obj.get("capabilities") or {}
+            if isinstance(caps, dict) and caps.get("supports_real_video_generation") is True:
+                print("  [OK] apx_seedance.json capabilities.supports_real_video_generation=true")
+            else:
+                print("  [FAIL] apx_seedance.json missing capabilities.supports_real_video_generation=true")
+                all_passed = False
+
+        # 31. check_fallback_safety inspects prompt_debug.warnings for 'missing'.
+        try:
+            with open("web/video_providers/apx_seedance_provider.py", "r", encoding="utf-8") as f:
+                apx_src = f.read()
+        except Exception:
+            apx_src = ""
+        if (
+            'prompt_debug.get("warnings")' in apx_src
+            and '"missing"' in apx_src
+            and "Prompt debug warnings indicate missing required content" in apx_src
+        ):
+            print("  [OK] check_fallback_safety inspects prompt_debug.warnings for 'missing'")
+        else:
+            print("  [FAIL] check_fallback_safety does not inspect prompt_debug.warnings for 'missing'")
+            all_passed = False
+
+        # 32. main.js still does not regress to old banned strings.
+        try:
+            with open("web/static/main.js", "r", encoding="utf-8") as f:
+                mjs = f.read()
+        except Exception:
+            mjs = ""
+        for banned in ("Creating mock video job", "Disabled until v0.6.0", "reserved for v0.6.0"):
+            if banned in mjs:
+                print(f"  [FAIL] main.js regressed and contains '{banned}'")
+                all_passed = False
+            else:
+                print(f"  [OK] main.js does not contain '{banned}'")
+
+        # ------------------------------------------------------------------
+        # v0.6.0 duration sync sub-checks (33–48): APX_VIDEO_DURATION is
+        # the single source of truth for Video Mode duration.
+        # ------------------------------------------------------------------
+        try:
+            with open("web/video_asset_pipeline.py", "r", encoding="utf-8") as f:
+                vap_src = f.read()
+        except Exception:
+            vap_src = ""
+
+        # 33. pipeline default is 5 (not 60)
+        if "DEFAULT_DURATION_SECONDS = 5" in vap_src and "DEFAULT_DURATION_SECONDS = 60" not in vap_src:
+            print("  [OK] video_asset_pipeline DEFAULT_DURATION_SECONDS = 5")
+        else:
+            print("  [FAIL] video_asset_pipeline DEFAULT_DURATION_SECONDS != 5 (or 60 still present)")
+            all_passed = False
+
+        # 34. resolve_target_duration_seconds + build_duration_profile helpers exist
+        if (
+            "def resolve_target_duration_seconds(" in vap_src
+            and "def build_duration_profile(" in vap_src
+            and 'os.environ.get("APX_VIDEO_DURATION")' in vap_src
+        ):
+            print("  [OK] pipeline has resolve_target_duration_seconds + build_duration_profile (reads APX_VIDEO_DURATION)")
+        else:
+            print("  [FAIL] pipeline missing duration sync helpers")
+            all_passed = False
+
+        # 35. _build_provider_request_preview emits target_duration_seconds + duration_source
+        if (
+            '"target_duration_seconds":' in vap_src
+            and '"duration_source": "APX_VIDEO_DURATION"' in vap_src
+        ):
+            print("  [OK] provider_request_preview emits target_duration_seconds + duration_source")
+        else:
+            print("  [FAIL] provider_request_preview missing target_duration_seconds / duration_source")
+            all_passed = False
+
+        # 36. manifest contains target_duration_seconds + duration_synced + duration_profile
+        if (
+            '"target_duration_seconds": target_duration' in vap_src
+            and '"duration_synced": True' in vap_src
+            and '"duration_profile": duration_profile.get("profile_name")' in vap_src
+        ):
+            print("  [OK] generation_manifest emits target_duration_seconds + duration_synced + duration_profile")
+        else:
+            print("  [FAIL] generation_manifest missing duration sync fields")
+            all_passed = False
+
+        # 37. _build_fallback_timing_plan exists
+        if "def _build_fallback_timing_plan(" in vap_src:
+            print("  [OK] pipeline has _build_fallback_timing_plan helper")
+        else:
+            print("  [FAIL] pipeline missing _build_fallback_timing_plan")
+            all_passed = False
+
+        # 38. template uses {{DURATION_SECONDS}} and removes the static '~50–60 seconds' wording
+        try:
+            with open("templates/video_asset_prompt_template.md", "r", encoding="utf-8") as f:
+                tmpl_src = f.read()
+        except Exception:
+            tmpl_src = ""
+        if (
+            "{{DURATION_SECONDS}}" in tmpl_src
+            and "{{DURATION_PROFILE_NAME}}" in tmpl_src
+            and "{{SCENE_COUNT_MIN}}" in tmpl_src
+            and "{{SCENE_COUNT_MAX}}" in tmpl_src
+            and "{{WORD_COUNT_MIN}}" in tmpl_src
+            and "{{WORD_COUNT_MAX}}" in tmpl_src
+            and "~50–60 seconds" not in tmpl_src
+        ):
+            print("  [OK] video_asset_prompt_template uses dynamic duration variables (no static 50-60s)")
+        else:
+            print("  [FAIL] video_asset_prompt_template missing dynamic vars or still hardcodes 50-60s")
+            all_passed = False
+
+        # 39. contract adapter default is 5 and prefers target_duration_seconds
+        try:
+            with open("web/video_providers/seedance_contract_adapter.py", "r", encoding="utf-8") as f:
+                sca_src = f.read()
+        except Exception:
+            sca_src = ""
+        if (
+            "DEFAULT_DURATION_SECONDS = 5" in sca_src
+            and 'src.get("target_duration_seconds")' in sca_src
+        ):
+            print("  [OK] seedance_contract_adapter default 5 + prefers target_duration_seconds")
+        else:
+            print("  [FAIL] seedance_contract_adapter default not synced (still 60 or missing target_duration_seconds preference)")
+            all_passed = False
+
+        # 40. compiler priority chain prefers target_duration_seconds
+        try:
+            with open("web/video_providers/seedance_prompt_compiler.py", "r", encoding="utf-8") as f:
+                spc_src = f.read()
+        except Exception:
+            spc_src = ""
+        if (
+            'provider_request_preview.get("target_duration_seconds")' in spc_src
+            and "or 60" not in spc_src
+        ):
+            print("  [OK] seedance_prompt_compiler prefers target_duration_seconds (no 60 fallback)")
+        else:
+            print("  [FAIL] seedance_prompt_compiler still falls back to 60 or missing target_duration_seconds")
+            all_passed = False
+
+        # 41. seedance.json default_duration_seconds is 5
+        try:
+            with open("config/provider_profiles/seedance.json", "r", encoding="utf-8") as f:
+                sd_profile = json.load(f)
+        except Exception:
+            sd_profile = {}
+        if sd_profile.get("default_duration_seconds") == 5:
+            print("  [OK] config/provider_profiles/seedance.json default_duration_seconds = 5")
+        else:
+            print(
+                f"  [FAIL] seedance.json default_duration_seconds = {sd_profile.get('default_duration_seconds')!r} (expected 5)"
+            )
+            all_passed = False
+
+        # 42. APX provider build_submit_payload accepts duration_seconds
+        if "def build_submit_payload(" in apx_src and "duration_seconds: Optional[int] = None" in apx_src:
+            print("  [OK] ApxSeedanceProvider.build_submit_payload accepts duration_seconds")
+        else:
+            print("  [FAIL] ApxSeedanceProvider.build_submit_payload does not accept duration_seconds")
+            all_passed = False
+
+        # 43. APX provider submit() accepts duration_seconds and forwards it
+        if "def submit(" in apx_src and "duration_seconds: Optional[int] = None" in apx_src and "build_submit_payload(seedance_prompt, duration_seconds=duration_seconds)" in apx_src:
+            print("  [OK] ApxSeedanceProvider.submit accepts and forwards duration_seconds")
+        else:
+            print("  [FAIL] ApxSeedanceProvider.submit does not forward duration_seconds")
+            all_passed = False
+
+        # 44. app.py _create_apx_video_job_for_record reads target_duration & passes to submit + create_job
+        try:
+            with open("web/app.py", "r", encoding="utf-8") as f:
+                app_src = f.read()
+        except Exception:
+            app_src = ""
+        if (
+            "manifest.get(\"target_duration_seconds\")" in app_src
+            and "provider.submit(seedance_prompt, duration_seconds=target_duration_seconds)" in app_src
+            and "duration_seconds=target_duration_seconds," in app_src
+        ):
+            print("  [OK] _create_apx_video_job_for_record threads target_duration_seconds end-to-end")
+        else:
+            print("  [FAIL] _create_apx_video_job_for_record does not thread target_duration_seconds")
+            all_passed = False
+
+        # 45. app.py _create_mock_video_job_for_record passes duration_seconds=mock_duration
+        if "duration_seconds=mock_duration," in app_src:
+            print("  [OK] _create_mock_video_job_for_record passes duration_seconds")
+        else:
+            print("  [FAIL] _create_mock_video_job_for_record does not pass duration_seconds")
+            all_passed = False
+
+        # 46. download_all metadata includes target_duration_seconds + duration_synced
+        if '"target_duration_seconds":' in app_src and '"duration_synced":' in app_src:
+            print("  [OK] video_download_all metadata includes target_duration_seconds + duration_synced")
+        else:
+            print("  [FAIL] video_download_all metadata missing target_duration_seconds / duration_synced")
+            all_passed = False
+
+        # 47. main.js does not regress UI; renders optional duration cell.
+        if "video-job-duration" in mjs:
+            print("  [OK] main.js renders optional video-job-duration slot")
+        else:
+            print("  [WARN] main.js does not render video-job-duration (UI may not display duration)")
+            self.warnings += 1
+
+        # 48. config/example.env carries the single-source-of-truth comment block.
+        try:
+            with open("config/example.env", "r", encoding="utf-8") as f:
+                env_src = f.read()
+        except Exception:
+            env_src = ""
+        if "SINGLE SOURCE OF TRUTH" in env_src and "APX_VIDEO_DURATION" in env_src:
+            print("  [OK] config/example.env documents APX_VIDEO_DURATION as single source of truth")
+        else:
+            print("  [FAIL] config/example.env missing single-source-of-truth documentation for APX_VIDEO_DURATION")
+            all_passed = False
+
+        # ------------------------------------------------------------------
+        # v0.6.0 duration HARDENING sub-checks (49–58): close the gap so even
+        # an LLM emitting 60-second timing/scenes/text is forced to target.
+        # ------------------------------------------------------------------
+
+        # 49. pipeline strips legacy 50-60-second default from topic_analysis.video_goal
+        if (
+            'Explain the topic clearly in 50-60 seconds.' not in vap_src
+            and '-second educational short video.' in vap_src
+        ):
+            print("  [OK] pipeline replaced legacy '50-60 seconds' default with dynamic video_goal")
+        else:
+            print("  [FAIL] pipeline still ships legacy 'Explain the topic clearly in 50-60 seconds.' default")
+            all_passed = False
+
+        # 50. pipeline defines all four hardening helpers
+        helpers_needed = [
+            "def _sync_duration_text(",
+            "def _timing_plan_exceeds_duration(",
+            "def _assign_scene_time_ranges(",
+            "def _sync_provider_prompt_duration(",
+        ]
+        missing_helpers = [h for h in helpers_needed if h not in vap_src]
+        if not missing_helpers:
+            print("  [OK] pipeline defines all four duration hardening helpers")
+        else:
+            print(f"  [FAIL] pipeline missing duration hardening helpers: {missing_helpers}")
+            all_passed = False
+
+        # 51. _validate_and_normalize wires _timing_plan_exceeds_duration + _assign_scene_time_ranges
+        if (
+            "_timing_plan_exceeds_duration(script.get(\"timing_plan\")" in vap_src
+            and "_assign_scene_time_ranges(" in vap_src
+        ):
+            print("  [OK] _validate_and_normalize wires timing_plan + scene time_range hardening")
+        else:
+            print("  [FAIL] _validate_and_normalize missing timing_plan / scene hardening calls")
+            all_passed = False
+
+        # 52. _validate_and_normalize wires _sync_provider_prompt_duration
+        if "_sync_provider_prompt_duration(provider_prompt, target_duration)" in vap_src:
+            print("  [OK] _validate_and_normalize wires _sync_provider_prompt_duration")
+        else:
+            print("  [FAIL] _validate_and_normalize does not call _sync_provider_prompt_duration")
+            all_passed = False
+
+        # 53. pipeline syncs script.narration / script.ending text
+        if (
+            "script[\"narration\"] = _sync_duration_text(" in vap_src
+            and "script[\"ending\"] = _sync_duration_text(" in vap_src
+        ):
+            print("  [OK] pipeline syncs script.narration + script.ending duration text")
+        else:
+            print("  [FAIL] pipeline missing narration/ending duration sync")
+            all_passed = False
+
+        # 54. pipeline emits the 'storyboard.scene time_range normalized' warning
+        if "storyboard.scene time_range normalized to target duration." in vap_src:
+            print("  [OK] pipeline emits storyboard.scene time_range overshoot warning")
+        else:
+            print("  [FAIL] pipeline missing storyboard.scene time_range overshoot warning")
+            all_passed = False
+
+        # 55. seedance_prompt_compiler emits the Mandatory duration line
+        if (
+            "Mandatory duration:" in spc_src
+            and "Ignore any conflicting duration instruction" in spc_src
+        ):
+            print("  [OK] seedance_prompt_compiler emits Mandatory duration + Ignore conflicting line")
+        else:
+            print("  [FAIL] seedance_prompt_compiler missing Mandatory duration / Ignore conflicting line")
+            all_passed = False
+
+        # 56. seedance_prompt_compiler scrubs legacy 50-60s text from video_goal
+        if "_sync_duration_text(" in spc_src and "_LEGACY_DURATION_PATTERNS" in spc_src:
+            print("  [OK] seedance_prompt_compiler scrubs legacy duration text from video_goal")
+        else:
+            print("  [FAIL] seedance_prompt_compiler does not scrub legacy duration text")
+            all_passed = False
+
+        # 57. index.html renders video-job-duration between Stage and Job ID
+        try:
+            with open("web/static/index.html", "r", encoding="utf-8") as f:
+                index_src = f.read()
+        except Exception:
+            index_src = ""
+        if 'id="video-job-duration"' in index_src:
+            stage_idx = index_src.find('id="video-job-stage"')
+            dur_idx = index_src.find('id="video-job-duration"')
+            jobid_idx = index_src.find('id="video-job-provider-id"')
+            if 0 <= stage_idx < dur_idx < jobid_idx:
+                print("  [OK] index.html renders video-job-duration between Stage and Job ID")
+            else:
+                print("  [FAIL] index.html has video-job-duration but not between Stage and Job ID")
+                all_passed = False
+        else:
+            print("  [FAIL] index.html missing video-job-duration slot")
+            all_passed = False
+
+        # 58. main.js writes job.duration_seconds into video-job-duration slot
+        if (
+            "video-job-duration" in mjs
+            and "job.duration_seconds" in mjs
+        ):
+            print("  [OK] main.js writes job.duration_seconds into video-job-duration slot")
+        else:
+            print("  [FAIL] main.js does not write job.duration_seconds into video-job-duration")
+            all_passed = False
+
+        # ------------------------------------------------------------------
+        # v0.6.0 download hotfix sub-checks (59–64): the single-file Download
+        # button must work once a real APX mp4 has been generated.
+        # ------------------------------------------------------------------
+
+        # 59. main.js declares getCurrentVideoDownloadUrl()
+        if "function getCurrentVideoDownloadUrl(" in mjs:
+            print("  [OK] main.js declares getCurrentVideoDownloadUrl()")
+        else:
+            print("  [FAIL] main.js missing getCurrentVideoDownloadUrl()")
+            all_passed = False
+
+        # 60. main.js download path uses /api/video/history/.../asset/video?download=1
+        if "/asset/video?download=1" in mjs and "/api/video/history/" in mjs:
+            print("  [OK] main.js downloads via /api/video/history/.../asset/video?download=1")
+        else:
+            print("  [FAIL] main.js does not download via asset/video?download=1")
+            all_passed = False
+
+        # 61. backend asset video endpoint accepts download bool param
+        if (
+            "async def video_asset_video(" in app_src
+            and "download: bool = False" in app_src
+            and "filename=download_filename" in app_src
+        ):
+            print("  [OK] /api/video/history/{id}/asset/video supports download=1 with filename")
+        else:
+            print("  [FAIL] /api/video/history/{id}/asset/video does not support download=1 / filename")
+            all_passed = False
+
+        # 62. backend FileResponse never exposes raw absolute outputs path:
+        # the asset endpoint must use _resolve_safe_outputs_path to refuse
+        # path traversal and only stream files under outputs/.
+        try:
+            asset_block = app_src.split("async def video_asset_video(", 1)[1].split("\n@app.", 1)[0]
+        except Exception:
+            asset_block = ""
+        if "_resolve_safe_outputs_path(" in asset_block:
+            print("  [OK] asset video endpoint resolves through _resolve_safe_outputs_path (no raw absolute path leak)")
+        else:
+            print("  [FAIL] asset video endpoint does not resolve through _resolve_safe_outputs_path")
+            all_passed = False
+
+        # 63. main.js syncs currentVideoRecord from refresh job response
+        if (
+            "function syncVideoRecordFromJob(" in mjs
+            and "currentVideoRecord" in mjs
+        ):
+            print("  [OK] main.js syncs currentVideoRecord from refresh/job response")
+        else:
+            print("  [FAIL] main.js does not sync currentVideoRecord from refresh response")
+            all_passed = False
+
+        # 64. git status must not contain forbidden artifacts (advisory).
+        try:
+            import subprocess
+            git_out = subprocess.run(
+                ["git", "status", "--short", "--untracked-files=all"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout
+        except Exception:
+            git_out = ""
+        forbidden_lines = []
+        for line in git_out.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for pat in (".env", "data/", "outputs/", ".mp4", "__MACOSX", ".DS_Store"):
+                if pat in stripped:
+                    forbidden_lines.append(stripped)
+                    break
+        # Allow expected v0.5.4 untracked files already documented elsewhere.
+        forbidden_lines = [
+            l for l in forbidden_lines
+            if not l.endswith("apx_seedance.json")
+            and not l.endswith("apx_seedance_real_provider.md")
+            and not l.endswith("apx_seedance_provider.py")
+            and not l.endswith("config/example.env")  # tracked file with edits is OK
+        ]
+        if not forbidden_lines:
+            print("  [OK] git status clean of .env / data / outputs / *.mp4 / __MACOSX / .DS_Store")
+        else:
+            print("  [WARN] git status contains forbidden patterns (showing up to 3):")
+            for l in forbidden_lines[:3]:
+                print(f"     {l}")
+            self.warnings += 1
+
+        # 65. Doc presence (warn-only).
+        doc_path = "docs/v0.6.0_apx_seedance_real_provider.md"
+        if os.path.exists(doc_path):
+            print(f"  [OK] {doc_path} present")
+        else:
+            print(f"  [WARN] {doc_path} missing")
+            self.warnings += 1
+
+        if all_passed:
+            print("\n[OK] v0.6.0 APX Seedance real provider checks passed")
+            self.checks_passed += 1
+        else:
+            print("\n[FAIL] v0.6.0 APX Seedance real provider checks failed")
             self.checks_failed += 1
 
     def check_required_files(self):
@@ -2868,6 +3860,7 @@ def main():
         checker.check_v054_fixes()
         checker.check_v055_contract()
         checker.check_v056_compiler()
+        checker.check_v060_apx_provider()
         checker.check_git_status_hygiene()
         checker.check_database_integrity()
     except Exception as e:

@@ -4,7 +4,7 @@
 
 本文档详细规划了从当前版本（V0）到端到端自动化（V4）的完整技术路线。每个 Phase 都有明确的技术目标、实现方案、技术栈和成功标准。
 
-## 当前里程碑（v0.5.6）
+## 当前里程碑（v0.6.0）
 
 - **Prompt Mode**：v0.4.10 已冻结，所有保护边界继续生效（详见
   [`prompt_mode_freeze_spec.md`](./prompt_mode_freeze_spec.md)）。
@@ -23,7 +23,7 @@
   4 个 dry-run API 端点、Provider Contract Summary 区块、stage 升级到
   `contract_ready` / progress=90（详见
   [`v0.5.5_seedance_provider_contract_adapter.md`](./v0.5.5_seedance_provider_contract_adapter.md)）。
-- **Seedance Prompt Compiler（当前 v0.5.6）**：新增离线
+- **Seedance Prompt Compiler（v0.5.6）**：新增离线
   `SeedancePromptCompiler` 编译器（`compiler_version=
   seedance_prompt_compiler_v0.5.6`）+ provider profile
   (`config/provider_profiles/seedance.json`)；落 3 个新资产文件
@@ -33,12 +33,22 @@
   prompt；Overview 新增 *Seedance Prompt Compiler: Ready / Not Available*
   行（详见
   [`v0.5.6_seedance_prompt_compiler.md`](./v0.5.6_seedance_prompt_compiler.md)）。
-  **本版本仍然不接真实 Seedance、不发起任何真实网络请求、不生成 mp4、不下载视频文件。**
-- **下一阶段（v0.6.0）**：把 v0.5.6 编译好的 `seedance_prompt.txt` +
-  `seedance_negative_prompt.txt` 直接喂给真实 Seedance provider 实现，
-  引入首次真实网络调用、真实 Job 轮询、真实 mp4 下载，以及 Video Review
-  独立评分协议。Mock provider 与 prompt compiler 保留作为离线测试与回归
-  基线。
+- **APX Seedance Real Provider（当前 v0.6.0）**：首次接入公司 APX 异步视频
+  网关（底层 `doubao-seedance-2.0`），新增
+  `web/video_providers/apx_seedance_provider.py`（仅此文件允许真实网络调用），
+  把 v0.5.6 编译好的 `seedance_prompt.txt` 真正打到
+  `POST /v1/async/chat`、轮询 `GET /v1/async/results/{id}`、成功后下载
+  `response.video_url` 到 `outputs/<slug>/video.mp4` 并写入
+  `video_history.video_file_path`，前端经
+  `/api/video/history/{id}/asset/video` 播放本地 mp4。所有调用由
+  `APX_VIDEO_ENABLED=true` + `APX_VIDEO_API_KEY` 显式开启；未配置时自动
+  fallback 到 v0.5.3 Mock。新增 `blocked_fallback_prompt` 安全状态，避免
+  在 fallback 资产上烧掉 APX 配额。`api-key` 永不入库 / 不写入 metadata /
+  不出现在 Download All（详见
+  [`v0.6.0_apx_seedance_real_provider.md`](./v0.6.0_apx_seedance_real_provider.md)）。
+- **下一阶段**：基于 v0.6.0 的真实视频产物，引入 Video Review 独立评分
+  协议、批量批处理、retry / cancel 真实 job、以及更细的失败状态机；
+  Mock provider 与 prompt compiler 继续保留作为离线测试与回归基线。
 
 ---
 

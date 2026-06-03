@@ -1,0 +1,103 @@
+{
+  "schema_version": "apx_seedance_profile_v0.6.0",
+  "provider": "apx_seedance",
+  "future_provider": "apx_seedance",
+  "profile_version": "apx_seedance_profile_v0.6.0",
+  "transport": {
+    "base_url_env": "APX_VIDEO_BASE_URL",
+    "default_base_url": "http://apx-api.tal.com",
+    "submit_path": "/v1/async/chat",
+    "results_path": "/v1/async/results/{id}",
+    "cancel_path": "/v1/async/results/{id}",
+    "headers": {
+      "api-key": "{from_env:APX_VIDEO_API_KEY}",
+      "X-APX-Model": "{from_env:APX_VIDEO_MODEL}",
+      "Content-Type": "application/json; charset=utf-8"
+    }
+  },
+  "model": {
+    "default": "doubao-seedance-2.0",
+    "env": "APX_VIDEO_MODEL"
+  },
+  "submit_payload_keys": [
+    "model",
+    "prompt",
+    "duration",
+    "prompt_extend"
+  ],
+  "submit_payload_forbidden_keys": [
+    "negative_prompt",
+    "extra_body",
+    "img_url",
+    "seed"
+  ],
+  "duration": {
+    "default": 5,
+    "env": "APX_VIDEO_DURATION"
+  },
+  "prompt_extend": {
+    "default": true,
+    "env": "APX_VIDEO_PROMPT_EXTEND"
+  },
+  "polling": {
+    "interval_seconds_env": "APX_VIDEO_POLL_INTERVAL_SECONDS",
+    "default_interval_seconds": 5,
+    "timeout_seconds_env": "APX_VIDEO_TIMEOUT_SECONDS",
+    "default_timeout_seconds": 600
+  },
+  "status_mapping": {
+    "1": "pending",
+    "2": "running",
+    "3": "succeeded",
+    "4": "failed"
+  },
+  "download": {
+    "video_filename": "video.mp4",
+    "cover_filename": "video_cover.jpg",
+    "atomic_temp_suffix": ".part",
+    "url_paths": {
+      "video": [
+        "response.video_url",
+        "data.response.video_url",
+        "result.response.video_url",
+        "response.data.video_url",
+        "video_url"
+      ],
+      "cover": [
+        "response.video_cover_url",
+        "data.response.video_cover_url",
+        "result.response.video_cover_url",
+        "response.data.video_cover_url",
+        "video_cover_url"
+      ]
+    }
+  },
+  "confirmation": {
+    "after_download_env": "APX_VIDEO_CONFIRM_AFTER_DOWNLOAD",
+    "default_after_download": false
+  },
+  "fallback_safety": {
+    "allow_fallback_submit_env": "APX_VIDEO_ALLOW_FALLBACK_SUBMIT",
+    "default_allow": false,
+    "block_when": [
+      "manifest.llm_used == false",
+      "manifest.fallback_used == true",
+      "manifest.seedance_prompt_ready == false",
+      "compiled prompt contains '需要人工核对'",
+      "compiled prompt contains 'Human review required'",
+      "prompt_debug.warnings contains 'missing'"
+    ]
+  },
+  "capabilities": {
+    "supports_real_video_generation": true,
+    "performs_network_call_when_enabled": true,
+    "supports_async_submit": true,
+    "supports_polling": true,
+    "supports_local_video_download": true
+  },
+  "notes": [
+    "v0.6.0 ships the APX Seedance real provider. Real network calls are gated behind APX_VIDEO_ENABLED + APX_VIDEO_API_KEY.",
+    "The api-key is read from the environment on every call and never written into request_json/response_json/metadata exports.",
+    "When the asset pipeline ran in fallback mode, real submit is refused unless APX_VIDEO_ALLOW_FALLBACK_SUBMIT=true."
+  ]
+}

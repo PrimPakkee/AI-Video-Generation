@@ -42,6 +42,10 @@ let currentTopicGroupId = null;
 // v0.5.3 - Latest VideoJob for the active record (null in Prompt Mode or
 // when no VideoJob exists yet). Backed by /api/video/history/{id}/jobs/latest.
 let currentVideoJob = null;
+// v0.6.0 download hotfix — snapshot of the active Video Mode history record
+// (id, slug, video_file_path, video_url, video_status). Updated whenever a
+// record is rendered or a refresh/generate response carries a new record.
+let currentVideoRecord = null;
 let historyItems = [];
 let trashItems = [];
 let favoriteItems = [];
@@ -134,11 +138,19 @@ function updateActionButtonsForCurrentView() {
         if (currentPromptViewMode === 'video') {
             setBtnState(editBtnEl, true, 'Video tab cannot be edited.');
             setBtnState(copyBtnEl, true, 'Video content cannot be copied.');
-            setBtnState(downloadBtnEl, true, 'Video file is not available yet. Download will be available when a video file exists.');
-            // Long Download tooltip: drop it below the icon, still
-            // center-axis aligned (left:50% + translateX(-50%)).
-            if (downloadBtnEl) {
-                downloadBtnEl.classList.add('tooltip-below');
+            // v0.6.0 download hotfix: keep Download enabled when a real mp4
+            // (or remote video URL) is resolvable for the current record.
+            const hasDownload = (typeof getCurrentVideoDownloadUrl === 'function')
+                && !!getCurrentVideoDownloadUrl();
+            if (hasDownload) {
+                setBtnState(downloadBtnEl, false, 'Download video');
+            } else {
+                setBtnState(downloadBtnEl, true, 'Video file is not available yet. Download will be available when a video file exists.');
+                // Long Download tooltip: drop it below the icon, still
+                // center-axis aligned (left:50% + translateX(-50%)).
+                if (downloadBtnEl) {
+                    downloadBtnEl.classList.add('tooltip-below');
+                }
             }
         } else if (currentPromptViewMode === 'review') {
             setBtnState(editBtnEl, true, 'AI Review cannot be edited.');
@@ -480,6 +492,7 @@ function renderHistoryRecord(item) {
     // v0.5.3: in Video Mode, fetch the latest VideoJob and render the
     // status panel inside the Video tab. Prompt Mode skips this entirely.
     if (currentAppMode === 'video' && currentHistoryId != null) {
+        currentVideoRecord = item || null;
         currentVideoJob = null;
         renderVideoJobStatus(null);
         fetch(`/api/video/history/${currentHistoryId}/jobs/latest`)
@@ -489,17 +502,90 @@ function renderHistoryRecord(item) {
                 if (currentHistoryId !== item.id) return;
                 currentVideoJob = payload.job || null;
                 renderVideoJobStatus(currentVideoJob);
+                syncVideoRecordFromJob(currentVideoJob);
             })
             .catch(err => console.warn('Failed to fetch latest VideoJob:', err));
         // v0.5.3: if the record has a real video asset, route the player
         // through the asset endpoint (never an absolute filesystem path).
-        // v0.5.3 records never set video_file_path, so this is a no-op now.
         try {
             applyVideoAssetSrc(item);
         } catch (e) { /* defensive */ }
     } else {
+        currentVideoRecord = null;
         currentVideoJob = null;
         renderVideoJobStatus(null);
+    }
+}
+
+/**
+ * v0.6.0 download hotfix — single source of truth for the active Video
+ * Mode record's download URL. Returns null when no resolvable source.
+ *
+ * historyId priority: currentVideoJob.history_id → currentVideoRecord.id
+ * → currentHistoryId. URL priority: /api/video/history/{id}/asset/video?download=1
+ * (when historyId resolvable AND a video file is known to exist or the
+ * record/job advertises one) → currentVideoJob.result_video_url
+ * (only when http/https) → null.
+ */
+function getCurrentVideoDownloadUrl() {
+    const job = currentVideoJob || null;
+    const rec = currentVideoRecord || null;
+    let historyId = null;
+    if (job && job.history_id != null) {
+        historyId = job.history_id;
+    } else if (rec && rec.id != null) {
+        historyId = rec.id;
+    } else if (currentHistoryId != null) {
+        historyId = currentHistoryId;
+    }
+    const recordHasFile = !!(rec && (rec.video_file_path || rec.video_url));
+    const jobHasFile = !!(
+        job
+        && (job.status === 'succeeded' || job.status === 'ready')
+        && (job.result_video_path || job.result_video_url)
+    );
+    const playerSrc = (() => {
+        const v = document.getElementById('video-element');
+        const src = v ? (v.getAttribute('src') || '') : '';
+        return src && src.indexOf('/api/video/history/') !== -1 && src.indexOf('/asset/video') !== -1
+            ? src
+            : '';
+    })();
+    if (historyId != null && (recordHasFile || jobHasFile || playerSrc)) {
+        return `/api/video/history/${historyId}/asset/video?download=1`;
+    }
+    if (job && typeof job.result_video_url === 'string' && /^https?:\/\//i.test(job.result_video_url)) {
+        return job.result_video_url;
+    }
+    return null;
+}
+
+/**
+ * v0.6.0 download hotfix — when a refresh / generate response carries an
+ * updated VideoJob, mirror its terminal-state outputs onto the active
+ * record so getCurrentVideoDownloadUrl() and applyVideoAssetSrc() agree
+ * without waiting for a full re-render.
+ */
+function syncVideoRecordFromJob(job) {
+    if (!job) return;
+    if (!currentVideoRecord) {
+        currentVideoRecord = { id: job.history_id != null ? job.history_id : currentHistoryId };
+    }
+    if (job.history_id != null && currentVideoRecord.id == null) {
+        currentVideoRecord.id = job.history_id;
+    }
+    const isReady = job.status === 'succeeded' || job.status === 'ready';
+    if (isReady && job.result_video_path && !currentVideoRecord.video_file_path) {
+        currentVideoRecord.video_file_path = job.result_video_path;
+    }
+    if (isReady && job.result_video_url && !currentVideoRecord.video_url) {
+        currentVideoRecord.video_url = job.result_video_url;
+    }
+    if (isReady) {
+        const target = job.status === 'succeeded' ? 'ready' : job.status;
+        if (currentVideoRecord.video_status !== 'ready' && currentVideoRecord.video_status !== 'succeeded') {
+            currentVideoRecord.video_status = target;
+        }
     }
 }
 
@@ -512,7 +598,7 @@ function renderHistoryRecord(item) {
 function applyVideoAssetSrc(item) {
     const v = document.getElementById('video-element');
     if (!v) return;
-    const hasAsset = item && item.video_file_path && currentHistoryId != null;
+    const hasAsset = item && (item.video_file_path || item.video_url) && currentHistoryId != null;
     if (!hasAsset) {
         try {
             v.pause();
@@ -1729,7 +1815,7 @@ const VIDEO_GENERATION_STEPS = [
     { key: 'building_storyboard', label: 'Building storyboard' },
     { key: 'creating_provider_prompt', label: 'Creating provider prompt' },
     { key: 'preparing_provider_request', label: 'Preparing provider request' },
-    { key: 'creating_mock_video_job', label: 'Creating mock video job' },
+    { key: 'submitting_video_job', label: 'Submitting video job' },
     { key: 'saving_assets', label: 'Saving assets' },
     { key: 'completed', label: 'Done' },
 ];
@@ -1746,11 +1832,12 @@ function renderProviderContractSummaryHTML(item) {
         data-history-id="${(item && item.id != null) ? String(item.id) : ''}">
         <h4 class="provider-contract-title">Provider Contract</h4>
         <ul class="provider-contract-list">
-            <li><strong>Future Provider:</strong> Seedance</li>
+            <li><strong>Real Provider:</strong> APX Seedance when configured; Mock fallback otherwise.</li>
+            <li><strong>Real API Call:</strong> Controlled by APX_VIDEO_ENABLED.</li>
             <li><strong>Contract Status:</strong> <span data-field="contract-status">Loading…</span></li>
             <li><strong>Seedance Prompt Compiler:</strong> <span data-field="prompt-compiler-status">Loading…</span></li>
-            <li><strong>Real API Call:</strong> Disabled until v0.6.0</li>
-            <li><strong>Real Video Generated:</strong> No</li>
+            <li><strong>Latest Job:</strong> <span data-field="latest-job-status">—</span></li>
+            <li><strong>Real Video Generated:</strong> <span data-field="real-video-generated">—</span></li>
         </ul>
     </div>`;
     return slot;
@@ -1773,6 +1860,16 @@ function refreshProviderContractSummary(historyId) {
             const compilerEl = el.querySelector('[data-field="prompt-compiler-status"]');
             if (compilerEl) {
                 compilerEl.textContent = payload.prompt_compiler_ready ? 'Ready' : 'Not Available';
+            }
+            const latestEl = el.querySelector('[data-field="latest-job-status"]');
+            if (latestEl) {
+                const provider = payload.latest_job_provider || '—';
+                const status = payload.latest_job_status || '—';
+                latestEl.textContent = `${provider} / ${status}`;
+            }
+            const realEl = el.querySelector('[data-field="real-video-generated"]');
+            if (realEl) {
+                realEl.textContent = payload.real_video_generated ? 'Yes' : 'No';
             }
         })
         .catch(() => {});
@@ -1847,7 +1944,12 @@ function completeVideoGenerationProgress(videoJob) {
     const { message } = _videoProgressEls();
     if (message) {
         if (videoJob && videoJob.status === 'provider_not_configured') {
-            message.textContent = 'Seedance prompt compiler + contract adapter are ready. Content assets, compiled Seedance prompt, and payload preview were generated, but no real video API was called. Real Seedance provider calls are reserved for v0.6.0.';
+            message.textContent = 'Content assets, compiled Seedance prompt, and payload preview were generated, but the APX real provider is not configured. Set APX_VIDEO_ENABLED=true and APX_VIDEO_API_KEY in .env to enable real generation.';
+        } else if (videoJob && videoJob.status === 'blocked_fallback_prompt') {
+            message.textContent = videoJob.error_message
+                || 'Real APX submit was blocked because the compiled assets look like a fallback. Review the assets or set APX_VIDEO_ALLOW_FALLBACK_SUBMIT=true to override.';
+        } else if (videoJob && (videoJob.status === 'submitted' || videoJob.status === 'pending' || videoJob.status === 'running')) {
+            message.textContent = 'Video job submitted. Open the Video tab and click Refresh to update status.';
         } else if (videoJob && videoJob.error_message) {
             message.textContent = videoJob.error_message;
         } else {
@@ -1883,9 +1985,10 @@ function resetVideoGenerationProgress() {
 }
 
 /**
- * v0.5.3 — Render the Video Job status panel inside the Video tab. Pass
- * null to clear/hide. Safe to call when the panel DOM doesn't exist yet
- * (Prompt Mode page render).
+ * v0.5.3 → v0.6.0 — Render the Video Job status panel inside the Video tab.
+ * v0.6.0 adds APX states: submitted / pending / running / succeeded /
+ * blocked_fallback_prompt / succeeded_but_no_video_url. The Refresh button
+ * is shown for in-flight states and triggers POST /api/video/jobs/{id}/refresh.
  */
 function renderVideoJobStatus(job) {
     const panel = document.getElementById('video-job-status-panel');
@@ -1913,17 +2016,108 @@ function renderVideoJobStatus(job) {
     setText('video-job-progress', progressVal);
     setText('video-job-provider-id', job.provider_job_id);
     setText('video-job-updated', job.updated_at || job.completed_at || job.submitted_at || job.created_at);
+    // v0.6.0 duration sync: optional duration cell. Hidden when missing so
+    // existing layouts that don't include the slot are unaffected.
+    const durSlot = document.getElementById('video-job-duration');
+    if (durSlot) {
+        if (job.duration_seconds !== null && job.duration_seconds !== undefined) {
+            durSlot.textContent = `${job.duration_seconds}s`;
+            durSlot.classList.remove('hidden');
+        } else {
+            durSlot.textContent = '—';
+        }
+    }
 
     const msgEl = document.getElementById('video-job-message');
     if (msgEl) {
-        if (job.message) {
-            msgEl.textContent = job.message;
+        if (job.status === 'submitted' || job.status === 'pending' || job.status === 'running') {
+            msgEl.textContent = 'Video generation is running. Click Refresh to update status.';
+        } else if (job.status === 'succeeded' || job.status === 'ready') {
+            msgEl.textContent = 'Video generated and saved locally.';
+        } else if (job.status === 'blocked_fallback_prompt') {
+            msgEl.textContent = job.error_message
+                || 'Real APX submit was blocked because the compiled assets look like a fallback. Set APX_VIDEO_ALLOW_FALLBACK_SUBMIT=true to override.';
+        } else if (job.status === 'succeeded_but_no_video_url') {
+            msgEl.textContent = job.error_message
+                || 'APX returned status=3 but no video_url was found in the response.';
+        } else if (job.status === 'failed') {
+            msgEl.textContent = job.error_message || 'Video generation failed.';
+        } else if (job.status === 'cancelled') {
+            msgEl.textContent = 'Video job cancelled.';
         } else if (job.status === 'provider_not_configured') {
-            msgEl.textContent = 'Seedance prompt compiler + contract adapter are ready. Content assets, compiled Seedance prompt, and payload preview were generated, but no real video API was called. Real Seedance provider calls are reserved for v0.6.0.';
+            msgEl.textContent = 'Seedance prompt compiler + contract adapter are ready. Content assets, compiled Seedance prompt, and payload preview were generated, but the APX real provider is not configured. Set APX_VIDEO_ENABLED=true and APX_VIDEO_API_KEY in .env to enable real generation.';
+        } else if (job.message) {
+            msgEl.textContent = job.message;
         } else if (job.error_message) {
             msgEl.textContent = job.error_message;
         } else {
             msgEl.textContent = '';
+        }
+    }
+
+    const btn = document.getElementById('video-job-refresh-btn');
+    if (btn) {
+        const inFlight = (job.provider === 'apx_seedance')
+            && (job.status === 'submitted' || job.status === 'pending' || job.status === 'running');
+        if (inFlight) {
+            btn.hidden = false;
+            btn.disabled = false;
+            btn.textContent = 'Refresh';
+            btn.onclick = () => refreshVideoJob(job.id);
+        } else {
+            btn.hidden = true;
+            btn.onclick = null;
+        }
+    }
+}
+
+/**
+ * v0.6.0 — POST /api/video/jobs/{id}/refresh and re-render the status panel.
+ * Re-applies the video src when the asset becomes available.
+ */
+async function refreshVideoJob(jobId) {
+    if (!jobId) return;
+    const btn = document.getElementById('video-job-refresh-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Refreshing...';
+    }
+    try {
+        const resp = await fetch(`/api/video/jobs/${jobId}/refresh`, { method: 'POST' });
+        const data = await resp.json();
+        if (data && data.success && data.job) {
+            currentVideoJob = data.job;
+            renderVideoJobStatus(currentVideoJob);
+            // v0.6.0 download hotfix — mirror terminal-state job outputs onto
+            // currentVideoRecord so the Download button can resolve a URL
+            // immediately, and update the player src using the merged view.
+            if (data.record && typeof data.record === 'object') {
+                currentVideoRecord = { ...(currentVideoRecord || {}), ...data.record };
+            }
+            syncVideoRecordFromJob(currentVideoJob);
+            if (data.job.status === 'succeeded' || data.job.status === 'ready') {
+                try {
+                    applyVideoAssetSrc(currentVideoRecord || {
+                        id: currentHistoryId,
+                        video_file_path: data.job.result_video_path || true,
+                    });
+                } catch (e) { /* defensive */ }
+            }
+            if (typeof updateActionButtonsForCurrentView === 'function') {
+                updateActionButtonsForCurrentView();
+            }
+        } else {
+            console.warn('Refresh returned non-success:', data);
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Refresh';
+            }
+        }
+    } catch (err) {
+        console.warn('Failed to refresh VideoJob:', err);
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Refresh';
         }
     }
 }
@@ -2234,9 +2428,27 @@ function downloadPrompt() {
         text = getWebCopyPlainText();
         filenameSuffix = 'web_copy';
     } else if (currentPromptViewMode === 'video') {
-        // v0.5.1.2 hotfix: video tab has no downloadable file yet. Read
-        // tooltip text from data-unavailable-message so the toast string
-        // matches the hover tooltip exactly.
+        // v0.6.0 download hotfix: when a real APX mp4 has been generated and
+        // the asset endpoint is serving it, route Download through the same
+        // endpoint with ?download=1 so the browser saves the file. Only fall
+        // back to the legacy "not available yet" toast when no source is
+        // resolvable.
+        const url = getCurrentVideoDownloadUrl();
+        if (url) {
+            const slug = currentSlug || currentHistoryId || 'video';
+            const safeSlug = String(slug)
+                .toLowerCase()
+                .replace(/[^a-z0-9_-]+/g, '_')
+                .replace(/^_+|_+$/g, '') || 'video';
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${safeSlug}.mp4`;
+            link.rel = 'noopener';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            return;
+        }
         const downloadBtnEl = document.getElementById('download-btn');
         const msg = (downloadBtnEl && downloadBtnEl.getAttribute('data-unavailable-message'))
             || 'Video file is not available yet. Download will be available when a video file exists.';
