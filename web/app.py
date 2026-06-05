@@ -2198,24 +2198,32 @@ def _build_image_video_metadata_json(pipeline_result: Dict[str, Any]) -> str:
             "tts_status": "not_implemented_v0.6.3",
             "voiceover_source": "none",
         },
-        # v0.6.3 stabilization — distinguish content LLM from media APIs.
-        # `network_call_performed` historically meant "a media-generation
-        # provider was called". On the image_video route that is ALWAYS
-        # false (Seedance/APX/Image2/TTS are never invoked here). We do
-        # surface `llm_network_call_performed` so an operator can see
-        # whether AI_VIDEO_LLM_* was contacted.
+        # v0.6.3 stabilization + v0.6.4 — distinguish content LLM (text)
+        # from media APIs (Image2 / Seedance / APX / TTS). The image_video
+        # route never calls Seedance/APX/TTS; it MAY call image2 in v0.6.4
+        # when APX_IMAGE2_ENABLED=true. `media_api_called` flips true only
+        # for media providers; `network_call_performed` is preserved as
+        # the broader signal that any external network call happened
+        # (image2 OR LLM). `llm_network_call_performed` is the LLM-only
+        # subset.
         "external_api_called": bool(pipeline_result.get("external_api_called")),
         "content_llm_called": bool(pipeline_result.get("content_llm_called")),
-        "media_api_called": False,
+        "media_api_called": bool(pipeline_result.get("media_api_called")),
         "llm_network_call_performed": bool(pipeline_result.get("content_llm_called")),
         "seedance_called": False,
         "apx_called": False,
-        "image2_called": False,
+        "image2_called": bool(pipeline_result.get("image2_called")),
+        "image2_succeeded": int(pipeline_result.get("image2_succeeded") or 0),
+        "image2_failed": int(pipeline_result.get("image2_failed") or 0),
+        "image2_requested": int(pipeline_result.get("image2_requested") or 0),
         "tts_called": False,
         "llm_used": bool(pipeline_result.get("llm_used")),
         "real_video_generated": pipeline_result.get("route_status") == "succeeded",
         "real_video_downloaded": False,
-        "network_call_performed": False,
+        "network_call_performed": bool(
+            pipeline_result.get("media_api_called")
+            or pipeline_result.get("content_llm_called")
+        ),
         "provider_status": "image_video_local",
     }
     try:
@@ -2231,28 +2239,45 @@ def _build_image_video_metadata_json(pipeline_result: Dict[str, Any]) -> str:
 def _build_image_video_overview_text(
     title: str, duration_seconds: int, slide_count: int, route_status: str,
     llm_overview_cn: Optional[str] = None,
+    image2_succeeded: int = 0, image2_failed: int = 0, image2_requested: int = 0,
 ) -> str:
     """Build the Overview-tab text for image_video records.
 
-    v0.6.3 (LLM update) — when the AI_VIDEO_LLM_* call succeeded and
-    returned a Chinese paragraph, we use that paragraph as the main body
-    of the Overview, followed by a compact metadata footer. When the LLM
-    fell back, we keep the metadata-only block from the original v0.6.3.
+    v0.6.4 — the metadata footer reflects whether image2 actually ran:
+    when image2 returned at least one image, the footer says
+    "gpt-image-2 + Pillow 文字叠加"; when image2 was disabled or fell
+    back per slide, it says "本地 Pillow" so the user knows what the
+    underlying image source was.
     """
     status_label = "已生成" if route_status == "succeeded" else "未生成"
+    if image2_succeeded > 0:
+        if image2_failed > 0:
+            image_source_label = (
+                f"gpt-image-2（{image2_succeeded}/{image2_requested} 成功）"
+                f" + Pillow 文字叠加；{image2_failed} 张回退到本地几何图"
+            )
+        else:
+            image_source_label = (
+                f"gpt-image-2（{image2_succeeded}/{image2_requested} 成功）"
+                f" + Pillow 文字叠加"
+            )
+        image2_called_label = "是"
+    else:
+        image_source_label = "本地 Pillow 渲染（image2 未启用或全部失败）"
+        image2_called_label = "否"
     metadata_block = (
         f"\n---\n"
         f"题目: {title}\n"
-        f"生成路线: Image Video（本地静态图合成视频，v0.6.3 MVP）\n"
+        f"生成路线: Image Video\n"
         f"视频时长: {duration_seconds} 秒\n"
         f"幻灯片数: {slide_count} 张\n"
-        f"画面来源: 本地 Pillow 渲染\n"
+        f"画面来源: {image_source_label}\n"
         f"合成方式: 本地 FFmpeg\n"
         f"文案来源: {'LLM (gpt-5-chat)' if llm_overview_cn else '本地静态模板（LLM 未启用或失败）'}\n"
         f"音频/旁白: 本版本未生成（has_audio=false, tts_status=not_implemented_v0.6.3）\n"
         f"是否调用 Seedance: 否\n"
         f"是否调用 APX: 否\n"
-        f"是否调用 Image2: 否\n"
+        f"是否调用 Image2: {image2_called_label}\n"
         f"最终视频文件: {status_label}"
     )
     if llm_overview_cn and llm_overview_cn.strip():
@@ -2425,6 +2450,9 @@ def _run_image_video_pipeline(
             slide_count=int(pipeline_result.get("slide_count") or 0),
             route_status="succeeded",
             llm_overview_cn=llm_overview_cn,
+            image2_succeeded=int(pipeline_result.get("image2_succeeded") or 0),
+            image2_failed=int(pipeline_result.get("image2_failed") or 0),
+            image2_requested=int(pipeline_result.get("image2_requested") or 0),
         )
         VideoHistoryRepository.update_image_video_result(
             db=db,
@@ -2446,6 +2474,9 @@ def _run_image_video_pipeline(
             slide_count=int(pipeline_result.get("slide_count") or 0),
             route_status="failed",
             llm_overview_cn=llm_overview_cn,
+            image2_succeeded=int(pipeline_result.get("image2_succeeded") or 0),
+            image2_failed=int(pipeline_result.get("image2_failed") or 0),
+            image2_requested=int(pipeline_result.get("image2_requested") or 0),
         )
         VideoHistoryRepository.update_image_video_result(
             db=db,
@@ -2508,9 +2539,19 @@ def _build_image_video_response_payload(
             "ffmpeg_found": bool(pipeline_result.get("ffmpeg_found")),
             "ffmpeg_path": pipeline_result.get("ffmpeg_path"),
             "image_source": pipeline_result.get("image_source"),
+            "image_sources": pipeline_result.get("image_sources") or [],
             "content_source": pipeline_result.get("content_source"),
             "content_llm_called": bool(pipeline_result.get("content_llm_called")),
-            "media_api_called": False,
+            "media_api_called": bool(pipeline_result.get("media_api_called")),
+            "image2_called": bool(pipeline_result.get("image2_called")),
+            "image2_succeeded": int(pipeline_result.get("image2_succeeded") or 0),
+            "image2_failed": int(pipeline_result.get("image2_failed") or 0),
+            "image2_requested": int(pipeline_result.get("image2_requested") or 0),
+            "image2_disabled_by_env": bool(
+                pipeline_result.get("image2_disabled_by_env")
+            ),
+            "image2_skipped_reason": pipeline_result.get("image2_skipped_reason"),
+            "image2_debug_path": pipeline_result.get("image2_debug_path"),
             "llm_used": bool(pipeline_result.get("llm_used")),
             "llm_model": pipeline_result.get("llm_model"),
             "llm_fallback_used": bool(pipeline_result.get("llm_fallback_used")),
@@ -2525,12 +2566,15 @@ def _build_image_video_response_payload(
         },
         "generation_evidence": {
             "route": "image_video",
-            "media_api_called": False,
+            "media_api_called": bool(pipeline_result.get("media_api_called")),
             "content_llm_called": bool(pipeline_result.get("content_llm_called")),
-            "real_api_call": False,
+            "real_api_call": bool(pipeline_result.get("media_api_called")),
             "seedance_called": False,
             "apx_called": False,
-            "image2_called": False,
+            "image2_called": bool(pipeline_result.get("image2_called")),
+            "image2_succeeded": int(pipeline_result.get("image2_succeeded") or 0),
+            "image2_failed": int(pipeline_result.get("image2_failed") or 0),
+            "image2_requested": int(pipeline_result.get("image2_requested") or 0),
             "tts_called": False,
             "llm_used_for_text": bool(pipeline_result.get("llm_used")),
             "llm_model": pipeline_result.get("llm_model"),
@@ -3084,12 +3128,13 @@ VIDEO_RUN_STAGES = (
 # image_video pipeline performs (LLM content + Pillow render + FFmpeg
 # compose), so each row in the progress panel reports a real duration.
 IMAGE_VIDEO_RUN_STAGES = (
-    ("validate_topic",      "Validate topic"),
-    ("plan_slides",         "Plan slides"),
-    ("write_slide_content", "Write slide content with AI"),
-    ("render_slide_images", "Render slide images"),
-    ("compose_final_video", "Compose final video with FFmpeg"),
-    ("save_history",        "Save to history"),
+    ("validate_topic",         "Validate topic"),
+    ("plan_slides",            "Plan slides"),
+    ("write_slide_content",    "Write slide content with AI"),
+    ("generate_slide_images",  "Generate slide images (gpt-image-2)"),
+    ("render_slide_overlays",  "Render on-screen text overlays"),
+    ("compose_final_video",    "Compose final video with FFmpeg"),
+    ("save_history",           "Save to history"),
 )
 
 VIDEO_GENERATION_RUNS: Dict[str, Dict[str, Any]] = {}
@@ -3516,6 +3561,9 @@ def _run_image_video_worker(
                 slide_count=int(pipeline_result.get("slide_count") or 0),
                 route_status="succeeded",
                 llm_overview_cn=llm_overview_cn,
+                image2_succeeded=int(pipeline_result.get("image2_succeeded") or 0),
+                image2_failed=int(pipeline_result.get("image2_failed") or 0),
+                image2_requested=int(pipeline_result.get("image2_requested") or 0),
             )
             VideoHistoryRepository.update_image_video_result(
                 db=db, history_id=history_id,
@@ -3536,6 +3584,9 @@ def _run_image_video_worker(
                 slide_count=int(pipeline_result.get("slide_count") or 0),
                 route_status="failed",
                 llm_overview_cn=llm_overview_cn,
+                image2_succeeded=int(pipeline_result.get("image2_succeeded") or 0),
+                image2_failed=int(pipeline_result.get("image2_failed") or 0),
+                image2_requested=int(pipeline_result.get("image2_requested") or 0),
             )
             VideoHistoryRepository.update_image_video_result(
                 db=db, history_id=history_id,
@@ -5204,6 +5255,80 @@ async def video_get_provider_contract(
             status_code=404,
             content={"success": False, "error": f"Video history record {history_id} not found"},
         )
+
+    # v0.6.4 — image_video records have no Seedance contract assets to
+    # surface. Build the panel payload directly from image_video metadata
+    # (image2_called / content_llm_called / image2 success/total / final
+    # mp4 availability) so the frontend's Generation Evidence panel shows
+    # accurate values without falling back to "all No".
+    if (record.generation_method or "seedance_video") == "image_video":
+        meta_blob: Dict[str, Any] = {}
+        try:
+            if record.metadata_json:
+                meta_blob = json.loads(record.metadata_json) or {}
+        except Exception:
+            meta_blob = {}
+        iv = (meta_blob.get("image_video") or {}) if isinstance(meta_blob, dict) else {}
+        image2_called = bool(iv.get("llm_used") is not None and (
+            iv.get("content_source") == "llm"
+            or meta_blob.get("media_api_called")
+            or meta_blob.get("image2_called")
+        ))
+        # Prefer the explicit flags written by _build_image_video_metadata_json.
+        media_called = bool(meta_blob.get("media_api_called"))
+        content_llm = bool(meta_blob.get("content_llm_called"))
+        image2_called = bool(meta_blob.get("image2_called"))
+        image2_succeeded = int(meta_blob.get("image2_succeeded") or 0)
+        image2_failed = int(meta_blob.get("image2_failed") or 0)
+        image2_requested = int(meta_blob.get("image2_requested") or 0)
+        safe_video_path = _resolve_safe_outputs_path(record.video_file_path)
+        final_video_available = (
+            record.video_status == "ready"
+            and bool(record.video_file_path)
+            and safe_video_path is not None
+        )
+        image_video_payload = {
+            "duration_seconds": iv.get("duration_seconds") or record.video_duration_seconds,
+            "slide_count": iv.get("slide_count"),
+            "content_source": iv.get("content_source"),
+            "content_llm_called": content_llm,
+            "media_api_called": media_called,
+            "image2_called": image2_called,
+            "image2_succeeded": image2_succeeded,
+            "image2_failed": image2_failed,
+            "image2_requested": image2_requested,
+            "llm_model": iv.get("llm_model"),
+            "has_audio": False,
+            "tts_status": iv.get("tts_status") or "not_implemented_v0.6.3",
+        }
+        return {
+            "success": True,
+            "history_id": history_id,
+            "generation_method": "image_video",
+            "real_provider_configured": media_called,
+            "network_call_performed": bool(media_called or content_llm),
+            "real_video_generated": record.video_status == "ready",
+            "real_video_downloaded": False,
+            "image_video": image_video_payload,
+            "generation_evidence": {
+                "route": "image_video",
+                "media_api_called": media_called,
+                "content_llm_called": content_llm,
+                "real_api_call": media_called,
+                "seedance_called": False,
+                "apx_called": False,
+                "image2_called": image2_called,
+                "image2_succeeded": image2_succeeded,
+                "image2_failed": image2_failed,
+                "image2_requested": image2_requested,
+                "tts_called": False,
+                "llm_used_for_text": bool(iv.get("llm_used")),
+                "llm_model": iv.get("llm_model"),
+                "local_slides_generated": True,
+                "ffmpeg_composed": final_video_available,
+                "final_video_available": final_video_available,
+            },
+        }
 
     project_root = Path(__file__).resolve().parent.parent
     output_dir = record.output_dir or ""

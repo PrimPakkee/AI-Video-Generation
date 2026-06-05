@@ -350,6 +350,7 @@
                                             <li><strong>Seedance called:</strong> <span data-evidence="seedance_called">No</span></li>
                                             <li><strong>APX called:</strong> <span data-evidence="apx_called">No</span></li>
                                             <li><strong>Image2 called:</strong> <span data-evidence="image2_called">No</span></li>
+                                            <li><strong>Image2 success / total:</strong> <span data-evidence="image2_ratio">—</span></li>
                                             <li><strong>TTS called:</strong> <span data-evidence="tts_called">No</span></li>
                                             <li><strong>Local slides generated:</strong> <span data-evidence="local_slides_generated">—</span></li>
                                             <li><strong>FFmpeg composed:</strong> <span data-evidence="ffmpeg_composed">—</span></li>
@@ -492,8 +493,7 @@
         <div class="settings-backdrop"></div>
         <div class="settings-dialog">
             <aside class="settings-sidebar">
-                <button class="settings-close" aria-label="Close settings">&times;</button>
-                <h2 class="settings-title">Settings</h2>
+                <h2 class="settings-title" data-i18n="settings.title">Settings</h2>
                 <nav class="settings-nav">
                     <button class="settings-nav-item active" data-panel="model">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -501,119 +501,244 @@
                             <rect x="9" y="9" width="6" height="6"/>
                             <path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>
                         </svg>
-                        <span>Model</span>
+                        <span data-i18n="nav.model">Model</span>
                     </button>
                     <button class="settings-nav-item" data-panel="language">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="10"/>
                             <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                         </svg>
-                        <span>Language</span>
+                        <span data-i18n="nav.language">Language</span>
+                    </button>
+                    <button class="settings-nav-item" data-panel="diagnostics">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                        </svg>
+                        <span data-i18n="nav.diagnostics">Diagnostics</span>
                     </button>
                     <button class="settings-nav-item" data-panel="product">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="10"/>
                             <path d="M12 16v-4M12 8h.01"/>
                         </svg>
-                        <span>Product Introduction</span>
+                        <span data-i18n="nav.product">Product Introduction</span>
                     </button>
                     <button class="settings-nav-item" data-panel="help">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <circle cx="12" cy="12" r="10"/>
                             <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/>
                         </svg>
-                        <span>Help Center</span>
+                        <span data-i18n="nav.help">Help Center</span>
                     </button>
                     <button class="settings-nav-item" data-panel="privacy">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                         </svg>
-                        <span>Privacy Policy</span>
+                        <span data-i18n="nav.privacy">Privacy Policy</span>
+                    </button>
+                    <button class="settings-nav-item" data-panel="about">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M12 8v4M12 16h.01"/>
+                        </svg>
+                        <span data-i18n="nav.about">About</span>
                     </button>
                 </nav>
             </aside>
 
             <section class="settings-content">
+                <!-- Header bar: panel title + language toggle + close. Sticks
+                     to the top of the right pane and never scrolls. -->
+                <div class="settings-header">
+                    <h3 class="settings-header-title" id="settingsHeaderTitle">Model</h3>
+                    <div class="settings-header-actions">
+                        <div class="settings-lang-toggle" role="group" aria-label="Settings language">
+                            <button class="settings-lang-btn active" data-lang="en" type="button">EN</button>
+                            <button class="settings-lang-btn" data-lang="zh" type="button">中</button>
+                        </div>
+                        <button class="settings-close" aria-label="Close settings" type="button">&times;</button>
+                    </div>
+                </div>
+                <div class="settings-body">
+
                 <!-- Model Panel -->
                 <div id="panel-model" class="settings-panel">
-                    <h3 class="panel-title">Model</h3>
+                    <h3 class="panel-title" data-i18n="model.title">Model</h3>
                     <div class="panel-section">
                         <div class="info-group">
-                            <label class="info-label">Selected model</label>
-                            <div class="info-value-display">gpt-5-chat</div>
+                            <label class="info-label" data-i18n="model.selected">Selected model</label>
+                            <div class="info-value-display" id="settings-model-name">gpt-5-chat</div>
                         </div>
                         <div class="info-group">
-                            <label class="info-label">Mode</label>
-                            <div class="info-value-display">NotebookLM Prompt Generation</div>
+                            <label class="info-label" data-i18n="model.mode">Mode</label>
+                            <div class="info-value-display" data-i18n="model.mode_value">NotebookLM Prompt Generation</div>
                         </div>
                         <div class="info-group">
-                            <label class="info-label">Description</label>
-                            <p class="info-description">This model is used to transform educational video topics into structured NotebookLM-ready prompts.</p>
+                            <label class="info-label" data-i18n="model.description">Description</label>
+                            <p class="info-description" data-i18n="model.description_value">This model transforms educational video topics into structured NotebookLM-ready prompts. It also writes per-slide content for the Image Video pipeline (titles, captions, image generation prompts, and a Chinese paragraph overview).</p>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="model.endpoint">Endpoint</label>
+                            <div class="info-value-display" id="settings-llm-endpoint">AI_VIDEO_LLM_BASE_URL</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="model.providers">Active providers</label>
+                            <ul class="info-list">
+                                <li><strong data-i18n="model.provider_llm">Content LLM:</strong> <span data-i18n="model.provider_llm_value">gpt-5-chat (AI_VIDEO_LLM_*)</span></li>
+                                <li><strong data-i18n="model.provider_image2">Image generator:</strong> <span data-i18n="model.provider_image2_value">gpt-image-2 (APX_IMAGE2_*) — Image Video route only</span></li>
+                                <li><strong data-i18n="model.provider_seedance">Video provider:</strong> <span data-i18n="model.provider_seedance_value">APX Seedance (APX_VIDEO_*) — Seedance Video route only</span></li>
+                                <li><strong data-i18n="model.provider_tts">TTS:</strong> <span data-i18n="model.provider_tts_value">Not implemented in v0.6.4</span></li>
+                            </ul>
                         </div>
                     </div>
                 </div>
 
                 <!-- Language Panel -->
                 <div id="panel-language" class="settings-panel hidden">
-                    <h3 class="panel-title">Language</h3>
+                    <h3 class="panel-title" data-i18n="language.title">Language</h3>
                     <div class="panel-section">
                         <div class="info-group">
-                            <label class="info-label">Interface language</label>
-                            <div class="info-value-display">English</div>
+                            <label class="info-label" data-i18n="language.settings_lang">Settings panel language</label>
+                            <p class="info-description" data-i18n="language.settings_lang_desc">Switch this panel between English and Chinese using the EN / 中 toggle in the top-right corner. Other parts of the app stay in their original language.</p>
                         </div>
                         <div class="info-group">
-                            <label class="info-label">Prompt language</label>
-                            <div class="info-value-display">English output for NotebookLM</div>
+                            <label class="info-label" data-i18n="language.prompt_input">Prompt input language</label>
+                            <p class="info-description" data-i18n="language.prompt_input_value">Free-form. You can enter topics in Chinese or English; the LLM detects and adapts.</p>
                         </div>
                         <div class="info-group">
-                            <label class="info-label">Coming soon</label>
-                            <p class="info-description">Chinese / English interface switching will be supported in a future version.</p>
+                            <label class="info-label" data-i18n="language.video_text">On-screen video text</label>
+                            <p class="info-description" data-i18n="language.video_text_value">English only. Image Video slides render English titles, captions and image_prompts so gpt-image-2 can produce readable paper-cut typography. Chinese topics are translated automatically by the LLM.</p>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="language.overview_lang">Overview language</label>
+                            <p class="info-description" data-i18n="language.overview_value">Chinese. The Overview tab always shows a 4-7 sentence Chinese paragraph describing what the video teaches.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Diagnostics Panel -->
+                <div id="panel-diagnostics" class="settings-panel hidden">
+                    <h3 class="panel-title" data-i18n="diag.title">Diagnostics</h3>
+                    <div class="panel-section">
+                        <p class="info-description" data-i18n="diag.intro">Read-only system check. Nothing here triggers a generation or burns API quota.</p>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="diag.ffmpeg">FFmpeg</label>
+                            <div class="info-value-display" id="diag-ffmpeg-status" data-i18n="diag.checking">Checking...</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="diag.ffmpeg_path">FFmpeg path</label>
+                            <div class="info-value-display" id="diag-ffmpeg-path">—</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="diag.ffmpeg_version">FFmpeg version</label>
+                            <div class="info-value-display" id="diag-ffmpeg-version">—</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="diag.backend">Backend health</label>
+                            <div class="info-value-display" id="diag-backend-status" data-i18n="diag.checking">Checking...</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="diag.prompt_db">Prompt database</label>
+                            <div class="info-value-display" id="diag-prompt-db">—</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="diag.video_db">Video database</label>
+                            <div class="info-value-display" id="diag-video-db">—</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="diag.actions">Actions</label>
+                            <button class="settings-action-btn" id="diag-refresh-btn" type="button" data-i18n="diag.refresh">Re-check now</button>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="diag.hint">Hint</label>
+                            <p class="info-description" data-i18n="diag.hint_value">If FFmpeg is missing, install it (macOS: brew install ffmpeg) and restart the backend. The Image Video route needs FFmpeg to compose the final mp4.</p>
                         </div>
                     </div>
                 </div>
 
                 <!-- Product Panel -->
                 <div id="panel-product" class="settings-panel hidden">
-                    <h3 class="panel-title">Product Introduction</h3>
+                    <h3 class="panel-title" data-i18n="product.title">Product Introduction</h3>
                     <div class="panel-section">
-                        <p class="info-description">AI Video Prompt Generator helps creators turn educational video ideas into structured NotebookLM-ready prompts.</p>
+                        <p class="info-description" data-i18n="product.tagline">AI Video Prompt Generator turns educational video ideas into either NotebookLM-ready prompts (Prompt Mode) or end-to-end short videos (Video Mode).</p>
 
                         <div class="info-group">
-                            <label class="info-label">Current stage</label>
+                            <label class="info-label" data-i18n="product.modes">Modes</label>
                             <ul class="info-list">
-                                <li>Phase 1: Prompt generation engine</li>
-                                <li>Phase 2: Web-based prompt generator</li>
-                                <li>Phase 3: Direct AI video generation</li>
+                                <li><strong data-i18n="product.mode_prompt">Prompt Mode:</strong> <span data-i18n="product.mode_prompt_value">enter a topic, get a structured NotebookLM prompt to copy.</span></li>
+                                <li><strong data-i18n="product.mode_video">Video Mode:</strong> <span data-i18n="product.mode_video_value">enter a topic, pick Seedance Video or Image Video, get a finished mp4 you can play and download.</span></li>
                             </ul>
                         </div>
 
                         <div class="info-group">
-                            <label class="info-label">Core workflow</label>
-                            <p class="info-description">Topic → LLM enhancement → NotebookLM prompt → Educational short video</p>
+                            <label class="info-label" data-i18n="product.routes">Generation methods</label>
+                            <ul class="info-list">
+                                <li><strong data-i18n="product.route_seedance">Seedance Video:</strong> <span data-i18n="product.route_seedance_value">APX Seedance 2.0 video generation chain (v0.6.2 prompt quality gate retained).</span></li>
+                                <li><strong data-i18n="product.route_image_video">Image Video:</strong> <span data-i18n="product.route_image_video_value">gpt-image-2 paper-craft slide images + FFmpeg composition (v0.6.4).</span></li>
+                            </ul>
+                        </div>
+
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="product.workflow">Core workflow</label>
+                            <p class="info-description" data-i18n="product.workflow_value">Topic → gpt-5-chat plans slides + writes content → gpt-image-2 paints paper-craft backgrounds → FFmpeg concatenates into a 16:9 mp4 → playback in browser.</p>
+                        </div>
+
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="product.roadmap">Roadmap</label>
+                            <ul class="info-list">
+                                <li data-i18n="product.roadmap_063">v0.6.3 ✓ Static Image Video MVP + Generation Method selector + Dark mode fix</li>
+                                <li data-i18n="product.roadmap_064">v0.6.4 ✓ gpt-image-2 paper-craft integration (current)</li>
+                                <li data-i18n="product.roadmap_065">v0.6.5 BGM + TTS narration</li>
+                                <li data-i18n="product.roadmap_066">v0.6.6 Subtitle burn-in + transitions</li>
+                                <li data-i18n="product.roadmap_067">v0.6.7 Video Review protocol + hook optimization</li>
+                                <li data-i18n="product.roadmap_07">v0.7.x User accounts, cloud deployment, productionization</li>
+                            </ul>
                         </div>
                     </div>
                 </div>
 
                 <!-- Help Panel -->
                 <div id="panel-help" class="settings-panel hidden">
-                    <h3 class="panel-title">Help Center</h3>
+                    <h3 class="panel-title" data-i18n="help.title">Help Center</h3>
                     <div class="panel-section">
                         <div class="info-group">
-                            <label class="info-label">How to use</label>
+                            <label class="info-label" data-i18n="help.use_prompt">How to use Prompt Mode</label>
                             <ol class="info-list">
-                                <li>Enter an educational video topic.</li>
-                                <li>Click the arrow button or press Enter.</li>
-                                <li>Wait for the prompt to be generated.</li>
-                                <li>Copy or download the NotebookLM prompt.</li>
-                                <li>Paste it into NotebookLM to create the video.</li>
+                                <li data-i18n="help.use_prompt_1">Switch to Prompt Mode in the top-right.</li>
+                                <li data-i18n="help.use_prompt_2">Enter an educational video topic.</li>
+                                <li data-i18n="help.use_prompt_3">Click the arrow button or press Enter.</li>
+                                <li data-i18n="help.use_prompt_4">Copy the generated prompt or download it.</li>
+                                <li data-i18n="help.use_prompt_5">Paste it into NotebookLM to create the video.</li>
                             </ol>
                         </div>
 
                         <div class="info-group">
-                            <label class="info-label">Keyboard shortcuts</label>
+                            <label class="info-label" data-i18n="help.use_video">How to use Video Mode</label>
+                            <ol class="info-list">
+                                <li data-i18n="help.use_video_1">Switch to Video Mode in the top-right.</li>
+                                <li data-i18n="help.use_video_2">Enter a topic; pick a duration (5/15/30/60/90s) and a generation method.</li>
+                                <li data-i18n="help.use_video_3">Click Generate. Watch the per-stage progress fill in.</li>
+                                <li data-i18n="help.use_video_4">When done, the Video tab plays the finished mp4. Use Download to save it.</li>
+                                <li data-i18n="help.use_video_5">Raw Text holds the per-slide image prompts; Overview holds a Chinese summary of the video.</li>
+                            </ol>
+                        </div>
+
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="help.shortcuts">Keyboard shortcuts</label>
                             <ul class="info-list">
-                                <li><strong>Enter:</strong> Generate Prompt</li>
-                                <li><strong>Shift + Enter:</strong> New line</li>
+                                <li><strong data-i18n="help.kbd_enter">Enter:</strong> <span data-i18n="help.kbd_enter_value">Generate</span></li>
+                                <li><strong data-i18n="help.kbd_shift_enter">Shift + Enter:</strong> <span data-i18n="help.kbd_shift_enter_value">New line in the topic input</span></li>
+                                <li><strong data-i18n="help.kbd_escape">Esc:</strong> <span data-i18n="help.kbd_escape_value">Close this Settings dialog</span></li>
+                            </ul>
+                        </div>
+
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="help.troubleshoot">Troubleshooting</label>
+                            <ul class="info-list">
+                                <li data-i18n="help.troubleshoot_ffmpeg">"FFmpeg is required" → install ffmpeg (macOS: brew install ffmpeg) and restart the backend.</li>
+                                <li data-i18n="help.troubleshoot_blocked">"Prompt quality blocked" → the LLM left placeholders in the Seedance prompt; try a clearer topic or rephrase.</li>
+                                <li data-i18n="help.troubleshoot_slow">Image2 stage stuck → each slide takes 30-60s; with 12 slides at concurrency 4 expect 2-3 minutes.</li>
+                                <li data-i18n="help.troubleshoot_no_audio">No audio in the video → BGM and TTS are planned for v0.6.5; current videos are silent by design.</li>
                             </ul>
                         </div>
                     </div>
@@ -621,24 +746,86 @@
 
                 <!-- Privacy Panel -->
                 <div id="panel-privacy" class="settings-panel hidden">
-                    <h3 class="panel-title">Privacy Policy</h3>
+                    <h3 class="panel-title" data-i18n="privacy.title">Privacy Policy</h3>
                     <div class="panel-section">
                         <div class="info-group">
-                            <label class="info-label">Local prototype</label>
-                            <p class="info-description">This is a local prototype. Your generated prompts are stored locally in the project outputs folder.</p>
+                            <label class="info-label" data-i18n="privacy.local">Local prototype</label>
+                            <p class="info-description" data-i18n="privacy.local_value">This is a local prototype. Generated prompts, slide plans, image2 backgrounds, and final mp4 files are stored locally under outputs/.</p>
                         </div>
 
                         <div class="info-group">
-                            <label class="info-label">API security</label>
-                            <p class="info-description">API keys are loaded only by the backend and are not exposed to the browser.</p>
+                            <label class="info-label" data-i18n="privacy.api_security">API security</label>
+                            <ul class="info-list">
+                                <li data-i18n="privacy.api_1">API keys are read from .env at backend startup.</li>
+                                <li data-i18n="privacy.api_2">Keys never reach the browser.</li>
+                                <li data-i18n="privacy.api_3">Keys never appear in any output file (slide_plan.json, llm_debug.json, etc.).</li>
+                                <li data-i18n="privacy.api_4">Keys never appear in API responses or evidence panels — only the boolean "configured" flag is surfaced.</li>
+                            </ul>
                         </div>
 
                         <div class="info-group">
-                            <label class="info-label">Important</label>
-                            <p class="info-description">Do not share .env files or screenshots containing API keys.</p>
+                            <label class="info-label" data-i18n="privacy.data">Where data lives</label>
+                            <ul class="info-list">
+                                <li data-i18n="privacy.data_1">data/prompt_history.db — Prompt Mode history.</li>
+                                <li data-i18n="privacy.data_2">data/video_history.db — Video Mode history (separate database).</li>
+                                <li data-i18n="privacy.data_3">outputs/&lt;slug&gt;/ — generated assets per topic.</li>
+                                <li data-i18n="privacy.data_4">.env — your secrets (gitignored).</li>
+                            </ul>
+                        </div>
+
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="privacy.network">Outbound network calls</label>
+                            <ul class="info-list">
+                                <li data-i18n="privacy.network_1">AI_VIDEO_LLM_* (gpt-5-chat) — prompt content + slide content.</li>
+                                <li data-i18n="privacy.network_2">APX_IMAGE2_* (gpt-image-2) — Image Video slide backgrounds. Disabled by default; enable in .env.</li>
+                                <li data-i18n="privacy.network_3">APX_VIDEO_* (Seedance) — Seedance Video route. Disabled by default; enable in .env.</li>
+                            </ul>
+                        </div>
+
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="privacy.dont">Do not</label>
+                            <ul class="info-list">
+                                <li data-i18n="privacy.dont_1">Do not commit .env to git.</li>
+                                <li data-i18n="privacy.dont_2">Do not paste your API key into any chat or screenshot.</li>
+                                <li data-i18n="privacy.dont_3">Do not commit data/*.db, outputs/, or *.mp4 to git (covered by .gitignore).</li>
+                            </ul>
                         </div>
                     </div>
                 </div>
+
+                <!-- About Panel -->
+                <div id="panel-about" class="settings-panel hidden">
+                    <h3 class="panel-title" data-i18n="about.title">About</h3>
+                    <div class="panel-section">
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="about.product">Product</label>
+                            <div class="info-value-display">AI Video Prompt Generator</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="about.version">Version</label>
+                            <div class="info-value-display">v0.6.4 — gpt-image-2 integration</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="about.team">Team</label>
+                            <div class="info-value-display">Think Academy</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="about.stack">Stack</label>
+                            <ul class="info-list">
+                                <li data-i18n="about.stack_be">Backend: FastAPI + SQLAlchemy + SQLite</li>
+                                <li data-i18n="about.stack_fe">Frontend: vanilla HTML / CSS / JS (no framework)</li>
+                                <li data-i18n="about.stack_render">Rendering: Pillow (text overlays) + FFmpeg (mp4 composition)</li>
+                                <li data-i18n="about.stack_llm">LLM: gpt-5-chat via AI_VIDEO_LLM_* (OpenAI-compatible gateway)</li>
+                                <li data-i18n="about.stack_image">Image: gpt-image-2 via APX_IMAGE2_*</li>
+                            </ul>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="about.license">Status</label>
+                            <p class="info-description" data-i18n="about.license_value">Internal prototype, not yet a public product. Built iteratively across v0.4.x – v0.6.x.</p>
+                        </div>
+                    </div>
+                </div>
+                </div><!-- /.settings-body -->
             </section>
         </div>
     </div>

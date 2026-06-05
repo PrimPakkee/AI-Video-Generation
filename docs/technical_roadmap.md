@@ -4,7 +4,17 @@
 
 本文档详细规划了从当前版本（V0）到端到端自动化（V4）的完整技术路线。每个 Phase 都有明确的技术目标、实现方案、技术栈和成功标准。
 
-## 当前里程碑（v0.6.3）
+## 当前里程碑（v0.6.4）
+
+- **v0.6.4 — gpt-image-2 接入（Image Video 路线升级）**：把 Image Video 从纯
+  Pillow 几何图升级成真实图像生成 + 文字叠加。新增 `web/image_providers/`
+  包，`ApxImage2Provider` 为唯一允许真发网络的文件；pipeline 增加
+  `generate_slide_images` 阶段，`ThreadPoolExecutor` 并发拉图，单张失败
+  per-slide 粒度 fallback 到 Pillow，整段视频不崩。`media_api_called` 现在因
+  image2 真发翻 true。`IMAGE_VIDEO_DISABLE_IMAGE2=1` 短路用于 smoke / 离线复现。
+  详见 [`v0.6.4_image2_integration.md`](./v0.6.4_image2_integration.md)。
+
+## 历史里程碑（v0.6.3）
 
 - **v0.6.3 — Static Image Video MVP + Generation Method Selector + Dark Mode Fix**：
   保留 v0.6.2 Seedance Video 链路；首页新增 Generation Method selector

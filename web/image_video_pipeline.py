@@ -274,9 +274,53 @@ def _build_llm_user_prompt(
         f"  - slide {i+1} ({role})" for i, role in enumerate(roles)
     )
     return (
-        "You are designing a short-form educational explainer video for an\n"
-        "audience on TikTok / YouTube Shorts. Visuals are generated locally\n"
-        "by a Pillow renderer (no AI image generation). You write the words.\n"
+        "You are designing a short-form educational explainer video in the\n"
+        "visual style of Google NotebookLM's video overviews.\n"
+        "\n"
+        "WHAT IS UNIVERSALLY TRUE OF NOTEBOOKLM-STYLE VIDEOS\n"
+        "(applies to every topic, do not change):\n"
+        "  - Paper-craft / cut-paper / layered torn-paper illustrations.\n"
+        "    Layered shapes with soft drop shadows, hand-cut edges,\n"
+        "    tactile material feel. NOT vector flat art, NOT 3D render,\n"
+        "    NOT photo, NOT line drawing.\n"
+        "  - One single large subject sits in the center of the frame and\n"
+        "    occupies roughly 50–65%% of the canvas. The rest of the frame\n"
+        "    is generous negative space.\n"
+        "  - Any on-screen English text is rendered AS PART OF the paper-\n"
+        "    craft artwork itself — bold chunky paper-cut letters integrated\n"
+        "    into the composition. NEVER a caption bar, NEVER a watermark,\n"
+        "    NEVER a translucent overlay.\n"
+        "  - 16:9 landscape composition. No badges, no progress counters,\n"
+        "    no Chinese characters anywhere on the canvas.\n"
+        "  - All N slides for a single video share the SAME palette,\n"
+        "    background texture, and overall mood — the video reads as one\n"
+        "    visual world, not N unrelated illustrations.\n"
+        "\n"
+        "WHAT IS *NOT* UNIVERSAL — YOU PICK PER TOPIC:\n"
+        "  - The actual color palette\n"
+        "  - The background texture / color\n"
+        "  - The overall mood / lighting\n"
+        "  - The kind of objects that show up\n"
+        "These should match the topic's domain and emotional tone. Examples\n"
+        "(do not copy verbatim — use them only as guidance for how varied\n"
+        "the choices should be):\n"
+        "  - Topic about rainbows  → bright sky-blue background, full\n"
+        "    rainbow palette, sunny mood, paper clouds and sun motifs.\n"
+        "  - Topic about black holes → deep navy / charcoal background,\n"
+        "    with small accents of warm orange or violet, mysterious mood.\n"
+        "  - Topic about compounding interest → muted forest green +\n"
+        "    aged-parchment cream + brass-gold coin accents, ledger-paper\n"
+        "    background, serious-but-warm mood.\n"
+        "  - Topic about why free trials are risky → dim blue-grey paper\n"
+        "    background with warning-red and credit-card-blue accents,\n"
+        "    cautionary mood, small clock and credit-card motifs.\n"
+        "  - Topic about DNA replication → soft mint-green and pale-rose\n"
+        "    palette, cool clinical mood, lab-paper background.\n"
+        "  - Topic about ancient Roman history → terracotta / sandstone /\n"
+        "    aged-papyrus palette, faded sepia mood.\n"
+        "Do NOT default to sky-blue + cream + rainbow colors unless the\n"
+        "topic itself is about something colorful and cheerful. Pick what\n"
+        "actually fits.\n"
         "\n"
         "Topic (verbatim, may be Chinese):\n"
         f"  {title}\n"
@@ -286,41 +330,61 @@ def _build_llm_user_prompt(
         f"{role_lines}\n"
         "\n"
         "Hard requirements:\n"
-        "  1. ALL slide text fields must be written in ENGLISH, even if the\n"
-        "     topic is Chinese. The Pillow renderer ships English fonts.\n"
-        "  2. The content MUST directly address the user's topic. Do NOT\n"
-        "     fall back to generic 'Simpson paradox' filler. If the topic is\n"
-        "     about prime numbers, the slides talk about prime numbers.\n"
-        "  3. Each slide title <= 7 words. Each caption <= 16 words.\n"
-        "     Each highlight <= 8 words. Each visual_focus <= 14 words.\n"
-        "  4. The visual_focus describes ONE concrete diagram or symbol the\n"
-        "     Pillow renderer should emphasize — e.g. 'two coins side by\n"
-        "     side', 'a bar of height 7', 'three dice with faces 1, 2, 3'.\n"
-        "     Keep it concrete, no abstract metaphors.\n"
-        "  5. image_prompt is a DETAILED English image-generation prompt\n"
-        "     (40-90 words) that describes exactly the scene the slide\n"
-        "     should show as if you were briefing a designer or an image\n"
-        "     generation model: subject, composition, color palette,\n"
-        "     background, lighting, perspective, on-screen text layout,\n"
-        "     style cues. It MUST stay topic-specific: no generic\n"
-        "     'whiteboard' or 'classroom' filler. Style anchor for every\n"
-        "     slide: 'clean modern educational explainer, minimal flat\n"
-        "     vector illustration, soft pastel palette with one accent\n"
-        "     color, generous negative space, 16:9 landscape composition.'\n"
-        "     This text will be saved verbatim and later sent to an\n"
-        "     image-generation model.\n"
-        "  6. The narrative should genuinely teach: hook a question, set up\n"
-        "     the problem, walk through real reasoning, deliver an answer\n"
-        "     that actually answers the topic, and end with a takeaway the\n"
-        "     viewer can repeat in one sentence.\n"
-        "  7. Also produce a Chinese paragraph (`overview_cn`) of 4–7\n"
-        "     sentences. Write it as flowing prose (no bullet list, no\n"
-        "     numbered headings). It should describe what this short video\n"
-        "     teaches, the puzzle / question, the key insight, the answer,\n"
-        "     and what each part of the video shows. Use the user's original\n"
-        "     Chinese phrasing where possible. Do NOT mention TTS, Pillow,\n"
-        "     FFmpeg, slides, providers, or any technical implementation.\n"
-        "  8. Output a SINGLE JSON object, no markdown fence, no commentary.\n"
+        "  1. ALL English text fields must be in ENGLISH even if the topic\n"
+        "     is Chinese. The image generator ships English fonts only.\n"
+        "  2. The narrative MUST directly address the user's topic. Never\n"
+        "     produce generic 'Simpson paradox' or 'rainbow' filler. If the\n"
+        "     topic is about prime numbers, the slides talk about prime\n"
+        "     numbers.\n"
+        "  3. Each slide title <= 7 words. caption <= 16 words. highlight\n"
+        "     <= 8 words. visual_focus <= 14 words.\n"
+        "  4. visual_focus describes ONE concrete object the picture should\n"
+        "     emphasize — e.g. 'two coins side by side', 'a bar of height 7',\n"
+        "     'three dice with faces 1, 2, 3'. Keep it concrete.\n"
+        "  5. art_direction is a SHARED 60–100 word description that EVERY\n"
+        "     slide will reuse to keep the video visually consistent. It\n"
+        "     must specify, for THIS topic:\n"
+        "       a) Paper-craft medium reminder (cut-paper / layered torn\n"
+        "          paper / soft shadows / hand-cut edges).\n"
+        "       b) Background texture and color you have CHOSEN for this\n"
+        "          topic — be specific (e.g. 'aged cream parchment paper\n"
+        "          with subtle fiber texture' / 'deep navy starfield paper'\n"
+        "          / 'pale sky-blue paper with faint grid'). Do NOT say\n"
+        "          'either A or B' — pick one.\n"
+        "       c) Palette of 3–5 specific colors with hex codes you've\n"
+        "          chosen for THIS topic.\n"
+        "       d) Mood / lighting (e.g. 'cautionary, low-key' /\n"
+        "          'cheerful, bright' / 'mysterious, low-contrast').\n"
+        "       e) The composition rules that apply to every slide:\n"
+        "          single centered subject ≈60%% of frame, generous\n"
+        "          negative space, no text bands, no badges, no progress\n"
+        "          counters, no Chinese characters, English text only,\n"
+        "          rendered as paper-cut lettering integrated into the\n"
+        "          artwork, 16:9 landscape.\n"
+        "  6. image_prompt for each slide MUST start with the literal\n"
+        "     string '<USE ART_DIRECTION>' (5 words including angle\n"
+        "     brackets) — the pipeline will replace that token with the\n"
+        "     shared art_direction text before sending to gpt-image-2.\n"
+        "     After that token, describe in 50–90 words THIS slide's\n"
+        "     specific subject: what paper-cut object/scene appears, how\n"
+        "     it's positioned, and the exact English on-screen text the\n"
+        "     image must render as part of the paper-cut composition\n"
+        "     (e.g. 'Bold chunky paper-cut English title \\\"WHY DOES IT\n"
+        "     REPEAT?\\\" sits across the upper third'). Do NOT repeat the\n"
+        "     palette / background / mood here — those live in\n"
+        "     art_direction. Just the slide-specific scene + text.\n"
+        "  7. The narrative should genuinely teach: hook a question, set\n"
+        "     up the problem, walk through real reasoning, deliver an\n"
+        "     answer, end with a takeaway.\n"
+        "  8. Also produce a Chinese paragraph (`overview_cn`) of 4–7\n"
+        "     sentences in flowing prose (no bullets, no headings). It\n"
+        "     describes what this short video teaches: the puzzle /\n"
+        "     question, the key insight, the answer, what each part shows.\n"
+        "     Use the user's original Chinese phrasing where possible.\n"
+        "     Do NOT mention TTS, Pillow, FFmpeg, slides, providers, or\n"
+        "     any technical implementation detail.\n"
+        "  9. Output a SINGLE JSON object — no markdown fence, no prose\n"
+        "     outside the JSON.\n"
         "\n"
         "Schema:\n"
         "{\n"
@@ -328,6 +392,7 @@ def _build_llm_user_prompt(
         "  \"hook_question_en\": string (<= 18 words, English),\n"
         "  \"answer_en\": string (<= 22 words, the actual answer),\n"
         "  \"overview_cn\": string (Chinese paragraph, 4-7 sentences),\n"
+        "  \"art_direction\": string (60-100 words, shared by all slides),\n"
         "  \"slides\": [\n"
         "    { \"index\": 1,\n"
         "      \"role\": \"hook\",\n"
@@ -495,6 +560,14 @@ def _parse_llm_slide_response(
     slides = data.get("slides")
     if not isinstance(slides, list) or len(slides) != slide_count:
         return None
+
+    # v0.6.4.1 — pull the LLM-chosen art_direction (palette / background /
+    # mood for THIS topic) and splice it into every slide's image_prompt
+    # by replacing the literal '<USE ART_DIRECTION>' token. If the token
+    # is missing (e.g. the model forgot), prepend the art_direction
+    # automatically so we still get a topic-consistent visual world.
+    art_direction = str(data.get("art_direction") or "").strip()[:1200]
+
     cleaned_slides: List[Dict[str, Any]] = []
     for i, item in enumerate(slides):
         if not isinstance(item, dict):
@@ -504,9 +577,24 @@ def _parse_llm_slide_response(
         highlight = str(item.get("highlight") or "").strip()
         visual_focus = str(item.get("visual_focus") or "").strip()
         badge = str(item.get("badge") or "").strip()
-        image_prompt = str(item.get("image_prompt") or "").strip()
+        image_prompt_raw = str(item.get("image_prompt") or "").strip()
         if not title or not caption:
             return None
+
+        # Splice art_direction into image_prompt. The pipeline sends
+        # `image_prompt_resolved` (after splicing) to gpt-image-2; we keep
+        # both raw + resolved so the Raw Text tab shows the operator
+        # exactly what was sent.
+        if art_direction:
+            if "<USE ART_DIRECTION>" in image_prompt_raw:
+                image_prompt_resolved = image_prompt_raw.replace(
+                    "<USE ART_DIRECTION>", art_direction, 1,
+                )
+            else:
+                image_prompt_resolved = f"{art_direction}\n\n{image_prompt_raw}"
+        else:
+            image_prompt_resolved = image_prompt_raw
+
         cleaned_slides.append({
             "index": i + 1,
             "role": roles[i] if i < len(roles) else "explanation",
@@ -515,7 +603,8 @@ def _parse_llm_slide_response(
             "highlight": (highlight or title)[:60],
             "visual_focus": visual_focus[:140],
             "badge": (badge or roles[i].title())[:24],
-            "image_prompt": image_prompt[:1200],
+            "image_prompt_template": image_prompt_raw[:1500],
+            "image_prompt": image_prompt_resolved[:2400],
         })
     overview_cn = str(data.get("overview_cn") or "").strip()
     return {
@@ -523,6 +612,7 @@ def _parse_llm_slide_response(
         "hook_question_en": str(data.get("hook_question_en") or "").strip()[:160],
         "answer_en": str(data.get("answer_en") or "").strip()[:200],
         "overview_cn": overview_cn,
+        "art_direction": art_direction,
         "slides": cleaned_slides,
     }
 
@@ -1155,8 +1245,110 @@ def _load_unicode_font(size: int, bold: bool = False) -> Any:
     return _load_font(size, bold=bold)
 
 
+def _resize_to_canvas(src_image: "Image.Image") -> "Image.Image":
+    """Fit ``src_image`` into a 1920×1080 RGB canvas, preserving aspect ratio.
+
+    The image2 endpoint may return e.g. 1792×1024 (close to 16:9 but not
+    exact) or even 1254×1254 (square). We center-crop after a proportional
+    resize so the final frame always fills 1920×1080 without letterboxing.
+    """
+    if src_image.mode != "RGB":
+        src_image = src_image.convert("RGB")
+    sw, sh = src_image.size
+    if sw <= 0 or sh <= 0:
+        return Image.new("RGB", (RESOLUTION_W, RESOLUTION_H), COLOR_BG)
+    target_ratio = RESOLUTION_W / RESOLUTION_H
+    src_ratio = sw / sh
+    if abs(src_ratio - target_ratio) < 0.01:
+        return src_image.resize((RESOLUTION_W, RESOLUTION_H), Image.LANCZOS)
+    if src_ratio > target_ratio:
+        # Source is wider — scale by height, crop width
+        new_h = RESOLUTION_H
+        new_w = int(round(sw * (RESOLUTION_H / sh)))
+        resized = src_image.resize((new_w, new_h), Image.LANCZOS)
+        x0 = (new_w - RESOLUTION_W) // 2
+        return resized.crop((x0, 0, x0 + RESOLUTION_W, RESOLUTION_H))
+    # Source is taller — scale by width, crop height
+    new_w = RESOLUTION_W
+    new_h = int(round(sh * (RESOLUTION_W / sw)))
+    resized = src_image.resize((new_w, new_h), Image.LANCZOS)
+    y0 = (new_h - RESOLUTION_H) // 2
+    return resized.crop((0, y0, RESOLUTION_W, y0 + RESOLUTION_H))
+
+
+def _draw_text_band_over_background(
+    image: "Image.Image", title: str, caption: str,
+    title_y: int = 320, max_title_lines: int = 2, max_caption_lines: int = 2,
+) -> int:
+    """Draw a translucent band + title/caption on top of an image2 background.
+
+    The band keeps the text legible regardless of what colors the image
+    model picked. Returns the y coordinate just below the caption so
+    callers can stack additional content underneath if they want.
+    """
+    draw = ImageDraw.Draw(image, "RGBA")
+    title_font, title_lines = _fit_title_font(
+        draw, title, RESOLUTION_W - 280, max_title_lines,
+    )
+    line_h = title_font.size + 20
+    title_block_h = len(title_lines) * line_h + 26
+    caption_lines: List[str] = []
+    caption_font = None
+    cap_line_h = 0
+    if caption:
+        caption_font, caption_lines = _fit_caption_font(
+            draw, caption, RESOLUTION_W - 360, max_caption_lines,
+        )
+        cap_line_h = caption_font.size + 14
+    band_h = title_block_h + (len(caption_lines) * cap_line_h) + 40
+    band_y0 = max(0, title_y - 40)
+    band_y1 = min(RESOLUTION_H, band_y0 + band_h)
+    draw.rectangle(
+        (0, band_y0, RESOLUTION_W, band_y1),
+        fill=(255, 255, 255, 200),
+    )
+    for i, line in enumerate(title_lines):
+        w, _ = _measure(draw, line, title_font)
+        draw.text(((RESOLUTION_W - w) // 2, title_y + i * line_h),
+                  line, fill=COLOR_INK, font=title_font)
+    caption_y = title_y + len(title_lines) * line_h + 26
+    if caption_font and caption_lines:
+        for i, line in enumerate(caption_lines):
+            w, _ = _measure(draw, line, caption_font)
+            draw.text(((RESOLUTION_W - w) // 2, caption_y + i * cap_line_h),
+                      line, fill=COLOR_MUTED, font=caption_font)
+        return caption_y + len(caption_lines) * cap_line_h
+    return caption_y
+
+
 def _render_slide(slide: Dict[str, Any], overlay: Dict[str, Any],
-                  subject: str, total: int, output_path: Path) -> None:
+                  subject: str, total: int, output_path: Path,
+                  background: Optional["Image.Image"] = None) -> None:
+    """Render one slide to a PNG.
+
+    v0.6.4.1 — when ``background`` is provided (image2 succeeded for this
+    slide), we use the image **as-is**: resize to 1920×1080 and save. No
+    text band, no badge pill, no progress counter, no Chinese subject
+    footer. The image2 prompt itself instructs gpt-image-2 to render any
+    on-screen English title/caption as part of the paper-cut composition,
+    matching the NotebookLM video-overview look.
+
+    When ``background`` is None (image2 disabled / failed for this slide),
+    we still fall back to the original Pillow path: blank canvas +
+    role-specific diagram + centered title/caption + chrome. The chrome
+    is only drawn on the Pillow fallback path so the user can tell which
+    slides came from image2 and which were generated locally.
+    """
+    if background is not None:
+        image = _resize_to_canvas(background)
+        # No Pillow overlays on image2 output. The image already contains
+        # the on-screen text it needs.
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(str(output_path), format="PNG", optimize=True)
+        return
+
+    # Pillow fallback path — keeps the v0.6.3 chrome so the operator can
+    # see at a glance that this slide was NOT produced by image2.
     image = Image.new("RGB", (RESOLUTION_W, RESOLUTION_H), COLOR_BG)
     renderer = _RENDERERS.get(slide["role"], _render_explanation)
     enriched = dict(slide)
@@ -1174,6 +1366,177 @@ def _render_slide(slide: Dict[str, Any], overlay: Dict[str, Any],
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(str(output_path), format="PNG", optimize=True)
+
+
+# -------------------- Image2 background generation (v0.6.4) --------------------
+#
+# When APX_IMAGE2_ENABLED=true, every slide gets a topic-specific real image
+# (gpt-image-2) as its background. The LLM-written title/caption are still
+# drawn locally with Pillow on top of a translucent band so the on-screen
+# text stays correct regardless of how the image model handled type. Each
+# slide is generated independently in a thread pool — a single slide
+# failing falls back to the v0.6.3 Pillow renderer for that slide only.
+
+
+def _image2_disabled_by_env() -> bool:
+    """Smoke / offline kill switch."""
+    flag = (os.getenv("IMAGE_VIDEO_DISABLE_IMAGE2") or "").strip().lower()
+    return flag in ("1", "true", "yes", "on")
+
+
+def _generate_image2_backgrounds(
+    slide_plan: Dict[str, Any],
+    image_video_dir: Path,
+    progress_cb: Optional[Any] = None,
+) -> Tuple[Dict[int, "Image.Image"], Dict[str, Any]]:
+    """Run gpt-image-2 for every slide concurrently. Returns
+    ``(per_slide_image_map, debug)``.
+
+    ``per_slide_image_map`` is keyed by slide index. Slides whose call
+    failed are simply absent from the map; the caller falls back to the
+    Pillow-only renderer for those.
+
+    The function is allowed to return an empty map (image2 disabled, no
+    provider configured, or all calls failed). It NEVER raises.
+    """
+    debug: Dict[str, Any] = {
+        "called": False,
+        "disabled_by_env": False,
+        "provider_configured": False,
+        "skipped_reason": None,
+        "requested": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "per_slide": [],
+        "concurrency": 1,
+    }
+
+    def _emit(stage_key: str, status: str, message: str = "") -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(stage_key, status, message)
+        except Exception:
+            pass
+
+    if _image2_disabled_by_env():
+        debug["disabled_by_env"] = True
+        debug["skipped_reason"] = "IMAGE_VIDEO_DISABLE_IMAGE2 enabled"
+        _emit("generate_slide_images", "done",
+              "Skipped — IMAGE_VIDEO_DISABLE_IMAGE2 set; using local Pillow only.")
+        return {}, debug
+
+    try:
+        from web.image_providers.apx_image2_provider import ApxImage2Provider
+    except Exception as exc:
+        debug["skipped_reason"] = f"provider import failed: {exc}"
+        _emit("generate_slide_images", "done",
+              f"Skipped — provider import failed ({exc}); Pillow only.")
+        return {}, debug
+
+    provider = ApxImage2Provider()
+    debug["provider_configured"] = provider.is_configured()
+    if not provider.is_configured():
+        debug["skipped_reason"] = (
+            "APX_IMAGE2_ENABLED + APX_IMAGE2_API_KEY not set; using local Pillow only."
+        )
+        _emit("generate_slide_images", "done",
+              "Skipped — APX_IMAGE2_* not configured; Pillow only.")
+        return {}, debug
+
+    slides = slide_plan.get("slides") or []
+    if not slides:
+        debug["skipped_reason"] = "slide_plan empty"
+        _emit("generate_slide_images", "done", "No slides to render.")
+        return {}, debug
+
+    try:
+        concurrency = int(os.getenv("APX_IMAGE2_CONCURRENCY", "4"))
+    except Exception:
+        concurrency = 4
+    concurrency = max(1, min(concurrency, len(slides)))
+    debug["concurrency"] = concurrency
+    debug["called"] = True
+    debug["requested"] = len(slides)
+
+    _emit("generate_slide_images", "running",
+          f"Calling gpt-image-2 for {len(slides)} slides "
+          f"(concurrency={concurrency}, size={provider.default_size}, "
+          f"quality={provider.default_quality})...")
+
+    backgrounds_dir = image_video_dir / "image2_backgrounds"
+    backgrounds_dir.mkdir(parents=True, exist_ok=True)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from .image_providers.base import ImageProviderError
+
+    def _one(slide: Dict[str, Any]) -> Tuple[int, Optional[bytes], Dict[str, Any]]:
+        idx = int(slide.get("index") or 0)
+        prompt = (slide.get("image_prompt") or "").strip()
+        if not prompt:
+            # Build a fallback image_prompt out of title/caption/visual_focus.
+            bits = [
+                slide.get("title") or "",
+                slide.get("caption") or "",
+                slide.get("visual_focus") or "",
+            ]
+            prompt = ". ".join(b for b in bits if b)
+        if not prompt:
+            return idx, None, {
+                "index": idx, "ok": False,
+                "error": "no image_prompt available",
+            }
+        try:
+            rendered = provider.generate(prompt)
+            return idx, rendered.png_bytes, {
+                "index": idx, "ok": True,
+                "width": rendered.width, "height": rendered.height,
+                "bytes": len(rendered.png_bytes),
+            }
+        except ImageProviderError as exc:
+            return idx, None, {"index": idx, "ok": False, "error": str(exc)}
+        except Exception as exc:
+            return idx, None, {
+                "index": idx, "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    images: Dict[int, "Image.Image"] = {}
+    per_slide_debug: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futures = [ex.submit(_one, s) for s in slides]
+        for fut in as_completed(futures):
+            idx, png_bytes, info = fut.result()
+            per_slide_debug.append(info)
+            if not png_bytes:
+                debug["failed"] += 1
+                continue
+            try:
+                from io import BytesIO
+                img = Image.open(BytesIO(png_bytes))
+                img.load()
+                images[idx] = img
+                debug["succeeded"] += 1
+                # Persist the raw image2 PNG for transparency / debugging.
+                try:
+                    (backgrounds_dir / f"slide_{idx:02d}_image2.png").write_bytes(png_bytes)
+                except Exception:
+                    pass
+            except Exception as exc:
+                debug["failed"] += 1
+                info["ok"] = False
+                info["error"] = (
+                    f"PNG decode failed: {type(exc).__name__}: {exc}"
+                )
+
+    per_slide_debug.sort(key=lambda d: d.get("index") or 0)
+    debug["per_slide"] = per_slide_debug
+
+    _emit("generate_slide_images", "done",
+          f"image2 returned {debug['succeeded']}/{debug['requested']} slides "
+          f"(failed={debug['failed']}; failures fall back to Pillow per slide).")
+
+    return images, debug
 
 
 # -------------------- FFmpeg discovery + composition --------------------
@@ -1464,18 +1827,43 @@ def generate_image_video_package(
 
     subject = slide_plan["subject"]
     chrome_label = title_clean if _is_chinese(title_clean) else subject
+
+    # v0.6.4 — call gpt-image-2 for every slide concurrently (before the
+    # Pillow render loop). Single-slide failures fall back to the Pillow
+    # path automatically. Returns an empty dict when image2 is disabled
+    # or the provider isn't configured.
+    image2_backgrounds, image2_debug = _generate_image2_backgrounds(
+        slide_plan=slide_plan,
+        image_video_dir=image_video_dir,
+        progress_cb=progress_cb,
+    )
+    image2_debug_path = image_video_dir / "image2_debug.json"
+    try:
+        image2_debug_path.write_text(
+            json.dumps(image2_debug, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
     slide_paths: List[Path] = []
-    _emit("render_slide_images", "running",
-          f"Rendering {slide_count} slide PNGs with Pillow...")
+    image_sources: List[str] = []
+    _emit("render_slide_overlays", "running",
+          "Drawing on-screen titles and captions on each slide...")
     try:
         for slide, overlay in zip(slide_plan["slides"], overlay_plan["slides"]):
             slide_path = slides_dir / f"slide_{slide['index']:02d}.png"
-            _render_slide(slide, overlay, chrome_label, slide_count, slide_path)
+            background = image2_backgrounds.get(int(slide.get("index") or 0))
+            _render_slide(slide, overlay, chrome_label, slide_count,
+                          slide_path, background=background)
             slide_paths.append(slide_path)
-        _emit("render_slide_images", "done",
-              f"{slide_count} slide PNGs ready.")
+            image_sources.append("image2" if background is not None else "pillow_fallback")
+        _emit("render_slide_overlays", "done",
+              f"{slide_count} slide PNGs ready "
+              f"(image2 backgrounds: {sum(1 for s in image_sources if s=='image2')}, "
+              f"pillow fallbacks: {sum(1 for s in image_sources if s!='image2')}).")
     except Exception as exc:
-        _emit("render_slide_images", "failed", f"Pillow render failed: {exc}")
+        _emit("render_slide_overlays", "failed", f"Pillow overlay failed: {exc}")
         return {
             "generation_method": "image_video",
             "route_status": "failed",
@@ -1487,11 +1875,18 @@ def generate_image_video_package(
             "final_video_path": None,
             "error": f"Failed to render slides with Pillow: {exc}",
             "content_llm_called": bool(llm_debug.get("called")),
-            "media_api_called": False,
-            "external_api_called": bool(llm_debug.get("called")),
+            "media_api_called": bool(image2_debug.get("called")),
+            "external_api_called": bool(
+                llm_debug.get("called") or image2_debug.get("called")
+            ),
             "seedance_called": False,
             "apx_called": False,
-            "image2_called": False,
+            "image2_called": bool(image2_debug.get("called")),
+            "image2_succeeded": int(image2_debug.get("succeeded") or 0),
+            "image2_failed": int(image2_debug.get("failed") or 0),
+            "image2_requested": int(image2_debug.get("requested") or 0),
+            "image2_disabled_by_env": bool(image2_debug.get("disabled_by_env")),
+            "image2_skipped_reason": image2_debug.get("skipped_reason"),
             "tts_called": False,
             "has_audio": False,
             "tts_status": "not_implemented_v0.6.3",
@@ -1578,11 +1973,18 @@ def generate_image_video_package(
             "final_video_path": None,
             "error": msg,
             "content_llm_called": bool(llm_debug.get("called")),
-            "media_api_called": False,
-            "external_api_called": bool(llm_debug.get("called")),
+            "media_api_called": bool(image2_debug.get("called")),
+            "external_api_called": bool(
+                llm_debug.get("called") or image2_debug.get("called")
+            ),
             "seedance_called": False,
             "apx_called": False,
-            "image2_called": False,
+            "image2_called": bool(image2_debug.get("called")),
+            "image2_succeeded": int(image2_debug.get("succeeded") or 0),
+            "image2_failed": int(image2_debug.get("failed") or 0),
+            "image2_requested": int(image2_debug.get("requested") or 0),
+            "image2_disabled_by_env": bool(image2_debug.get("disabled_by_env")),
+            "image2_skipped_reason": image2_debug.get("skipped_reason"),
             "tts_called": False,
             "has_audio": False,
             "tts_status": "not_implemented_v0.6.3",
@@ -1620,22 +2022,33 @@ def generate_image_video_package(
         "ffmpeg_found": True,
         "ffmpeg_path": ffmpeg_bin,
         "ffmpeg_diagnostics": ffmpeg_diagnostics,
-        # v0.6.3 stabilization: distinguish content LLM (text) from media
-        # API calls (Image2 / Seedance / TTS / APX). Image Video v0.6.3 may
-        # call AI_VIDEO_LLM_* for slide text, but never any media provider.
+        # v0.6.3 stabilization + v0.6.4: distinguish content LLM from media
+        # generation. media_api_called flips to true ONLY when image2 was
+        # actually contacted; per-slide image2 success/failure is in the
+        # numeric counters and image2_per_slide debug list.
         "content_llm_called": bool(llm_debug.get("called")),
-        "media_api_called": False,
-        # `external_api_called` is preserved for backwards compatibility but
-        # now means "any external network call was made" (LLM included).
-        "external_api_called": bool(llm_debug.get("called")),
+        "media_api_called": bool(image2_debug.get("called")),
+        "external_api_called": bool(
+            llm_debug.get("called") or image2_debug.get("called")
+        ),
         "seedance_called": False,
         "apx_called": False,
-        "image2_called": False,
+        "image2_called": bool(image2_debug.get("called")),
+        "image2_succeeded": int(image2_debug.get("succeeded") or 0),
+        "image2_failed": int(image2_debug.get("failed") or 0),
+        "image2_requested": int(image2_debug.get("requested") or 0),
+        "image2_disabled_by_env": bool(image2_debug.get("disabled_by_env")),
+        "image2_skipped_reason": image2_debug.get("skipped_reason"),
+        "image2_debug_path": str(image2_debug_path),
+        "image_sources": image_sources,
         "tts_called": False,
         "has_audio": False,
         "tts_status": "not_implemented_v0.6.3",
         "voiceover_source": "none",
-        "image_source": "local_static_renderer",
+        "image_source": (
+            "image2" if (image2_debug.get("succeeded") or 0) > 0
+            else "local_static_renderer"
+        ),
         "video_composer": "ffmpeg",
         "content_source": "llm" if llm_content else "static_template",
         "llm_used": bool(llm_content),

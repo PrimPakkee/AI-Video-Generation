@@ -238,11 +238,10 @@ body {
 }
 
 .topics-title {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 400;
     color: var(--text-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    line-height: 1;
 }
 
 .topics-actions {
@@ -294,13 +293,43 @@ body {
 }
 
 .topics-back-btn {
-    width: auto;
-    height: 20px;
-    padding: 0 6px;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--text-tertiary);
-    border-radius: 4px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.topics-back-btn:hover {
+    background: var(--hover-light);
+    color: var(--text-main);
+    border-color: var(--text-secondary);
+}
+
+.topics-back-btn:active {
+    transform: scale(0.94);
+}
+
+.topics-back-btn svg {
+    display: block;
+}
+
+.dark-theme .topics-back-btn {
+    border-color: var(--border-color);
+    color: var(--text-secondary);
+}
+
+.dark-theme .topics-back-btn:hover {
+    background: var(--hover-bg);
+    color: var(--text-main);
+    border-color: var(--text-secondary);
 }
 
 .topics-list {
@@ -3428,4 +3457,140 @@ body.dark-mode .web-copy-empty-state {
     font-size: 12px;
     line-height: 1.55;
     white-space: pre-wrap;
+}
+
+/* ==========================================================================
+ * v0.6.4 — Settings header (lang toggle + close), Diagnostics panel,
+ * action button styles. Scoped to #settingsModal so the rest of the app
+ * is untouched.
+ * ========================================================================== */
+
+/* v0.6.4 — right pane is a column flex: fixed header + scrolling body. */
+#settingsModal .settings-content {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0;
+}
+
+#settingsModal .settings-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 24px 32px 32px;
+}
+
+#settingsModal .settings-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 24px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border-color);
+}
+
+#settingsModal .settings-header-title {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-main);
+    line-height: 1.2;
+}
+
+#settingsModal .settings-header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* The per-panel <h3> still lives in the markup so i18n keys are intact,
+   but we hide it visually because the sticky header now shows the title. */
+#settingsModal .settings-panel > .panel-title {
+    display: none;
+}
+
+.settings-lang-toggle {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 2px;
+    background: var(--bg-elevated);
+}
+
+.settings-lang-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background-color 0.15s, color 0.15s;
+    min-width: 32px;
+}
+
+.settings-lang-btn:hover {
+    color: var(--text-main);
+}
+
+.settings-lang-btn.active {
+    background: var(--btn-primary);
+    color: var(--btn-primary-text);
+}
+
+#settingsModal .settings-close {
+    position: static;
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
+}
+
+#settingsModal .settings-content > .settings-panel {
+    padding: 24px 32px 32px;
+}
+
+.settings-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-card);
+    color: var(--text-main);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s;
+}
+
+.settings-action-btn:hover {
+    background: var(--hover-light);
+    border-color: var(--text-secondary);
+}
+
+.dark-theme .settings-action-btn:hover {
+    background: var(--hover-bg);
+}
+
+/* Diagnostics value colors */
+.info-value-display.diag-ok {
+    color: #15803d;
+}
+
+.info-value-display.diag-error {
+    color: #b91c1c;
+}
+
+.dark-theme .info-value-display.diag-ok {
+    color: #6ee7b7;
+}
+
+.dark-theme .info-value-display.diag-error {
+    color: #fca5a5;
 }

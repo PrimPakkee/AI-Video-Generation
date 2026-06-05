@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 """
-Offline smoke test for the v0.6.3 Image Video pipeline.
+Offline smoke test for the Image Video pipeline (v0.6.3 + v0.6.4).
 
 Default behaviour (no flags):
     - 100% local, no network. Sets ``IMAGE_VIDEO_DISABLE_LLM=1`` so the
-      pipeline never reaches out to AI_VIDEO_LLM_*. Static slide template
-      is used. NEVER calls APX, Seedance, Image2, or TTS.
+      pipeline never reaches out to AI_VIDEO_LLM_*, and
+      ``IMAGE_VIDEO_DISABLE_IMAGE2=1`` so it never calls gpt-image-2.
+      NEVER calls APX, Seedance, TTS.
     - Runs durations 5s / 15s / 30s.
 
 Flags:
-    --with-llm   Allow the pipeline to call AI_VIDEO_LLM_* (gpt-5-chat by
-                 default). Use only when explicitly testing LLM content.
-    --full       Add 60s and 90s to the duration set.
+    --with-llm     Allow AI_VIDEO_LLM_* (gpt-5-chat) calls.
+    --with-image2  Allow gpt-image-2 calls (paid; one call per slide).
+    --full         Add 60s and 90s to the duration set.
 
 Examples:
     python3 scripts/smoke_image_video_pipeline.py
     python3 scripts/smoke_image_video_pipeline.py --full
-    python3 scripts/smoke_image_video_pipeline.py --with-llm --full
+    python3 scripts/smoke_image_video_pipeline.py --with-llm
+    python3 scripts/smoke_image_video_pipeline.py --with-llm --with-image2
 """
 
 from __future__ import annotations
@@ -140,16 +142,24 @@ def main() -> int:
         help="Allow the pipeline to call AI_VIDEO_LLM_* (default: disabled).",
     )
     parser.add_argument(
+        "--with-image2", action="store_true",
+        help="Allow gpt-image-2 calls (default: disabled — paid endpoint).",
+    )
+    parser.add_argument(
         "--full", action="store_true",
         help="Add 60s and 90s durations (default: 5/15/30s only).",
     )
     args = parser.parse_args()
 
-    offline_mode = not args.with_llm
-    if offline_mode:
+    offline_mode = not (args.with_llm or args.with_image2)
+    if args.with_llm:
+        os.environ.pop("IMAGE_VIDEO_DISABLE_LLM", None)
+    else:
         os.environ["IMAGE_VIDEO_DISABLE_LLM"] = "1"
-    elif "IMAGE_VIDEO_DISABLE_LLM" in os.environ:
-        del os.environ["IMAGE_VIDEO_DISABLE_LLM"]
+    if args.with_image2:
+        os.environ.pop("IMAGE_VIDEO_DISABLE_IMAGE2", None)
+    else:
+        os.environ["IMAGE_VIDEO_DISABLE_IMAGE2"] = "1"
 
     # Import after env is set so the pipeline reads the flag correctly.
     from web.image_video_pipeline import (  # noqa: E402
@@ -163,6 +173,7 @@ def main() -> int:
     print(f"[smoke] Image Video pipeline smoke test")
     print(f"[smoke] offline_mode = {offline_mode}")
     print(f"[smoke] with_llm     = {args.with_llm}")
+    print(f"[smoke] with_image2  = {args.with_image2}")
     print(f"[smoke] ffmpeg       = {ffmpeg_path or '(not found)'}")
     print(f"[smoke] outputs      = {SMOKE_OUTPUT_ROOT}")
     print()
@@ -206,14 +217,16 @@ def main() -> int:
             overall_failures.append(f"{report['duration']}s: {line}")
             print(f"     - {line}")
 
-        # Offline mode invariant: never call the LLM, never call any media API.
-        if offline_mode and report["content_llm_called"]:
+        # Default smoke is fully offline. Each flag opt-in flips a single
+        # invariant: --with-llm allows content_llm_called, --with-image2
+        # allows media_api_called.
+        if not args.with_llm and report["content_llm_called"]:
             overall_failures.append(
-                f"{report['duration']}s: offline mode but content_llm_called=True"
+                f"{report['duration']}s: --with-llm not set but content_llm_called=True"
             )
-        if report["media_api_called"]:
+        if not args.with_image2 and report["media_api_called"]:
             overall_failures.append(
-                f"{report['duration']}s: media_api_called must always be False"
+                f"{report['duration']}s: --with-image2 not set but media_api_called=True"
             )
 
     print()

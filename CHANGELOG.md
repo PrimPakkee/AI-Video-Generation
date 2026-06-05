@@ -2,6 +2,49 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.6.4 - Image2 接入（gpt-image-2 真实图像生成）
+
+> v0.6.4 把 Image Video 路线从纯 Pillow 几何图升级成 gpt-image-2 真实图像生成 +
+> Pillow 文字叠加。每张 slide 的英文 image_prompt 真发到公司 OpenAI-compatible
+> 网关的 `images/generations` endpoint，PNG 作底图，title/caption/badge 仍由
+> Pillow 干净叠加（防图像模型乱写字）。本版本仍**不**调用 Seedance / APX video /
+> TTS，**不**修改 .env。详见
+> [`docs/v0.6.4_image2_integration.md`](docs/v0.6.4_image2_integration.md)。
+
+### 新增
+- `web/image_providers/__init__.py` / `base.py`：`ImageProvider` 抽象 + `RenderedImage`
+  dataclass + `ImageProviderError`。base 模块本身不 import requests。
+- `web/image_providers/apx_image2_provider.py`：v0.6.4 中**唯一允许真发网络**的文件。
+  `requests` lazy import，header 探测真实 PNG width/height，base64 解码，按 v0.6.0
+  Seedance provider 的 hygiene 标准 — API key 不入库、不写文件、不返回前端。
+- `IMAGE_VIDEO_RUN_STAGES` 新增 `generate_slide_images` 阶段（位于 `write_slide_content`
+  之后、`render_slide_overlays` 之前），真实计时。
+- Generation Evidence 面板新增 `Image2 called` / `Image2 success / total` 行。
+- `IMAGE_VIDEO_DISABLE_IMAGE2=1` 短路（smoke 默认开），`--with-image2` smoke flag。
+- `scripts/run_stability_checks.py` v0.6.4 升级 + 新增 `check_v064_image2_integration`：
+  lazy import / 不 top-level import requests / env 引用 / 阶段名 / evidence 字段
+  全套静态校验。
+- 新增 `docs/v0.6.4_image2_integration.md`。
+
+### 行为
+- 单张 image2 失败 fallback 到 Pillow 几何图（per-slide 粒度，整段视频不崩）。
+- pipeline 使用 `ThreadPoolExecutor`（默认 concurrency=4，可由 `APX_IMAGE2_CONCURRENCY`
+  调）。20 张 slide 大约 5 分钟（vs 串行 20 分钟）。
+- image2 PNG（默认 1792×1024）通过 `_resize_to_canvas` 比例放大 + 中心裁切到
+  1920×1080；Pillow 在底图上画半透明白带 + title/caption + badge + 进度脚标。
+- `media_api_called` 现在会因 image2 真发翻 true（之前 v0.6.3 永远 false）；
+  `network_call_performed` = `image2 真发 OR LLM 真发`；`llm_network_call_performed`
+  保持 LLM-only 子集。
+- `Stage 4`（`generate_slide_images`）的耗时反映真实 image2 等待时间。
+- 智能 Stage 重命名：原 `render_slide_images` → `render_slide_overlays`（更准确反映
+  现在这一步只是叠字而不是画几何图）。
+
+### 不做
+- 不调 Seedance / APX video / TTS / subtitle burn-in。
+- 不让 image2 自己写 on-screen 文字（仍由 Pillow 叠加，避免模型拼写错误）。
+- 不修改 .env（操作员自己加 APX_IMAGE2_* 4 行）。
+- 默认 smoke 仍纯本地（`IMAGE_VIDEO_DISABLE_LLM=1` + `IMAGE_VIDEO_DISABLE_IMAGE2=1`）。
+
 ## v0.6.3 - Static Image Video MVP + Generation Method Selector + Dark Mode Fix
 
 > v0.6.3 在保留 v0.6.2 Seedance Video 链路的同时，**新增**一条本地静态图合成视频

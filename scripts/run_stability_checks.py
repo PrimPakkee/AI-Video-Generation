@@ -9,7 +9,7 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.6.3"
+STABILITY_CHECKS_VERSION = "v0.6.4"
 
 import sys
 import os
@@ -4486,13 +4486,16 @@ class StabilityChecker:
         # project — that is allowed and explicitly NOT in the forbidden set.
         # The forbidden set is restricted to actual remote video / image /
         # speech provider surfaces.
+        # v0.6.4 — Image2 provider is now allowed (the pipeline integrates
+        # gpt-image-2 via lazy import). 'Image2Provider' is therefore
+        # removed from this v0.6.3 forbidden set; v0.6.4 has its own
+        # dedicated check enforcing lazy-import + env scoping for it.
         for forbidden in (
             "apx_seedance_provider",
             "seedance_prompt_compiler",
             "build_video_content_assets",
             "ApxSeedanceProvider",
             "import requests",
-            "Image2Provider",
             "TtsProvider",
             "TTSProvider",
         ):
@@ -4797,6 +4800,177 @@ class StabilityChecker:
             print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} stabilization checks failed")
             self.checks_failed += 1
 
+    def check_v064_image2_integration(self):
+        """v0.6.4 — gpt-image-2 image generation integration. The provider
+        is the only file allowed to import requests at the top level. The
+        pipeline imports the provider lazily, never breaks when image2 is
+        disabled, and surfaces media_api_called only when image2 actually
+        ran. Smoke is offline by default."""
+        print("\n" + "=" * 80)
+        print("v0.6.4 Image2 Integration")
+        print("=" * 80)
+
+        all_passed = True
+
+        def assert_true(cond, name, hint=""):
+            nonlocal all_passed
+            if cond:
+                print(f"  [OK] {name}")
+            else:
+                print(f"  [FAIL] {name}{(': ' + hint) if hint else ''}")
+                all_passed = False
+
+        # 1. image_providers package exists.
+        assert_true(
+            Path("web/image_providers/__init__.py").exists(),
+            "web/image_providers/__init__.py exists",
+        )
+        assert_true(
+            Path("web/image_providers/base.py").exists(),
+            "web/image_providers/base.py exists",
+        )
+        assert_true(
+            Path("web/image_providers/apx_image2_provider.py").exists(),
+            "web/image_providers/apx_image2_provider.py exists",
+        )
+
+        provider_src = Path(
+            "web/image_providers/apx_image2_provider.py"
+        ).read_text(encoding="utf-8")
+
+        # 2. Provider reads APX_IMAGE2_* env namespace.
+        for env in (
+            "APX_IMAGE2_API_KEY",
+            "APX_IMAGE2_BASE_URL",
+            "APX_IMAGE2_MODEL",
+            "APX_IMAGE2_ENABLED",
+        ):
+            assert_true(
+                env in provider_src,
+                f"apx_image2_provider references env var '{env}'",
+            )
+
+        # 3. Provider uses lazy `import requests` inside generate(), so the
+        # base package can still load without requests. Top-level import
+        # would defeat that. The check is a simple substring scan because
+        # ast-parsing the whole file is overkill for one rule.
+        toplevel_requests = any(
+            line.strip().startswith("import requests")
+            or line.strip().startswith("from requests ")
+            for line in provider_src.splitlines()
+            if not line.startswith(" ") and not line.startswith("\t")
+        )
+        assert_true(
+            not toplevel_requests,
+            "apx_image2_provider imports requests lazily (no top-level import)",
+        )
+
+        # 4. base.py must NOT import requests at all (it's the abstract
+        # interface — pipelines should be able to load it without network
+        # libraries). Single-line scan is enough.
+        base_src = Path("web/image_providers/base.py").read_text(encoding="utf-8")
+        assert_true(
+            "import requests" not in base_src,
+            "image_providers/base.py does not import requests",
+        )
+
+        # 5. Pipeline integration: image_video_pipeline owns the dispatch
+        # but the provider import is lazy + scoped.
+        pipeline_src = Path("web/image_video_pipeline.py").read_text(encoding="utf-8")
+        assert_true(
+            "_generate_image2_backgrounds" in pipeline_src,
+            "image_video_pipeline.py defines _generate_image2_backgrounds",
+        )
+        assert_true(
+            "ApxImage2Provider" in pipeline_src,
+            "image_video_pipeline.py references ApxImage2Provider (via lazy import)",
+        )
+        assert_true(
+            "from web.image_providers.apx_image2_provider import" in pipeline_src,
+            "ApxImage2Provider is imported lazily from inside a function",
+        )
+        # Top-level import of the provider would defeat the lazy-load
+        # guarantee — explicit check.
+        toplevel_provider_import = any(
+            line.strip().startswith(
+                "from web.image_providers.apx_image2_provider import"
+            ) or line.strip().startswith("from .image_providers.apx_image2_provider import")
+            for line in pipeline_src.splitlines()
+            if not line.startswith(" ") and not line.startswith("\t")
+        )
+        assert_true(
+            not toplevel_provider_import,
+            "image_video_pipeline.py does not import provider at module top level",
+        )
+
+        # 6. IMAGE_VIDEO_DISABLE_IMAGE2 kill switch.
+        assert_true(
+            "IMAGE_VIDEO_DISABLE_IMAGE2" in pipeline_src,
+            "image_video_pipeline honours IMAGE_VIDEO_DISABLE_IMAGE2",
+        )
+
+        # 7. Stage list: generate_slide_images + render_slide_overlays.
+        app_src = Path("web/app.py").read_text(encoding="utf-8")
+        assert_true(
+            '"generate_slide_images"' in app_src,
+            "IMAGE_VIDEO_RUN_STAGES includes generate_slide_images",
+        )
+        assert_true(
+            '"render_slide_overlays"' in app_src,
+            "IMAGE_VIDEO_RUN_STAGES includes render_slide_overlays",
+        )
+
+        # 8. media_api_called / image2_called flow through the response.
+        assert_true(
+            'pipeline_result.get("media_api_called")' in app_src,
+            "web/app.py forwards pipeline_result.media_api_called",
+        )
+        assert_true(
+            'pipeline_result.get("image2_called")' in app_src,
+            "web/app.py forwards pipeline_result.image2_called",
+        )
+        # network_call_performed must include image2 when media_api_called.
+        assert_true(
+            'pipeline_result.get("media_api_called")' in app_src
+            and 'or pipeline_result.get("content_llm_called")' in app_src,
+            "metadata.network_call_performed reflects (image2 OR llm)",
+        )
+
+        # 9. Smoke script supports --with-image2 and defaults to disabling it.
+        smoke_src = Path(
+            "scripts/smoke_image_video_pipeline.py"
+        ).read_text(encoding="utf-8")
+        assert_true(
+            '"--with-image2"' in smoke_src,
+            "smoke script accepts --with-image2 flag",
+        )
+        assert_true(
+            'os.environ["IMAGE_VIDEO_DISABLE_IMAGE2"] = "1"' in smoke_src,
+            "smoke script sets IMAGE_VIDEO_DISABLE_IMAGE2=1 by default",
+        )
+
+        # 10. Frontend evidence panel shows image2 stats.
+        html_src = Path("web/static/index.html").read_text(encoding="utf-8")
+        assert_true(
+            'data-evidence="image2_called"' in html_src
+            and 'data-evidence="image2_ratio"' in html_src,
+            "Generation Evidence panel exposes image2_called + image2_ratio",
+        )
+
+        # 11. v0.6.0+ Seedance / APX provider files are not touched by the
+        # image_providers package — keep media-generation surfaces separate.
+        assert_true(
+            "ApxSeedanceProvider" not in provider_src,
+            "apx_image2_provider does not depend on Seedance",
+        )
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} image2 integration checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} image2 integration checks failed")
+            self.checks_failed += 1
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -4897,6 +5071,7 @@ def main():
         checker.check_v062_prompt_quality_gate()
         checker.check_v063_image_video_mvp()
         checker.check_v063_stabilization()
+        checker.check_v064_image2_integration()
         checker.check_git_status_hygiene()
         checker.check_database_integrity()
     except Exception as e:

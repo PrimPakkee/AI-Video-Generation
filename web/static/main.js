@@ -2090,11 +2090,20 @@ function renderGenerationEvidencePanel(record, payload) {
         }
     };
     set('route', 'image_video');
-    set('media_api_called', false);
+    set('media_api_called', !!(evidence.media_api_called || meta.media_api_called));
     set('content_llm_called', !!(evidence.content_llm_called || meta.content_llm_called));
     set('seedance_called', false);
     set('apx_called', false);
-    set('image2_called', false);
+    set('image2_called', !!(evidence.image2_called || meta.image2_called));
+    const i2_succ = (evidence.image2_succeeded != null
+        ? evidence.image2_succeeded : meta.image2_succeeded);
+    const i2_req = (evidence.image2_requested != null
+        ? evidence.image2_requested : meta.image2_requested);
+    if (i2_req != null && i2_req > 0) {
+        set('image2_ratio', `${i2_succ || 0} / ${i2_req}`);
+    } else {
+        set('image2_ratio', null);
+    }
     set('tts_called', false);
     set('local_slides_generated', evidence.local_slides_generated != null
         ? !!evidence.local_slides_generated : true);
@@ -3078,14 +3087,19 @@ function switchToTrashMode() {
     // Update title
     const topicsTitle = document.querySelector('.topics-title');
     if (topicsTitle) {
-        topicsTitle.textContent = 'TRASH';
+        topicsTitle.textContent = 'Trash';
     }
 
     // Hide action buttons, show back button
     const topicsActions = document.querySelector('.topics-actions');
     if (topicsActions) {
         topicsActions.innerHTML = `
-            <button class="topics-back-btn" id="backToHistoryBtn">← Recent</button>
+            <button class="topics-back-btn" id="backToHistoryBtn" type="button" aria-label="Back to recent" data-tooltip="Back to recent">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="19" y1="12" x2="5" y2="12"/>
+                    <polyline points="12 19 5 12 12 5"/>
+                </svg>
+            </button>
         `;
 
         document.getElementById('backToHistoryBtn').addEventListener('click', switchToHistoryMode);
@@ -3104,7 +3118,7 @@ function switchToHistoryMode() {
     // Update title
     const topicsTitle = document.querySelector('.topics-title');
     if (topicsTitle) {
-        topicsTitle.textContent = 'RECENT TOPICS';
+        topicsTitle.textContent = 'Recent Topics';
     }
 
     // Show action buttons, hide back button
@@ -3150,14 +3164,19 @@ function switchToFavoritesMode() {
     // Update title
     const topicsTitle = document.querySelector('.topics-title');
     if (topicsTitle) {
-        topicsTitle.textContent = 'FAVORITES';
+        topicsTitle.textContent = 'Favorites';
     }
 
     // Hide action buttons, show back button
     const topicsActions = document.querySelector('.topics-actions');
     if (topicsActions) {
         topicsActions.innerHTML = `
-            <button class="topics-back-btn" id="backToHistoryBtn">← Recent</button>
+            <button class="topics-back-btn" id="backToHistoryBtn" type="button" aria-label="Back to recent" data-tooltip="Back to recent">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="19" y1="12" x2="5" y2="12"/>
+                    <polyline points="12 19 5 12 12 5"/>
+                </svg>
+            </button>
         `;
 
         document.getElementById('backToHistoryBtn').addEventListener('click', switchToHistoryMode);
@@ -3616,6 +3635,25 @@ function switchSettingsPanel(panelName) {
     if (targetNavItem) {
         targetNavItem.classList.add('active');
     }
+
+    // v0.6.4 — sync the sticky header title to the active panel.
+    // The dictionary key is `<panelName>.title`; we store it on the
+    // header so applySettingsI18n() can re-translate when language changes.
+    const headerTitle = document.getElementById('settingsHeaderTitle');
+    if (headerTitle) {
+        const i18nKey = `${panelName}.title`;
+        headerTitle.setAttribute('data-i18n', i18nKey);
+        const dict = (typeof SETTINGS_I18N !== 'undefined')
+            ? (SETTINGS_I18N[(typeof currentSettingsLang !== 'undefined' ? currentSettingsLang : 'en')] || SETTINGS_I18N.en)
+            : null;
+        if (dict && dict[i18nKey]) {
+            headerTitle.textContent = dict[i18nKey];
+        }
+    }
+
+    // Reset scroll so a long previous panel doesn't leave us mid-page.
+    const body = document.querySelector('#settingsModal .settings-body');
+    if (body) body.scrollTop = 0;
 }
 
 // Settings button click
@@ -3644,9 +3682,388 @@ settingsNavItems.forEach(item => {
         const panelName = item.dataset.panel;
         if (panelName) {
             switchSettingsPanel(panelName);
+            // v0.6.4 — when the user opens Diagnostics, kick off a fresh probe.
+            if (panelName === 'diagnostics') {
+                runSettingsDiagnostics();
+            }
         }
     });
 });
+
+// ============================================================================
+// Settings dialog i18n (scoped: only #settingsModal text switches)
+// + Diagnostics live probe
+// ============================================================================
+
+const SETTINGS_LANG_KEY = 'ai-video-settings-lang';
+
+const SETTINGS_I18N = {
+    en: {
+        'settings.title': 'Settings',
+        'nav.model': 'Model',
+        'nav.language': 'Language',
+        'nav.diagnostics': 'Diagnostics',
+        'nav.product': 'Product Introduction',
+        'nav.help': 'Help Center',
+        'nav.privacy': 'Privacy Policy',
+        'nav.about': 'About',
+
+        'model.title': 'Model',
+        'model.selected': 'Selected model',
+        'model.mode': 'Mode',
+        'model.mode_value': 'NotebookLM Prompt Generation',
+        'model.description': 'Description',
+        'model.description_value': 'This model transforms educational video topics into structured NotebookLM-ready prompts. It also writes per-slide content for the Image Video pipeline (titles, captions, image generation prompts, and a Chinese paragraph overview).',
+        'model.endpoint': 'Endpoint',
+        'model.providers': 'Active providers',
+        'model.provider_llm': 'Content LLM:',
+        'model.provider_llm_value': 'gpt-5-chat (AI_VIDEO_LLM_*)',
+        'model.provider_image2': 'Image generator:',
+        'model.provider_image2_value': 'gpt-image-2 (APX_IMAGE2_*) — Image Video route only',
+        'model.provider_seedance': 'Video provider:',
+        'model.provider_seedance_value': 'APX Seedance (APX_VIDEO_*) — Seedance Video route only',
+        'model.provider_tts': 'TTS:',
+        'model.provider_tts_value': 'Not implemented in v0.6.4',
+
+        'language.title': 'Language',
+        'language.settings_lang': 'Settings panel language',
+        'language.settings_lang_desc': 'Switch this panel between English and Chinese using the EN / 中 toggle in the top-right corner. Other parts of the app stay in their original language.',
+        'language.prompt_input': 'Prompt input language',
+        'language.prompt_input_value': 'Free-form. You can enter topics in Chinese or English; the LLM detects and adapts.',
+        'language.video_text': 'On-screen video text',
+        'language.video_text_value': 'English only. Image Video slides render English titles, captions and image_prompts so gpt-image-2 can produce readable paper-cut typography. Chinese topics are translated automatically by the LLM.',
+        'language.overview_lang': 'Overview language',
+        'language.overview_value': 'Chinese. The Overview tab always shows a 4-7 sentence Chinese paragraph describing what the video teaches.',
+
+        'diag.title': 'Diagnostics',
+        'diag.intro': 'Read-only system check. Nothing here triggers a generation or burns API quota.',
+        'diag.checking': 'Checking...',
+        'diag.ffmpeg': 'FFmpeg',
+        'diag.ffmpeg_path': 'FFmpeg path',
+        'diag.ffmpeg_version': 'FFmpeg version',
+        'diag.backend': 'Backend health',
+        'diag.prompt_db': 'Prompt database',
+        'diag.video_db': 'Video database',
+        'diag.actions': 'Actions',
+        'diag.refresh': 'Re-check now',
+        'diag.hint': 'Hint',
+        'diag.hint_value': 'If FFmpeg is missing, install it (macOS: brew install ffmpeg) and restart the backend. The Image Video route needs FFmpeg to compose the final mp4.',
+        'diag.found': 'Found',
+        'diag.missing': 'Missing',
+        'diag.ok': 'OK',
+        'diag.error': 'Error',
+        'diag.unknown': 'Unknown',
+
+        'product.title': 'Product Introduction',
+        'product.tagline': 'AI Video Prompt Generator turns educational video ideas into either NotebookLM-ready prompts (Prompt Mode) or end-to-end short videos (Video Mode).',
+        'product.modes': 'Modes',
+        'product.mode_prompt': 'Prompt Mode:',
+        'product.mode_prompt_value': 'enter a topic, get a structured NotebookLM prompt to copy.',
+        'product.mode_video': 'Video Mode:',
+        'product.mode_video_value': 'enter a topic, pick Seedance Video or Image Video, get a finished mp4 you can play and download.',
+        'product.routes': 'Generation methods',
+        'product.route_seedance': 'Seedance Video:',
+        'product.route_seedance_value': 'APX Seedance 2.0 video generation chain (v0.6.2 prompt quality gate retained).',
+        'product.route_image_video': 'Image Video:',
+        'product.route_image_video_value': 'gpt-image-2 paper-craft slide images + FFmpeg composition (v0.6.4).',
+        'product.workflow': 'Core workflow',
+        'product.workflow_value': 'Topic → gpt-5-chat plans slides + writes content → gpt-image-2 paints paper-craft backgrounds → FFmpeg concatenates into a 16:9 mp4 → playback in browser.',
+        'product.roadmap': 'Roadmap',
+        'product.roadmap_063': 'v0.6.3 ✓ Static Image Video MVP + Generation Method selector + Dark mode fix',
+        'product.roadmap_064': 'v0.6.4 ✓ gpt-image-2 paper-craft integration (current)',
+        'product.roadmap_065': 'v0.6.5 BGM + TTS narration',
+        'product.roadmap_066': 'v0.6.6 Subtitle burn-in + transitions',
+        'product.roadmap_067': 'v0.6.7 Video Review protocol + hook optimization',
+        'product.roadmap_07': 'v0.7.x User accounts, cloud deployment, productionization',
+
+        'help.title': 'Help Center',
+        'help.use_prompt': 'How to use Prompt Mode',
+        'help.use_prompt_1': 'Switch to Prompt Mode in the top-right.',
+        'help.use_prompt_2': 'Enter an educational video topic.',
+        'help.use_prompt_3': 'Click the arrow button or press Enter.',
+        'help.use_prompt_4': 'Copy the generated prompt or download it.',
+        'help.use_prompt_5': 'Paste it into NotebookLM to create the video.',
+        'help.use_video': 'How to use Video Mode',
+        'help.use_video_1': 'Switch to Video Mode in the top-right.',
+        'help.use_video_2': 'Enter a topic; pick a duration (5/15/30/60/90s) and a generation method.',
+        'help.use_video_3': 'Click Generate. Watch the per-stage progress fill in.',
+        'help.use_video_4': 'When done, the Video tab plays the finished mp4. Use Download to save it.',
+        'help.use_video_5': 'Raw Text holds the per-slide image prompts; Overview holds a Chinese summary of the video.',
+        'help.shortcuts': 'Keyboard shortcuts',
+        'help.kbd_enter': 'Enter:',
+        'help.kbd_enter_value': 'Generate',
+        'help.kbd_shift_enter': 'Shift + Enter:',
+        'help.kbd_shift_enter_value': 'New line in the topic input',
+        'help.kbd_escape': 'Esc:',
+        'help.kbd_escape_value': 'Close this Settings dialog',
+        'help.troubleshoot': 'Troubleshooting',
+        'help.troubleshoot_ffmpeg': '"FFmpeg is required" → install ffmpeg (macOS: brew install ffmpeg) and restart the backend.',
+        'help.troubleshoot_blocked': '"Prompt quality blocked" → the LLM left placeholders in the Seedance prompt; try a clearer topic or rephrase.',
+        'help.troubleshoot_slow': 'Image2 stage stuck → each slide takes 30-60s; with 12 slides at concurrency 4 expect 2-3 minutes.',
+        'help.troubleshoot_no_audio': 'No audio in the video → BGM and TTS are planned for v0.6.5; current videos are silent by design.',
+
+        'privacy.title': 'Privacy Policy',
+        'privacy.local': 'Local prototype',
+        'privacy.local_value': 'This is a local prototype. Generated prompts, slide plans, image2 backgrounds, and final mp4 files are stored locally under outputs/.',
+        'privacy.api_security': 'API security',
+        'privacy.api_1': 'API keys are read from .env at backend startup.',
+        'privacy.api_2': 'Keys never reach the browser.',
+        'privacy.api_3': 'Keys never appear in any output file (slide_plan.json, llm_debug.json, etc.).',
+        'privacy.api_4': 'Keys never appear in API responses or evidence panels — only the boolean "configured" flag is surfaced.',
+        'privacy.data': 'Where data lives',
+        'privacy.data_1': 'data/prompt_history.db — Prompt Mode history.',
+        'privacy.data_2': 'data/video_history.db — Video Mode history (separate database).',
+        'privacy.data_3': 'outputs/<slug>/ — generated assets per topic.',
+        'privacy.data_4': '.env — your secrets (gitignored).',
+        'privacy.network': 'Outbound network calls',
+        'privacy.network_1': 'AI_VIDEO_LLM_* (gpt-5-chat) — prompt content + slide content.',
+        'privacy.network_2': 'APX_IMAGE2_* (gpt-image-2) — Image Video slide backgrounds. Disabled by default; enable in .env.',
+        'privacy.network_3': 'APX_VIDEO_* (Seedance) — Seedance Video route. Disabled by default; enable in .env.',
+        'privacy.dont': 'Do not',
+        'privacy.dont_1': 'Do not commit .env to git.',
+        'privacy.dont_2': 'Do not paste your API key into any chat or screenshot.',
+        'privacy.dont_3': 'Do not commit data/*.db, outputs/, or *.mp4 to git (covered by .gitignore).',
+
+        'about.title': 'About',
+        'about.product': 'Product',
+        'about.version': 'Version',
+        'about.team': 'Team',
+        'about.stack': 'Stack',
+        'about.stack_be': 'Backend: FastAPI + SQLAlchemy + SQLite',
+        'about.stack_fe': 'Frontend: vanilla HTML / CSS / JS (no framework)',
+        'about.stack_render': 'Rendering: Pillow (text overlays) + FFmpeg (mp4 composition)',
+        'about.stack_llm': 'LLM: gpt-5-chat via AI_VIDEO_LLM_* (OpenAI-compatible gateway)',
+        'about.stack_image': 'Image: gpt-image-2 via APX_IMAGE2_*',
+        'about.license': 'Status',
+        'about.license_value': 'Internal prototype, not yet a public product. Built iteratively across v0.4.x – v0.6.x.',
+    },
+    zh: {
+        'settings.title': '设置',
+        'nav.model': '模型',
+        'nav.language': '语言',
+        'nav.diagnostics': '系统诊断',
+        'nav.product': '产品介绍',
+        'nav.help': '帮助中心',
+        'nav.privacy': '隐私协议',
+        'nav.about': '关于',
+
+        'model.title': '模型',
+        'model.selected': '当前模型',
+        'model.mode': '模式',
+        'model.mode_value': 'NotebookLM Prompt 生成',
+        'model.description': '说明',
+        'model.description_value': '该模型把教育视频题目转成结构化的、可直接喂给 NotebookLM 的 Prompt。它同时为 Image Video 链路写每张幻灯片的内容（标题、副标题、图像生成 prompt，以及一段中文整体内容简介）。',
+        'model.endpoint': '接入端点',
+        'model.providers': '在线提供方',
+        'model.provider_llm': '内容 LLM：',
+        'model.provider_llm_value': 'gpt-5-chat（AI_VIDEO_LLM_*）',
+        'model.provider_image2': '图像生成：',
+        'model.provider_image2_value': 'gpt-image-2（APX_IMAGE2_*），仅 Image Video 路线使用',
+        'model.provider_seedance': '视频生成：',
+        'model.provider_seedance_value': 'APX Seedance（APX_VIDEO_*），仅 Seedance Video 路线使用',
+        'model.provider_tts': 'TTS 旁白：',
+        'model.provider_tts_value': 'v0.6.4 暂未接入',
+
+        'language.title': '语言',
+        'language.settings_lang': '设置面板语言',
+        'language.settings_lang_desc': '使用右上角的 EN / 中 切换按钮在中英文之间切换本面板。应用其他位置保持原语言不变。',
+        'language.prompt_input': '题目输入语言',
+        'language.prompt_input_value': '中英文均可。LLM 会自动识别并适配。',
+        'language.video_text': '视频画面文字',
+        'language.video_text_value': '仅英文。Image Video 幻灯片中的英文标题、副标题、image_prompt 都由 gpt-image-2 直接画进画面，便于其呈现可读的 paper-craft 字体。中文题目会由 LLM 自动翻译为英文。',
+        'language.overview_lang': '简介语言',
+        'language.overview_value': '中文。Overview 标签页始终显示一段 4-7 句的中文段落，描述视频在讲什么。',
+
+        'diag.title': '系统诊断',
+        'diag.intro': '只读系统检查。这里的任何操作都不会触发视频生成、不会消耗 API 配额。',
+        'diag.checking': '检查中...',
+        'diag.ffmpeg': 'FFmpeg',
+        'diag.ffmpeg_path': 'FFmpeg 路径',
+        'diag.ffmpeg_version': 'FFmpeg 版本',
+        'diag.backend': '后端健康',
+        'diag.prompt_db': 'Prompt 数据库',
+        'diag.video_db': 'Video 数据库',
+        'diag.actions': '操作',
+        'diag.refresh': '重新检查',
+        'diag.hint': '提示',
+        'diag.hint_value': '如果 FFmpeg 缺失，请安装（macOS：brew install ffmpeg），然后重启后端。Image Video 路线必须有 FFmpeg 才能合成最终的 mp4。',
+        'diag.found': '已找到',
+        'diag.missing': '缺失',
+        'diag.ok': '正常',
+        'diag.error': '错误',
+        'diag.unknown': '未知',
+
+        'product.title': '产品介绍',
+        'product.tagline': 'AI Video Prompt Generator 能把教育视频题目，要么转成 NotebookLM-ready 的 Prompt（Prompt 模式），要么直接生成完整的短视频（Video 模式）。',
+        'product.modes': '模式',
+        'product.mode_prompt': 'Prompt 模式：',
+        'product.mode_prompt_value': '输入题目，得到一段结构化的 NotebookLM Prompt，可直接复制使用。',
+        'product.mode_video': 'Video 模式：',
+        'product.mode_video_value': '输入题目，选择 Seedance Video 或 Image Video 路线，得到一份可播放、可下载的 mp4。',
+        'product.routes': '生成路线',
+        'product.route_seedance': 'Seedance Video：',
+        'product.route_seedance_value': '走 APX Seedance 2.0 视频生成链路（保留 v0.6.2 的 Prompt 质量门）。',
+        'product.route_image_video': 'Image Video：',
+        'product.route_image_video_value': 'gpt-image-2 paper-craft 幻灯图 + FFmpeg 合成（v0.6.4 主推路线）。',
+        'product.workflow': '核心工作流',
+        'product.workflow_value': '题目 → gpt-5-chat 规划幻灯片 + 写文案 → gpt-image-2 绘制 paper-craft 背景 → FFmpeg 合成 16:9 mp4 → 浏览器播放。',
+        'product.roadmap': '版本路线',
+        'product.roadmap_063': 'v0.6.3 ✓ 静态图视频 MVP + 生成路线选择器 + 暗色模式修复',
+        'product.roadmap_064': 'v0.6.4 ✓ gpt-image-2 paper-craft 接入（当前版本）',
+        'product.roadmap_065': 'v0.6.5 BGM + TTS 旁白',
+        'product.roadmap_066': 'v0.6.6 字幕烧录 + 转场',
+        'product.roadmap_067': 'v0.6.7 Video Review 协议 + Hook 优化',
+        'product.roadmap_07': 'v0.7.x 用户系统、云部署、产品化',
+
+        'help.title': '帮助中心',
+        'help.use_prompt': 'Prompt 模式怎么用',
+        'help.use_prompt_1': '在右上角切换到 Prompt 模式。',
+        'help.use_prompt_2': '输入一个教育视频题目。',
+        'help.use_prompt_3': '点击箭头按钮，或者按回车。',
+        'help.use_prompt_4': '复制或下载生成的 Prompt。',
+        'help.use_prompt_5': '粘贴到 NotebookLM 中生成视频。',
+        'help.use_video': 'Video 模式怎么用',
+        'help.use_video_1': '在右上角切换到 Video 模式。',
+        'help.use_video_2': '输入题目，选择视频时长（5/15/30/60/90 秒）和生成路线。',
+        'help.use_video_3': '点击 Generate。观察每个阶段的真实进度。',
+        'help.use_video_4': '生成完成后，Video 标签页直接播放 mp4，点击 Download 保存到本地。',
+        'help.use_video_5': 'Raw Text 标签页是每张幻灯片的 image_prompt；Overview 标签页是该视频的中文整体内容简介。',
+        'help.shortcuts': '快捷键',
+        'help.kbd_enter': 'Enter：',
+        'help.kbd_enter_value': '触发生成',
+        'help.kbd_shift_enter': 'Shift + Enter：',
+        'help.kbd_shift_enter_value': '在题目输入框中换行',
+        'help.kbd_escape': 'Esc：',
+        'help.kbd_escape_value': '关闭本设置对话框',
+        'help.troubleshoot': '常见问题',
+        'help.troubleshoot_ffmpeg': '"FFmpeg is required" → 安装 ffmpeg（macOS：brew install ffmpeg）后重启后端。',
+        'help.troubleshoot_blocked': '"Prompt quality blocked" → LLM 在 Seedance Prompt 中留下了占位符；换一个更清晰的题目或重新表述。',
+        'help.troubleshoot_slow': 'Image2 阶段卡很久 → 每张幻灯片需要 30-60 秒；12 张幻灯片在并发 4 的情况下大概要 2-3 分钟。',
+        'help.troubleshoot_no_audio': '视频没有声音 → BGM 与 TTS 计划在 v0.6.5 接入；当前版本视频默认是静音的。',
+
+        'privacy.title': '隐私协议',
+        'privacy.local': '本地原型',
+        'privacy.local_value': '当前是本地原型。生成的 Prompt、slide_plan、image2 背景图、最终 mp4 都存储在本地 outputs/ 目录。',
+        'privacy.api_security': 'API Key 安全',
+        'privacy.api_1': 'API Key 仅在后端启动时从 .env 读取。',
+        'privacy.api_2': 'API Key 永远不会送到浏览器。',
+        'privacy.api_3': 'API Key 永远不会写入任何输出文件（slide_plan.json、llm_debug.json 等）。',
+        'privacy.api_4': 'API Key 永远不会出现在 API 响应或证据面板中——仅暴露布尔型的 "已配置" 标志。',
+        'privacy.data': '数据存储位置',
+        'privacy.data_1': 'data/prompt_history.db — Prompt 模式历史记录。',
+        'privacy.data_2': 'data/video_history.db — Video 模式历史记录（独立数据库）。',
+        'privacy.data_3': 'outputs/<slug>/ — 每个题目的生成资产。',
+        'privacy.data_4': '.env — 你的密钥（已加入 .gitignore）。',
+        'privacy.network': '出站网络调用',
+        'privacy.network_1': 'AI_VIDEO_LLM_*（gpt-5-chat）— Prompt 内容 + 幻灯片内容。',
+        'privacy.network_2': 'APX_IMAGE2_*（gpt-image-2）— Image Video 幻灯片背景图。默认关闭，需要在 .env 中开启。',
+        'privacy.network_3': 'APX_VIDEO_*（Seedance）— Seedance Video 路线。默认关闭，需要在 .env 中开启。',
+        'privacy.dont': '请勿',
+        'privacy.dont_1': '请勿把 .env 提交到 git。',
+        'privacy.dont_2': '请勿把 API Key 粘贴到任何聊天或截图中。',
+        'privacy.dont_3': '请勿提交 data/*.db、outputs/、*.mp4 到 git（已被 .gitignore 屏蔽）。',
+
+        'about.title': '关于',
+        'about.product': '产品',
+        'about.version': '版本',
+        'about.team': '团队',
+        'about.stack': '技术栈',
+        'about.stack_be': '后端：FastAPI + SQLAlchemy + SQLite',
+        'about.stack_fe': '前端：原生 HTML / CSS / JS（无框架）',
+        'about.stack_render': '渲染：Pillow（文字叠加）+ FFmpeg（mp4 合成）',
+        'about.stack_llm': 'LLM：gpt-5-chat（AI_VIDEO_LLM_* OpenAI-compatible 网关）',
+        'about.stack_image': '图像：gpt-image-2（APX_IMAGE2_*）',
+        'about.license': '状态',
+        'about.license_value': '内部原型，尚非公开产品。从 v0.4.x 到 v0.6.x 持续迭代构建。',
+    },
+};
+
+let currentSettingsLang = (localStorage.getItem(SETTINGS_LANG_KEY) === 'zh') ? 'zh' : 'en';
+
+function applySettingsI18n(lang) {
+    if (lang !== 'en' && lang !== 'zh') lang = 'en';
+    currentSettingsLang = lang;
+    localStorage.setItem(SETTINGS_LANG_KEY, lang);
+    const dict = SETTINGS_I18N[lang] || SETTINGS_I18N.en;
+    const root = document.getElementById('settingsModal');
+    if (!root) return;
+    root.querySelectorAll('[data-i18n]').forEach((el) => {
+        const key = el.getAttribute('data-i18n');
+        if (key && dict[key] != null) {
+            el.textContent = dict[key];
+        }
+    });
+    root.querySelectorAll('.settings-lang-btn').forEach((btn) => {
+        btn.classList.toggle('active', btn.getAttribute('data-lang') === lang);
+    });
+}
+
+document.querySelectorAll('.settings-lang-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+        const lang = btn.getAttribute('data-lang');
+        applySettingsI18n(lang);
+    });
+});
+
+// Apply once on load so the panel boots in the user's last-chosen language.
+applySettingsI18n(currentSettingsLang);
+
+// ----- Diagnostics live probe -----
+async function runSettingsDiagnostics() {
+    const dict = SETTINGS_I18N[currentSettingsLang] || SETTINGS_I18N.en;
+    const setVal = (id, text, cls) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = text;
+        el.classList.remove('diag-ok', 'diag-error');
+        if (cls) el.classList.add(cls);
+    };
+    setVal('diag-ffmpeg-status', dict['diag.checking']);
+    setVal('diag-ffmpeg-path', '—');
+    setVal('diag-ffmpeg-version', '—');
+    setVal('diag-backend-status', dict['diag.checking']);
+    setVal('diag-prompt-db', '—');
+    setVal('diag-video-db', '—');
+
+    try {
+        const resp = await fetch('/api/video/diagnostics/ffmpeg');
+        const data = await resp.json();
+        const f = (data && data.ffmpeg) || {};
+        if (f.found) {
+            setVal('diag-ffmpeg-status', dict['diag.found'], 'diag-ok');
+            setVal('diag-ffmpeg-path', f.path || '—');
+            setVal('diag-ffmpeg-version', f.version || '—');
+        } else {
+            setVal('diag-ffmpeg-status', dict['diag.missing'], 'diag-error');
+            setVal('diag-ffmpeg-path', f.install_hint || '—');
+            setVal('diag-ffmpeg-version', '—');
+        }
+    } catch (e) {
+        setVal('diag-ffmpeg-status', dict['diag.error'], 'diag-error');
+    }
+
+    try {
+        const resp = await fetch('/api/health');
+        const data = await resp.json();
+        const okLabel = dict['diag.ok'];
+        const errLabel = dict['diag.error'];
+        setVal('diag-backend-status', (data && data.status === 'ok') ? okLabel : errLabel,
+               (data && data.status === 'ok') ? 'diag-ok' : 'diag-error');
+        setVal('diag-prompt-db', (data && data.database === 'ok') ? okLabel : errLabel,
+               (data && data.database === 'ok') ? 'diag-ok' : 'diag-error');
+        setVal('diag-video-db', (data && data.video_database === 'ok') ? okLabel : errLabel,
+               (data && data.video_database === 'ok') ? 'diag-ok' : 'diag-error');
+    } catch (e) {
+        const errLabel = dict['diag.error'];
+        setVal('diag-backend-status', errLabel, 'diag-error');
+    }
+}
+
+const diagRefreshBtn = document.getElementById('diag-refresh-btn');
+if (diagRefreshBtn) {
+    diagRefreshBtn.addEventListener('click', runSettingsDiagnostics);
+}
+
 
 // ============================================
 // Edit and Regenerate Functions
