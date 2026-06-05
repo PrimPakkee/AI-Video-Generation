@@ -68,8 +68,27 @@ def init_video_db():
 
     Read-only safe: only creates tables if they don't exist. Does not call any
     LLM. Does not touch Prompt Mode database. Does not touch outputs/.
+
+    v0.6.3 — also performs a lazy ALTER TABLE migration so older databases
+    gain the ``generation_method`` column on VideoHistory. Existing rows
+    default to 'seedance_video' so historical records keep their original
+    Seedance Video meaning. The migration is idempotent.
     """
     # Import models so VideoBase.metadata is populated before create_all().
     from . import video_models  # noqa: F401  (registers VideoHistory)
 
     VideoBase.metadata.create_all(bind=video_engine)
+
+    from sqlalchemy import text
+    try:
+        with video_engine.begin() as conn:
+            cols = conn.execute(text("PRAGMA table_info(video_history)")).fetchall()
+            existing_columns = {row[1] for row in cols}
+            if "generation_method" not in existing_columns:
+                conn.execute(text(
+                    "ALTER TABLE video_history "
+                    "ADD COLUMN generation_method VARCHAR(40) "
+                    "NOT NULL DEFAULT 'seedance_video'"
+                ))
+    except Exception as exc:  # pragma: no cover - non-SQLite or schema oddities
+        print(f"[Video Mode] generation_method migration skipped: {exc}")

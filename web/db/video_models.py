@@ -87,6 +87,15 @@ class VideoHistory(VideoBase):
     video_thumbnail_path = Column(String(500), nullable=True)
     video_duration_seconds = Column(Integer, nullable=True)
 
+    # v0.6.3 — which generation route produced this record.
+    # Allowed values: 'seedance_video' (default, v0.6.2 APX chain) and
+    # 'image_video' (v0.6.3 local Pillow + FFmpeg static-image MVP).
+    # Older rows are migrated lazily on startup; their default is
+    # 'seedance_video' so existing histories continue to behave as before.
+    generation_method = Column(
+        String(40), nullable=False, default='seedance_video'
+    )
+
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -116,6 +125,7 @@ class VideoHistory(VideoBase):
             'video_url': self.video_url,
             'video_thumbnail_path': self.video_thumbnail_path,
             'video_duration_seconds': self.video_duration_seconds,
+            'generation_method': self.generation_method or 'seedance_video',
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }

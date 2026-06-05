@@ -9,7 +9,7 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.6.2"
+STABILITY_CHECKS_VERSION = "v0.6.3"
 
 import sys
 import os
@@ -850,7 +850,11 @@ class StabilityChecker:
         #     preserved for ai_review.js / video_repository.py / index.html
         #     where Seedance must NOT leak.
         forbidden_provider_terms = ("seedance", "Seedance", "SEEDANCE")
-        scoped = ai_review_src + video_repo_src
+        # v0.6.3 — `seedance_video` is the Generation Method enum value
+        # (the route name on the home-page selector). It is NOT a Seedance
+        # API call. Strip it out before the leak scan so the harmless
+        # default-route literal does not trigger this regression check.
+        scoped = (ai_review_src + video_repo_src).replace("seedance_video", "")
         leaked = [t for t in forbidden_provider_terms if t in scoped]
         if leaked:
             for t in leaked:
@@ -4433,6 +4437,366 @@ class StabilityChecker:
             print("\n[FAIL] v0.6.2 Seedance prompt quality gate checks failed")
             self.checks_failed += 1
 
+    def check_v063_image_video_mvp(self):
+        """v0.6.3 — Static Image Video MVP + Generation Method selector
+        + Dark Mode Fix.
+
+        Static checks. No external API calls. No mp4 generation.
+        """
+        print("\n" + "="*80)
+        print("v0.6.3 Static Image Video MVP / Method Selector / Dark Mode")
+        print("="*80)
+
+        all_passed = True
+
+        def assert_true(cond, name, hint=""):
+            nonlocal all_passed
+            if cond:
+                print(f"  [OK] {name}")
+            else:
+                print(f"  [FAIL] {name}{(': ' + hint) if hint else ''}")
+                all_passed = False
+
+        # 1. Pipeline file exists.
+        pipeline_path = Path("web/image_video_pipeline.py")
+        assert_true(pipeline_path.exists(),
+                    "web/image_video_pipeline.py exists")
+        pipeline_text = pipeline_path.read_text(encoding="utf-8") if pipeline_path.exists() else ""
+
+        # 2. resolve_slide_count exists with the right buckets.
+        assert_true("def resolve_slide_count" in pipeline_text,
+                    "resolve_slide_count is defined")
+        assert_true("\"image_video\"" in pipeline_text or "'image_video'" in pipeline_text,
+                    "pipeline references generation_method='image_video'")
+        # Slide-count rules per duration.
+        for dur, lo, hi in [(5, 3, 3), (15, 4, 6), (30, 6, 8), (60, 10, 15), (90, 20, 25)]:
+            line_a = f"{dur}: ({lo}, {hi})"
+            line_b = f"{dur}:  ({lo}, {hi})"
+            line_c = f"{dur}:({lo},{hi})"
+            assert_true(
+                any(s in pipeline_text for s in (line_a, line_b, line_c)) or (
+                    f"{dur}" in pipeline_text and f"({lo}, {hi})" in pipeline_text
+                ),
+                f"slide-count rule {dur}s -> {lo}..{hi}",
+            )
+
+        # 3. Pipeline never imports remote providers (APX/Seedance/Image2/TTS).
+        # The pipeline DOES use AI_VIDEO_LLM_* (gpt-5-chat) for slide content,
+        # which is the same OpenAI-compatible client used elsewhere in the
+        # project — that is allowed and explicitly NOT in the forbidden set.
+        # The forbidden set is restricted to actual remote video / image /
+        # speech provider surfaces.
+        for forbidden in (
+            "apx_seedance_provider",
+            "seedance_prompt_compiler",
+            "build_video_content_assets",
+            "ApxSeedanceProvider",
+            "import requests",
+            "Image2Provider",
+            "TtsProvider",
+            "TTSProvider",
+        ):
+            assert_true(
+                forbidden.lower() not in pipeline_text.lower(),
+                f"image_video_pipeline.py does not reference '{forbidden}'",
+            )
+
+        # The OpenAI client must only be imported lazily (inside a function)
+        # so the module can still load when openai is unavailable.
+        assert_true(
+            "from openai import OpenAI" in pipeline_text,
+            "image_video_pipeline.py uses openai client (lazy import) for slide content",
+        )
+        # Top-level `import openai` would break the no-network-on-import
+        # guarantee. Require the import to live inside a function body.
+        toplevel_import = any(
+            line.strip().startswith("import openai")
+            or line.strip().startswith("from openai ")
+            for line in pipeline_text.splitlines()
+            if not line.startswith(" ") and not line.startswith("\t")
+        )
+        assert_true(
+            not toplevel_import,
+            "image_video_pipeline.py imports openai lazily (no top-level import)",
+        )
+
+        # The pipeline must wire the AI_VIDEO_LLM_* config namespace.
+        for env_name in (
+            "AI_VIDEO_LLM_API_KEY",
+            "AI_VIDEO_LLM_BASE_URL",
+            "AI_VIDEO_LLM_MODEL",
+        ):
+            assert_true(
+                env_name in pipeline_text,
+                f"pipeline references env var '{env_name}'",
+            )
+
+        # Graceful fallback: when the LLM call fails, the pipeline must
+        # still succeed by returning a static-template result.
+        assert_true(
+            "fallback_used" in pipeline_text,
+            "pipeline tracks fallback_used flag for LLM degradation",
+        )
+
+        # 4. Output artifacts named correctly.
+        for needle in (
+            "slide_plan.json", "overlay_plan.json", "slides",
+            "concat.txt", "ffmpeg_command.txt", "final_video.mp4",
+        ):
+            assert_true(needle in pipeline_text,
+                        f"pipeline mentions output artifact '{needle}'")
+
+        # 5. has_audio / tts_status flags present.
+        assert_true("not_implemented_v0.6.3" in pipeline_text,
+                    "pipeline marks tts_status='not_implemented_v0.6.3'")
+        assert_true('"has_audio": False' in pipeline_text or '"has_audio":False' in pipeline_text
+                    or "'has_audio': False" in pipeline_text,
+                    "pipeline marks has_audio=False")
+
+        # 6. shutil.which("ffmpeg") graceful failure.
+        assert_true('shutil.which("ffmpeg")' in pipeline_text,
+                    "pipeline checks shutil.which('ffmpeg')")
+        assert_true("FFmpeg is required for Image Video composition" in pipeline_text,
+                    "pipeline emits clear ffmpeg-missing message")
+
+        # 7. requirements.txt has Pillow.
+        req = Path("requirements.txt").read_text(encoding="utf-8")
+        assert_true("Pillow" in req, "requirements.txt declares Pillow")
+
+        # 8. Backend dispatch.
+        app_text = Path("web/app.py").read_text(encoding="utf-8")
+        assert_true("generation_method" in app_text,
+                    "web/app.py references generation_method")
+        assert_true("VALID_GENERATION_METHODS" in app_text,
+                    "web/app.py defines VALID_GENERATION_METHODS")
+        assert_true("_run_image_video_pipeline" in app_text,
+                    "web/app.py wires _run_image_video_pipeline")
+        assert_true("generate_image_video_package" in app_text,
+                    "web/app.py imports generate_image_video_package")
+        assert_true('"seedance_video"' in app_text and '"image_video"' in app_text,
+                    "web/app.py knows both generation methods")
+
+        # 9. DB has the new column.
+        models_text = Path("web/db/video_models.py").read_text(encoding="utf-8")
+        assert_true("generation_method" in models_text,
+                    "VideoHistory model declares generation_method column")
+        db_text = Path("web/db/video_database.py").read_text(encoding="utf-8")
+        assert_true("ADD COLUMN generation_method" in db_text,
+                    "video_database.py performs ALTER TABLE for generation_method")
+
+        # 10. Frontend selector + payload.
+        html_text = Path("web/static/index.html").read_text(encoding="utf-8")
+        assert_true("video-method-selector" in html_text,
+                    "index.html has #video-method-selector")
+        assert_true('data-method="seedance_video"' in html_text,
+                    "index.html has Seedance Video option")
+        assert_true('data-method="image_video"' in html_text,
+                    "index.html has Image Video option")
+        assert_true("generation-evidence-panel" in html_text,
+                    "index.html has Generation Evidence panel")
+
+        js_text = Path("web/static/main.js").read_text(encoding="utf-8")
+        assert_true("getCurrentGenerationMethod" in js_text,
+                    "main.js exposes getCurrentGenerationMethod()")
+        assert_true("generation_method: getCurrentGenerationMethod()" in js_text,
+                    "main.js sends generation_method in /api/video/generate/start payload")
+        assert_true("renderGenerationEvidencePanel" in js_text,
+                    "main.js defines renderGenerationEvidencePanel")
+
+        # 11. Seedance v0.6.2 quality gate is still wired in.
+        assert_true("_validate_seedance_prompt_quality" in app_text or
+                    "validate_seedance_prompt_quality" in app_text,
+                    "v0.6.2 Seedance prompt quality gate retained")
+
+        # 12. Make sure abandoned Preflight / Submit-to-Seedance design isn't
+        # reintroduced.
+        for forbidden in (
+            "preflight",
+            "Submit to Seedance",
+            "submit-to-seedance",
+            "advanceVideoGenerationProgress",
+        ):
+            assert_true(
+                forbidden.lower() not in (html_text + js_text + app_text).lower(),
+                f"abandoned design token absent: '{forbidden}'",
+            )
+
+        # 13. Dark theme coverage in style.css. The project's dark mode is
+        # set via `html.dark-theme` (see setTheme() in main.js), not
+        # `body.dark-mode` — older drafts of the v0.6.3 CSS used the wrong
+        # selector and the dark rules never applied.
+        css_text = Path("web/static/style.css").read_text(encoding="utf-8")
+        assert_true(".dark-theme" in css_text,
+                    "style.css contains .dark-theme rules")
+        for selector in (
+            ".dark-theme .video-duration-option",
+            ".dark-theme .video-method-option",
+            ".dark-theme .generation-evidence-panel",
+            ".dark-theme .provider-evidence-panel",
+        ):
+            assert_true(selector in css_text,
+                        f"dark-theme rule present: {selector}")
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} image-video MVP checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} image-video MVP checks failed")
+            self.checks_failed += 1
+
+    def check_v063_stabilization(self):
+        """v0.6.3 stabilization hotfix — top-level metadata helper, FFmpeg
+        discovery, diagnostics endpoint, smoke offline-by-default, and the
+        media vs content evidence split."""
+        import ast
+
+        print("\n" + "=" * 80)
+        print("v0.6.3 Stabilization Hotfix")
+        print("=" * 80)
+
+        all_passed = True
+
+        def assert_true(cond, name, hint=""):
+            nonlocal all_passed
+            if cond:
+                print(f"  [OK] {name}")
+            else:
+                print(f"  [FAIL] {name}{(': ' + hint) if hint else ''}")
+                all_passed = False
+
+        app_path = Path("web/app.py")
+        app_src = app_path.read_text(encoding="utf-8")
+        # 1. _build_video_assets_metadata_json must exist as a top-level def.
+        try:
+            tree = ast.parse(app_src)
+            top_funcs = [
+                n.name for n in tree.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ]
+        except Exception as exc:
+            top_funcs = []
+            assert_true(False, f"web/app.py parses cleanly: {exc}")
+        assert_true(
+            "_build_video_assets_metadata_json" in top_funcs,
+            "web/app.py defines top-level _build_video_assets_metadata_json",
+        )
+        # And it must NOT be re-introduced as dead code inside the response payload.
+        for n in tree.body:
+            if isinstance(n, ast.FunctionDef) and n.name == "_build_image_video_response_payload":
+                # Must end in a Return — nothing executable should follow it
+                # at function scope.
+                last = n.body[-1] if n.body else None
+                assert_true(
+                    isinstance(last, ast.Return),
+                    "_build_image_video_response_payload ends with a Return (no orphan body)",
+                )
+
+        # 2. FFmpeg diagnostics endpoint.
+        assert_true(
+            '@app.get("/api/video/diagnostics/ffmpeg")' in app_src,
+            "web/app.py registers /api/video/diagnostics/ffmpeg",
+        )
+
+        # 3. resolve_ffmpeg_binary helper covers Homebrew + Linux paths.
+        pipeline_src = Path("web/image_video_pipeline.py").read_text(encoding="utf-8")
+        assert_true(
+            "def resolve_ffmpeg_binary" in pipeline_src,
+            "image_video_pipeline.py defines resolve_ffmpeg_binary",
+        )
+        for path in (
+            "FFMPEG_BIN",
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+            "/bin/ffmpeg",
+        ):
+            assert_true(
+                path in pipeline_src,
+                f"resolve_ffmpeg_binary probes {path}",
+            )
+
+        # 4. The ffmpeg-missing message points users at brew install.
+        assert_true(
+            "brew install ffmpeg" in pipeline_src,
+            "ffmpeg-missing diagnostic suggests `brew install ffmpeg`",
+        )
+
+        # 5. IMAGE_VIDEO_DISABLE_LLM kill-switch.
+        assert_true(
+            "IMAGE_VIDEO_DISABLE_LLM" in pipeline_src,
+            "image_video_pipeline.py honours IMAGE_VIDEO_DISABLE_LLM",
+        )
+
+        # 6. Smoke script defaults to offline + supports --with-llm / --full.
+        smoke_src = Path("scripts/smoke_image_video_pipeline.py").read_text(encoding="utf-8")
+        assert_true(
+            'os.environ["IMAGE_VIDEO_DISABLE_LLM"] = "1"' in smoke_src,
+            "smoke script sets IMAGE_VIDEO_DISABLE_LLM=1 by default",
+        )
+        assert_true(
+            '"--with-llm"' in smoke_src,
+            "smoke script accepts --with-llm flag",
+        )
+        assert_true(
+            '"--full"' in smoke_src,
+            "smoke script accepts --full flag",
+        )
+
+        # 7. Evidence semantics — pipeline + payload + frontend agree.
+        assert_true(
+            "content_llm_called" in pipeline_src,
+            "pipeline emits content_llm_called",
+        )
+        assert_true(
+            '"media_api_called": False' in pipeline_src,
+            "pipeline pins media_api_called to False",
+        )
+        assert_true(
+            '"content_llm_called"' in app_src and '"media_api_called"' in app_src,
+            "web/app.py forwards content_llm_called + media_api_called",
+        )
+        assert_true(
+            '"network_call_performed": False' in app_src,
+            "image_video metadata pins network_call_performed to False (LLM does not flip it)",
+        )
+
+        html_src = Path("web/static/index.html").read_text(encoding="utf-8")
+        assert_true(
+            'data-evidence="media_api_called"' in html_src
+            and 'data-evidence="content_llm_called"' in html_src,
+            "Generation Evidence panel exposes media_api_called + content_llm_called rows",
+        )
+
+        js_src = Path("web/static/main.js").read_text(encoding="utf-8")
+        assert_true(
+            "renderImageVideoErrorMessage" in js_src,
+            "main.js renders the multi-line FFmpeg-missing help",
+        )
+        assert_true(
+            "/api/video/diagnostics/ffmpeg" in js_src,
+            "main.js mentions the diagnostics endpoint in the error help",
+        )
+
+        # 8. Worker stage messaging — no claim that LLM was skipped.
+        assert_true(
+            "skipping LLM/Seedance" not in app_src,
+            "Image Video worker no longer claims it skipped the LLM",
+        )
+
+        # 9. Forbidden regressions: Preflight / fake progress.
+        for forbidden in ("preflight", "Submit to Seedance", "advanceVideoGenerationProgress"):
+            assert_true(
+                forbidden.lower() not in (app_src + html_src + js_src).lower(),
+                f"abandoned design token absent: '{forbidden}'",
+            )
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} stabilization checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} stabilization checks failed")
+            self.checks_failed += 1
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -4531,6 +4895,8 @@ def main():
         checker.check_v060_apx_provider()
         checker.check_v061_english_landscape()
         checker.check_v062_prompt_quality_gate()
+        checker.check_v063_image_video_mvp()
+        checker.check_v063_stabilization()
         checker.check_git_status_hygiene()
         checker.check_database_integrity()
     except Exception as e:

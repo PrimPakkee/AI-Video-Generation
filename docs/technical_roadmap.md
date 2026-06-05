@@ -4,7 +4,20 @@
 
 本文档详细规划了从当前版本（V0）到端到端自动化（V4）的完整技术路线。每个 Phase 都有明确的技术目标、实现方案、技术栈和成功标准。
 
-## 当前里程碑（v0.6.2）
+## 当前里程碑（v0.6.3）
+
+- **v0.6.3 — Static Image Video MVP + Generation Method Selector + Dark Mode Fix**：
+  保留 v0.6.2 Seedance Video 链路；首页新增 Generation Method selector
+  （`Seedance Video` 默认 / `Image Video` 新增）；新增
+  `web/image_video_pipeline.py` 本地 Pillow + FFmpeg 静态图合成视频管线，
+  slide 数按时长动态决定（5s=3 / 15s=4–6 / 30s=6–8 / 60s=10–15 / 90s=20–25）；
+  `VideoHistory.generation_method` 列 + 启动时 idempotent `ALTER TABLE` 迁移；
+  新增 Generation Evidence 面板明确 Image Video 路线**未**调用 APX / Seedance /
+  Image2 / TTS；修复 dark mode 大量白框；本版本仍**不**真实调用 APX、
+  不修改 .env、不 commit
+  （详见 [`v0.6.3_static_image_video_mvp.md`](./v0.6.3_static_image_video_mvp.md)）。
+
+## 历史里程碑（v0.6.2）
 
 - **Prompt Mode**：v0.4.10 已冻结，所有保护边界继续生效（详见
   [`prompt_mode_freeze_spec.md`](./prompt_mode_freeze_spec.md)）。

@@ -2,6 +2,65 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.6.3 - Static Image Video MVP + Generation Method Selector + Dark Mode Fix
+
+> v0.6.3 在保留 v0.6.2 Seedance Video 链路的同时，**新增**一条本地静态图合成视频
+> 的生成路线 **Image Video**（不调用 APX / Seedance / Image2 / TTS）。每张幻灯片
+> 的文案与中文整体内容介绍由 `AI_VIDEO_LLM_*`（默认 gpt-5-chat）实时生成，确保
+> 内容紧扣题目；LLM 失败时自动 fallback 到本地静态模板，视频依然能合成。
+> 同时修复 dark mode 下大量白色色块问题。本版本**不**真实调用 APX，**不**修改
+> `.env`，**不** git add / commit / push。已废弃旧设计：本版本**不**做强制
+> Preflight、不做 Submit-to-Seedance 二次确认。
+
+### 新增
+- `web/image_video_pipeline.py`：本地 Pillow + FFmpeg 静态图合成视频管线，
+  导出 `resolve_slide_count` / `generate_image_video_package`。新增
+  `_call_llm_for_slide_content` 调用 `AI_VIDEO_LLM_*`（gpt-5-chat），按 schema
+  返回每张 slide 的 `title / caption / highlight / visual_focus / badge` 以及
+  `video_title_en / hook_question_en / answer_en / overview_cn`。LLM 失败时
+  fallback 到静态模板，视频仍可生成。`outputs/<slug>/image_video/` 多出
+  `llm_debug.json`、`llm_slide_content.json`、`overview_cn.txt` 三个文件。
+- 首页 Video Mode `Generation method` selector（`Seedance Video` 默认 /
+  `Image Video` 新增）。
+- `VideoHistory.generation_method` 列 + 启动时 idempotent `ALTER TABLE` 迁移。
+- `web/app.py`：`VideoGenerateRequest.generation_method` 字段、
+  `_normalize_generation_method` 校验、Image Video 后台 worker，
+  `/api/video/generate` 与 `/api/video/generate/start` 都按 method 分发。
+- 新增 `Generation Evidence` 面板，明确显示
+  `Real API call: No / Seedance Called: No / APX Called: No / Image2 Called: No /
+  TTS Called: No`。
+- 完整的 `body.dark-mode` 规则覆盖 input / duration selector / method selector /
+  output card / Raw Text / Preview / Overview / Provider Evidence /
+  Generation Evidence / video player / sidebar / 历史列表。
+- `scripts/smoke_image_video_pipeline.py` 离线 smoke test，5/15/30/60/90 五种
+  时长各跑一次。
+- `scripts/run_stability_checks.py` 升级到 `v0.6.3`，新增
+  `check_v063_image_video_mvp()`。
+- `docs/v0.6.3_static_image_video_mvp.md`。
+- `requirements.txt` 新增 `Pillow>=10.0.0`。
+
+### 行为
+- Slide 数严格按时长决定：5s=3 / 15s=4–6 / 30s=6–8 / 60s=10–15 / 90s=20–25。
+  区间内按 title 复杂度（词数 / 复杂关键词 / 标点 / 中文字符）取低/中/高值。
+- Image Video 输出 `outputs/<slug>/image_video/{slide_plan.json,
+  overlay_plan.json, slides/slide_NN.png, concat.txt, ffmpeg_command.txt,
+  final_video.mp4}`。
+- FFmpeg 缺失时 pipeline 返回 `route_status="failed"` + 明确错误
+  `"FFmpeg is required for Image Video composition. Please install ffmpeg."`，
+  不抛异常。
+- v0.6.2 的 Seedance quality gate / `prompt_extend=false` / 真实 run store /
+  Provider Evidence / 5/15/30/60/90 时长选择器 / 16:9 English-only 规范全部保留。
+
+### 不做
+- 不调用 APX / Seedance / Image2 / TTS。`AI_VIDEO_LLM_*`（gpt-5-chat）**不在**
+  禁止列表中——本身就是项目内现有的内容生成模型，被 Prompt Mode、Seedance Video
+  Content Asset Pipeline 共用。
+- 不做 subtitle burn-in / AI QA / batch / 多 provider 大重构。
+- 不做强制 Preflight、不做 Submit-to-Seedance 二次确认。
+- 不修改 .env。不 git add。不 git commit。不 git push。
+- 不允许 `.env` / `data/*.db` / `outputs/` / `*.mp4` / `__MACOSX` / `.DS_Store`
+  进入 git。
+
 ## v0.6.2 - Seedance Prompt Quality Gate + English Compiler + Real Progress Fix
 
 > v0.6.2 不重接接口。APX/Seedance 真实接口已经在 v0.6.0 接通并成功返回过

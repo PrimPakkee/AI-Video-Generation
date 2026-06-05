@@ -14,7 +14,7 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import FileResponse, JSONResponse
@@ -2113,6 +2113,15 @@ class VideoGenerateRequest(BaseModel):
         default=None, ge=3, le=120,
         description="Target video duration; one of 5/15/30/60/90. Defaults to 15 if omitted."
     )
+    # v0.6.3: which generation route to use.
+    #   "seedance_video" (default) -> existing v0.6.2 Seedance/APX chain.
+    #   "image_video"              -> local Pillow + FFmpeg static-image MVP.
+    # Missing or empty falls back to "seedance_video"; any other value 400s.
+    generation_method: Optional[str] = Field(
+        default="seedance_video",
+        max_length=40,
+        description="Generation route: 'seedance_video' or 'image_video'.",
+    )
 
 
 class VideoUpdateContentRequest(BaseModel):
@@ -2128,11 +2137,421 @@ class VideoRegenerateRequest(BaseModel):
     duration_seconds: Optional[int] = Field(default=None, ge=3, le=120)
 
 
+VALID_GENERATION_METHODS = ("seedance_video", "image_video")
+
+
+def _normalize_generation_method(raw: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """v0.6.3 — normalize the request's generation_method.
+
+    Returns (method, error_message). When ``raw`` is None / empty the method
+    defaults to ``seedance_video``. Anything else returns an error string
+    that callers should surface as HTTP 400.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return "seedance_video", None
+    method = str(raw).strip().lower()
+    if method not in VALID_GENERATION_METHODS:
+        return None, (
+            f"generation_method must be one of {VALID_GENERATION_METHODS}; "
+            f"got {raw!r}"
+        )
+    return method, None
+
+
+def _build_image_video_metadata_json(pipeline_result: Dict[str, Any]) -> str:
+    """Serialise the v0.6.3 Image Video pipeline result into VideoHistory.metadata_json.
+
+    Stores the image_video manifest, route flags, has_audio/tts_status, and
+    the safe relative paths to the generated assets. Never stores any API
+    key (the pipeline never sees one).
+    """
+    blob = {
+        "video_assets_schema_version": "image_video_v0.6.3",
+        "generation_method": "image_video",
+        "image_video": {
+            "version": pipeline_result.get("version"),
+            "route_status": pipeline_result.get("route_status"),
+            "duration_seconds": pipeline_result.get("duration_seconds"),
+            "slide_count": pipeline_result.get("slide_count"),
+            "duration_per_slide": pipeline_result.get("duration_per_slide"),
+            "subject": pipeline_result.get("subject"),
+            "slide_plan_path": pipeline_result.get("slide_plan_path"),
+            "overlay_plan_path": pipeline_result.get("overlay_plan_path"),
+            "llm_debug_path": pipeline_result.get("llm_debug_path"),
+            "llm_slide_content_path": pipeline_result.get("llm_slide_content_path"),
+            "overview_cn_path": pipeline_result.get("overview_cn_path"),
+            "slides_dir": pipeline_result.get("slides_dir"),
+            "concat_path": pipeline_result.get("concat_path"),
+            "ffmpeg_command_path": pipeline_result.get("ffmpeg_command_path"),
+            "final_video_path": pipeline_result.get("final_video_path"),
+            "image_source": pipeline_result.get("image_source"),
+            "video_composer": pipeline_result.get("video_composer"),
+            "content_source": pipeline_result.get("content_source"),
+            "llm_used": bool(pipeline_result.get("llm_used")),
+            "llm_model": pipeline_result.get("llm_model"),
+            "llm_fallback_used": bool(pipeline_result.get("llm_fallback_used")),
+            "llm_fallback_reason": pipeline_result.get("llm_fallback_reason"),
+            "video_title_en": pipeline_result.get("video_title_en"),
+            "hook_question_en": pipeline_result.get("hook_question_en"),
+            "answer_en": pipeline_result.get("answer_en"),
+            "has_audio": False,
+            "tts_status": "not_implemented_v0.6.3",
+            "voiceover_source": "none",
+        },
+        # v0.6.3 stabilization — distinguish content LLM from media APIs.
+        # `network_call_performed` historically meant "a media-generation
+        # provider was called". On the image_video route that is ALWAYS
+        # false (Seedance/APX/Image2/TTS are never invoked here). We do
+        # surface `llm_network_call_performed` so an operator can see
+        # whether AI_VIDEO_LLM_* was contacted.
+        "external_api_called": bool(pipeline_result.get("external_api_called")),
+        "content_llm_called": bool(pipeline_result.get("content_llm_called")),
+        "media_api_called": False,
+        "llm_network_call_performed": bool(pipeline_result.get("content_llm_called")),
+        "seedance_called": False,
+        "apx_called": False,
+        "image2_called": False,
+        "tts_called": False,
+        "llm_used": bool(pipeline_result.get("llm_used")),
+        "real_video_generated": pipeline_result.get("route_status") == "succeeded",
+        "real_video_downloaded": False,
+        "network_call_performed": False,
+        "provider_status": "image_video_local",
+    }
+    try:
+        return json.dumps(blob, ensure_ascii=False)
+    except Exception:
+        return json.dumps({
+            "video_assets_schema_version": "image_video_v0.6.3",
+            "generation_method": "image_video",
+            "serialisation_error": True,
+        }, ensure_ascii=False)
+
+
+def _build_image_video_overview_text(
+    title: str, duration_seconds: int, slide_count: int, route_status: str,
+    llm_overview_cn: Optional[str] = None,
+) -> str:
+    """Build the Overview-tab text for image_video records.
+
+    v0.6.3 (LLM update) — when the AI_VIDEO_LLM_* call succeeded and
+    returned a Chinese paragraph, we use that paragraph as the main body
+    of the Overview, followed by a compact metadata footer. When the LLM
+    fell back, we keep the metadata-only block from the original v0.6.3.
+    """
+    status_label = "已生成" if route_status == "succeeded" else "未生成"
+    metadata_block = (
+        f"\n---\n"
+        f"题目: {title}\n"
+        f"生成路线: Image Video（本地静态图合成视频，v0.6.3 MVP）\n"
+        f"视频时长: {duration_seconds} 秒\n"
+        f"幻灯片数: {slide_count} 张\n"
+        f"画面来源: 本地 Pillow 渲染\n"
+        f"合成方式: 本地 FFmpeg\n"
+        f"文案来源: {'LLM (gpt-5-chat)' if llm_overview_cn else '本地静态模板（LLM 未启用或失败）'}\n"
+        f"音频/旁白: 本版本未生成（has_audio=false, tts_status=not_implemented_v0.6.3）\n"
+        f"是否调用 Seedance: 否\n"
+        f"是否调用 APX: 否\n"
+        f"是否调用 Image2: 否\n"
+        f"最终视频文件: {status_label}"
+    )
+    if llm_overview_cn and llm_overview_cn.strip():
+        return f"【本视频内容简介】\n\n{llm_overview_cn.strip()}\n{metadata_block}"
+    fallback_paragraph = (
+        f"【本视频内容简介】\n\n"
+        f"本视频以「{title}」为主题，使用本地静态图 + FFmpeg 合成 "
+        f"{slide_count} 张幻灯片，时长 {duration_seconds} 秒。"
+        f"由于本次 AI_VIDEO_LLM_* 未配置或调用失败，每张幻灯片的英文文案"
+        f"使用了通用静态模板，可能与题目细节不完全对齐；如需贴合题目，"
+        f"请在 .env 中配置 AI_VIDEO_LLM_API_KEY 后重新生成。"
+    )
+    return f"{fallback_paragraph}\n{metadata_block}"
+
+
+def _build_image_video_preview_text(slide_plan: Dict[str, Any]) -> str:
+    """v0.6.3 — human-readable summary of the slide plan for the Preview tab.
+
+    Acts as a friendly index of the Raw Text (which now holds the full
+    image-generation prompts). Each slide gets: index / role / start-end /
+    title / caption / visual focus.
+    """
+    if not slide_plan:
+        return ""
+    out = [
+        "[Image Video MVP - Slide Plan]",
+        "Raw Text contains the detailed image-generation prompts that will",
+        "be sent to the image2 provider in v0.6.4.",
+        "",
+    ]
+    for slide in slide_plan.get("slides", []):
+        out.append(
+            f"#{slide.get('index'):>2}  "
+            f"{slide.get('role'):<14}  "
+            f"{slide.get('start')}s-{slide.get('end')}s  "
+            f"| {slide.get('title')}"
+        )
+        cap = slide.get("caption") or ""
+        if cap:
+            out.append(f"      caption  : {cap}")
+        vf = slide.get("visual_focus") or ""
+        if vf:
+            out.append(f"      visual   : {vf}")
+    return "\n".join(out)
+
+
+def _build_image_video_raw_text(
+    slide_plan: Dict[str, Any], llm_content: Optional[Dict[str, Any]] = None,
+) -> str:
+    """v0.6.3 — Raw Text holds the per-slide image-generation prompts.
+
+    These are the strings that will be sent verbatim to the image2 provider
+    in v0.6.4. Today they are only consumed by the local Pillow renderer,
+    but persisting them now means upgrading to a real image generator is
+    a one-line provider swap.
+    """
+    if not slide_plan:
+        return ""
+    lines: List[str] = ["# Image Video — image generation prompts (v0.6.3)"]
+    title_en = (llm_content or {}).get("video_title_en") or slide_plan.get(
+        "video_title_en"
+    ) or ""
+    if title_en:
+        lines.append(f"# Working title: {title_en}")
+    answer_en = (llm_content or {}).get("answer_en") or ""
+    if answer_en:
+        lines.append(f"# One-line answer: {answer_en}")
+    lines.append("# Each block below is one slide. The prompt body is what")
+    lines.append("# will be sent to the image2 model in v0.6.4 (today: local")
+    lines.append("# Pillow renderer reads it as a hint).")
+    lines.append("")
+    for slide in slide_plan.get("slides", []):
+        lines.append(
+            f"## Slide {slide.get('index'):02d}  ·  {slide.get('role')}  "
+            f"·  {slide.get('start')}s–{slide.get('end')}s"
+        )
+        title = slide.get("title") or ""
+        caption = slide.get("caption") or ""
+        if title:
+            lines.append(f"on-screen title: {title}")
+        if caption:
+            lines.append(f"on-screen caption: {caption}")
+        vf = slide.get("visual_focus") or ""
+        if vf:
+            lines.append(f"visual focus: {vf}")
+        ip = slide.get("image_prompt") or ""
+        if ip:
+            lines.append("image_prompt:")
+            lines.append(ip)
+        else:
+            lines.append("image_prompt: (LLM did not supply one; using local "
+                         "Pillow template instead.)")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _safe_relative_outputs_path(path_str: Optional[str]) -> Optional[str]:
+    """Return a path relative to ``project_root/outputs`` if ``path_str`` is
+    inside that directory, otherwise None. Used to keep absolute machine
+    paths out of the database / API responses.
+    """
+    if not path_str:
+        return None
+    try:
+        candidate = Path(path_str).resolve()
+        outputs_root = (project_root / "outputs").resolve()
+        rel = candidate.relative_to(outputs_root)
+        return f"outputs/{rel.as_posix()}"
+    except Exception:
+        return None
+
+
+def _run_image_video_pipeline(
+    db: Session,
+    title: str,
+    slug: str,
+    duration_seconds: int,
+    output_dir: Path,
+    history_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """v0.6.3 — invoke the local Image Video pipeline and persist the result
+    onto an existing VideoHistory record. Returns the pipeline result dict
+    augmented with a ``relative_video_path`` key when an mp4 was produced.
+
+    Never calls APX, Seedance, Image2, or TTS.
+    """
+    from web.image_video_pipeline import generate_image_video_package
+
+    pipeline_result = generate_image_video_package(
+        title=title,
+        duration_seconds=duration_seconds,
+        output_dir=str(output_dir),
+        slug=slug,
+    )
+
+    final_video_path = pipeline_result.get("final_video_path")
+    relative_video_path = _safe_relative_outputs_path(final_video_path)
+    pipeline_result["relative_video_path"] = relative_video_path
+
+    if history_id is None:
+        return pipeline_result
+
+    llm_overview_cn = pipeline_result.get("overview_cn") or ""
+    if pipeline_result.get("route_status") == "succeeded":
+        slide_plan_path = pipeline_result.get("slide_plan_path")
+        slide_plan: Dict[str, Any] = {}
+        if slide_plan_path and Path(slide_plan_path).exists():
+            try:
+                slide_plan = json.loads(Path(slide_plan_path).read_text(encoding="utf-8"))
+            except Exception:
+                slide_plan = {}
+        # v0.6.3 update — Raw Text holds the per-slide image-generation
+        # prompts (sent to image2 in v0.6.4). Preview is a human-readable
+        # index summarising those prompts. Overview is the Chinese
+        # paragraph from gpt-5-chat.
+        llm_content_for_text: Optional[Dict[str, Any]] = None
+        llm_content_path = pipeline_result.get("llm_slide_content_path")
+        if llm_content_path and Path(llm_content_path).exists():
+            try:
+                llm_content_for_text = json.loads(
+                    Path(llm_content_path).read_text(encoding="utf-8")
+                )
+            except Exception:
+                llm_content_for_text = None
+        raw_text = _build_image_video_raw_text(slide_plan, llm_content_for_text)
+        preview_text = _build_image_video_preview_text(slide_plan)
+        overview_text = _build_image_video_overview_text(
+            title=title,
+            duration_seconds=duration_seconds,
+            slide_count=int(pipeline_result.get("slide_count") or 0),
+            route_status="succeeded",
+            llm_overview_cn=llm_overview_cn,
+        )
+        VideoHistoryRepository.update_image_video_result(
+            db=db,
+            history_id=history_id,
+            video_file_path=relative_video_path,
+            video_duration_seconds=int(duration_seconds),
+            video_status="ready",
+            metadata_json=_build_image_video_metadata_json(pipeline_result),
+            preview_text=preview_text,
+            overview_cn=overview_text,
+            prompt_text=raw_text,
+        )
+    else:
+        # Failure path — still record the metadata so the operator can see
+        # why the pipeline didn't produce final_video.mp4.
+        overview_text = _build_image_video_overview_text(
+            title=title,
+            duration_seconds=duration_seconds,
+            slide_count=int(pipeline_result.get("slide_count") or 0),
+            route_status="failed",
+            llm_overview_cn=llm_overview_cn,
+        )
+        VideoHistoryRepository.update_image_video_result(
+            db=db,
+            history_id=history_id,
+            video_file_path=None,
+            video_duration_seconds=int(duration_seconds),
+            video_status="failed",
+            metadata_json=_build_image_video_metadata_json(pipeline_result),
+            preview_text=overview_text,
+            overview_cn=overview_text,
+            prompt_text=overview_text,
+        )
+
+    return pipeline_result
+
+
+def _build_image_video_response_payload(
+    record: "VideoHistory",
+    pipeline_result: Dict[str, Any],
+    title: str,
+    duration_seconds: int,
+) -> Dict[str, Any]:
+    """Shape the JSON payload the frontend receives for an image_video run."""
+    relative_video_path = pipeline_result.get("relative_video_path")
+    route_status = pipeline_result.get("route_status")
+    error = pipeline_result.get("error")
+    success = route_status == "succeeded"
+    return {
+        "success": success,
+        "id": record.id,
+        "history_id": record.id,
+        "title": title,
+        "slug": record.slug,
+        "topic_group_id": record.topic_group_id,
+        "version_number": record.version_number,
+        "prompt": record.prompt_text,
+        "raw_text": record.prompt_text,
+        "prompt_text": record.prompt_text,
+        "preview_text": record.preview_text,
+        "overview_cn": record.overview_cn,
+        "video_status": record.video_status,
+        "video_file_path": record.video_file_path,
+        "video_duration_seconds": record.video_duration_seconds,
+        "generation_method": "image_video",
+        "generation_method_label": "Image Video",
+        "route_status": route_status,
+        "image_video_route_status": route_status,
+        "error": error,
+        "image_video": {
+            "duration_seconds": duration_seconds,
+            "slide_count": pipeline_result.get("slide_count"),
+            "duration_per_slide": pipeline_result.get("duration_per_slide"),
+            "slide_plan_path": pipeline_result.get("slide_plan_path"),
+            "overlay_plan_path": pipeline_result.get("overlay_plan_path"),
+            "slides_dir": pipeline_result.get("slides_dir"),
+            "ffmpeg_command_path": pipeline_result.get("ffmpeg_command_path"),
+            "concat_path": pipeline_result.get("concat_path"),
+            "final_video_path": relative_video_path,
+            "video_composer": pipeline_result.get("video_composer"),
+            "ffmpeg_found": bool(pipeline_result.get("ffmpeg_found")),
+            "ffmpeg_path": pipeline_result.get("ffmpeg_path"),
+            "image_source": pipeline_result.get("image_source"),
+            "content_source": pipeline_result.get("content_source"),
+            "content_llm_called": bool(pipeline_result.get("content_llm_called")),
+            "media_api_called": False,
+            "llm_used": bool(pipeline_result.get("llm_used")),
+            "llm_model": pipeline_result.get("llm_model"),
+            "llm_fallback_used": bool(pipeline_result.get("llm_fallback_used")),
+            "llm_fallback_reason": pipeline_result.get("llm_fallback_reason"),
+            "video_title_en": pipeline_result.get("video_title_en"),
+            "hook_question_en": pipeline_result.get("hook_question_en"),
+            "answer_en": pipeline_result.get("answer_en"),
+            "overview_cn": pipeline_result.get("overview_cn"),
+            "has_audio": False,
+            "tts_status": "not_implemented_v0.6.3",
+            "voiceover_source": "none",
+        },
+        "generation_evidence": {
+            "route": "image_video",
+            "media_api_called": False,
+            "content_llm_called": bool(pipeline_result.get("content_llm_called")),
+            "real_api_call": False,
+            "seedance_called": False,
+            "apx_called": False,
+            "image2_called": False,
+            "tts_called": False,
+            "llm_used_for_text": bool(pipeline_result.get("llm_used")),
+            "llm_model": pipeline_result.get("llm_model"),
+            "local_slides_generated": True,
+            "ffmpeg_composed": success,
+            "final_video_available": bool(relative_video_path) and success,
+        },
+        "item": record.to_dict(include_prompt=True),
+    }
+
+
 def _build_video_assets_metadata_json(pipeline_result: Dict[str, Any]) -> str:
-    """Serialise the v0.5.4 asset pipeline result into a compact JSON string
-    suitable for ``VideoHistory.metadata_json``. Stores schema version, asset
-    manifest, asset paths, warnings, llm_used / fallback_used flags, and
-    provider status — never the API key, never any secret.
+    """Serialise the v0.5.4 Seedance asset pipeline result into a compact
+    JSON string suitable for ``VideoHistory.metadata_json``. Stores schema
+    version, asset manifest, asset paths, warnings, llm_used / fallback_used
+    flags, and provider status — never the API key, never any secret.
+
+    v0.6.3 stabilization hotfix — restored as a top-level function. An
+    earlier refactor accidentally left the function body inside
+    ``_build_image_video_response_payload`` after the return statement, so
+    every Seedance Video run was hitting NameError at the three call sites.
     """
     manifest = pipeline_result.get('asset_manifest') or {}
     contract_validation = pipeline_result.get('provider_contract_validation') or {}
@@ -2659,11 +3078,36 @@ VIDEO_RUN_STAGES = (
     ("open_video_status_panel", "Open video status panel"),
 )
 
+# v0.6.3.2 — Image Video has its own real stage list. The Seedance route
+# above used to be reused for both, which left 5 stages permanently at 0 ms
+# on the image_video path. The new stages match the actual work the
+# image_video pipeline performs (LLM content + Pillow render + FFmpeg
+# compose), so each row in the progress panel reports a real duration.
+IMAGE_VIDEO_RUN_STAGES = (
+    ("validate_topic",      "Validate topic"),
+    ("plan_slides",         "Plan slides"),
+    ("write_slide_content", "Write slide content with AI"),
+    ("render_slide_images", "Render slide images"),
+    ("compose_final_video", "Compose final video with FFmpeg"),
+    ("save_history",        "Save to history"),
+)
+
 VIDEO_GENERATION_RUNS: Dict[str, Dict[str, Any]] = {}
 VIDEO_GENERATION_RUNS_LOCK = threading.Lock()
 
 
-def _video_run_init(run_id: str, title: str, duration_seconds: Optional[int]) -> Dict[str, Any]:
+def _stages_for_method(generation_method: str) -> tuple:
+    if generation_method == "image_video":
+        return IMAGE_VIDEO_RUN_STAGES
+    return VIDEO_RUN_STAGES
+
+
+def _video_run_init(
+    run_id: str,
+    title: str,
+    duration_seconds: Optional[int],
+    generation_method: str = "seedance_video",
+) -> Dict[str, Any]:
     now_iso = datetime.utcnow().isoformat() + "Z"
     stages = [
         {
@@ -2675,12 +3119,13 @@ def _video_run_init(run_id: str, title: str, duration_seconds: Optional[int]) ->
             "duration_ms": None,
             "message": "",
         }
-        for key, label in VIDEO_RUN_STAGES
+        for key, label in _stages_for_method(generation_method)
     ]
     run = {
         "run_id": run_id,
         "title": title,
         "duration_seconds": duration_seconds,
+        "generation_method": generation_method,
         "status": "running",
         "created_at": now_iso,
         "updated_at": now_iso,
@@ -2778,9 +3223,18 @@ def _video_run_worker(
     run_id: str,
     title: str,
     duration_seconds: Optional[int],
+    generation_method: str = "seedance_video",
 ) -> None:
     from web.db import VideoSessionLocal  # local import: same as the rest of the file
     db = None
+
+    # v0.6.3 — Image Video runs a different (much shorter) sequence: it
+    # never calls APX/Seedance/Image2/TTS. We surface a compact 4-stage
+    # progress so the home-page UI doesn't lie about which work happened.
+    if generation_method == "image_video":
+        _run_image_video_worker(run_id, title, duration_seconds)
+        return
+
     try:
         # Stage 1: validate topic
         _video_run_set_stage(run_id, "validate_topic", "running")
@@ -2956,29 +3410,216 @@ def _video_run_worker(
                 pass
 
 
+def _run_image_video_worker(
+    run_id: str, title: str, duration_seconds: Optional[int]
+) -> None:
+    """v0.6.3.2 — background worker for the Image Video route.
+
+    Drives the 6-stage IMAGE_VIDEO_RUN_STAGES sequence:
+
+        validate_topic
+        plan_slides
+        write_slide_content
+        render_slide_images
+        compose_final_video
+        save_history
+
+    Stages 2-5 are emitted by ``image_video_pipeline.generate_image_video_package``
+    via the ``progress_cb`` hook so each row records real wall-clock time.
+    Never calls APX, Seedance, Image2, or TTS.
+    """
+    from web.db import VideoSessionLocal
+    from web.image_video_pipeline import generate_image_video_package
+    db = None
+    try:
+        # Stage 1 — validate_topic
+        _video_run_set_stage(run_id, "validate_topic", "running")
+        if not title.strip():
+            _video_run_set_stage(run_id, "validate_topic", "failed", "Title cannot be empty")
+            _video_run_finalize(run_id, "failed", error="Title cannot be empty")
+            return
+        _video_run_set_stage(run_id, "validate_topic", "done")
+
+        duration_for_image = duration_seconds or 15
+        if duration_for_image not in (5, 15, 30, 60, 90):
+            duration_for_image = min(
+                (5, 15, 30, 60, 90),
+                key=lambda x: abs(x - (duration_seconds or 15)),
+            )
+
+        slug = generate_unique_slug(title)
+        output_dir = project_root / "outputs" / slug
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Stages 2-5 (plan_slides / write_slide_content / render_slide_images /
+        # compose_final_video) are reported by the pipeline itself via this
+        # callback. Each call resolves to _video_run_set_stage on this run.
+        def _progress_cb(stage_key: str, status: str, message: str = "") -> None:
+            _video_run_set_stage(run_id, stage_key, status, message)
+
+        pipeline_result = generate_image_video_package(
+            title=title,
+            duration_seconds=duration_for_image,
+            output_dir=str(output_dir),
+            slug=slug,
+            progress_cb=_progress_cb,
+        )
+
+        # Stage 6 — save_history (DB write happens here, not inside the
+        # pipeline, so we know its real duration too).
+        _video_run_set_stage(run_id, "save_history", "running",
+                             "Persisting video history record + assets.")
+        db = VideoSessionLocal()
+        record = VideoHistoryRepository.create_history_record(
+            db=db, title=title, slug=slug,
+            prompt_text=f"[Image Video] {title}",
+            output_dir=str(output_dir),
+            model="image_video_local_renderer",
+            mode="video", status="success",
+            overview_cn=None, web_copy_text=None,
+            generation_method="image_video",
+        )
+        history_id = record.id
+        # Wire pipeline result into the freshly-created history record
+        # (writes video_file_path / metadata_json / overview_cn / preview_text /
+        # prompt_text). This is the same persistence helper the synchronous
+        # /api/video/generate path uses.
+        relative_video_path = _safe_relative_outputs_path(
+            pipeline_result.get("final_video_path")
+        )
+        pipeline_result["relative_video_path"] = relative_video_path
+        llm_overview_cn = pipeline_result.get("overview_cn") or ""
+        if pipeline_result.get("route_status") == "succeeded":
+            slide_plan_path = pipeline_result.get("slide_plan_path")
+            slide_plan: Dict[str, Any] = {}
+            if slide_plan_path and Path(slide_plan_path).exists():
+                try:
+                    slide_plan = json.loads(
+                        Path(slide_plan_path).read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    slide_plan = {}
+            llm_content_for_text: Optional[Dict[str, Any]] = None
+            llm_content_path = pipeline_result.get("llm_slide_content_path")
+            if llm_content_path and Path(llm_content_path).exists():
+                try:
+                    llm_content_for_text = json.loads(
+                        Path(llm_content_path).read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    llm_content_for_text = None
+            raw_text = _build_image_video_raw_text(slide_plan, llm_content_for_text)
+            preview_text = _build_image_video_preview_text(slide_plan)
+            overview_text = _build_image_video_overview_text(
+                title=title,
+                duration_seconds=duration_for_image,
+                slide_count=int(pipeline_result.get("slide_count") or 0),
+                route_status="succeeded",
+                llm_overview_cn=llm_overview_cn,
+            )
+            VideoHistoryRepository.update_image_video_result(
+                db=db, history_id=history_id,
+                video_file_path=relative_video_path,
+                video_duration_seconds=int(duration_for_image),
+                video_status="ready",
+                metadata_json=_build_image_video_metadata_json(pipeline_result),
+                preview_text=preview_text,
+                overview_cn=overview_text,
+                prompt_text=raw_text,
+            )
+            _video_run_set_stage(run_id, "save_history", "done",
+                                 "History record updated; mp4 path recorded.")
+        else:
+            overview_text = _build_image_video_overview_text(
+                title=title,
+                duration_seconds=duration_for_image,
+                slide_count=int(pipeline_result.get("slide_count") or 0),
+                route_status="failed",
+                llm_overview_cn=llm_overview_cn,
+            )
+            VideoHistoryRepository.update_image_video_result(
+                db=db, history_id=history_id,
+                video_file_path=None,
+                video_duration_seconds=int(duration_for_image),
+                video_status="failed",
+                metadata_json=_build_image_video_metadata_json(pipeline_result),
+                preview_text=overview_text,
+                overview_cn=overview_text,
+                prompt_text=overview_text,
+            )
+            _video_run_set_stage(run_id, "save_history", "done",
+                                 "History record updated (route_status=failed).")
+        db.refresh(record)
+
+        result_payload = _build_image_video_response_payload(
+            record=record,
+            pipeline_result=pipeline_result,
+            title=title,
+            duration_seconds=duration_for_image,
+        )
+        _video_run_finalize(
+            run_id,
+            "completed" if pipeline_result.get("route_status") == "succeeded" else "failed",
+            result=result_payload,
+            error=pipeline_result.get("error"),
+        )
+    except Exception as exc:
+        try:
+            _video_run_finalize(run_id, "failed", error=f"Image Video worker error: {exc}")
+        except Exception:
+            pass
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
 @app.post("/api/video/generate/start")
 async def video_generate_start(request: VideoGenerateRequest) -> JSONResponse:
     """v0.6.2 — kick off a Video Mode generation run in the background and
     return a ``run_id`` immediately. The home-page progress UI polls
     ``GET /api/video/generate/runs/{run_id}`` to render real per-stage
-    progress instead of advancing on a fake setInterval timer."""
+    progress instead of advancing on a fake setInterval timer.
+
+    v0.6.3 — also accepts ``generation_method`` ("seedance_video" or
+    "image_video"). Invalid values return 400."""
     title = (request.title or "").strip()
     if not title:
         return JSONResponse(
             status_code=400,
             content={"success": False, "error": "Title cannot be empty"},
         )
+    generation_method, method_error = _normalize_generation_method(
+        request.generation_method
+    )
+    if method_error:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": method_error},
+        )
     duration_seconds = request.duration_seconds
     run_id = uuid.uuid4().hex
-    _video_run_init(run_id, title, duration_seconds)
+    _video_run_init(run_id, title, duration_seconds, generation_method)
     thread = threading.Thread(
         target=_video_run_worker,
-        args=(run_id, title, duration_seconds),
+        args=(run_id, title, duration_seconds, generation_method),
         name=f"video-run-{run_id[:8]}",
         daemon=True,
     )
     thread.start()
-    return JSONResponse(content={"success": True, "run_id": run_id})
+    # v0.6.3.2 — return the initial stage list so the UI can paint the
+    # right pending rows immediately (previously the frontend hardcoded
+    # the Seedance 9-stage list, which left image_video showing 5
+    # phantom 0 ms rows).
+    initial = _video_run_snapshot(run_id) or {}
+    return JSONResponse(content={
+        "success": True,
+        "run_id": run_id,
+        "generation_method": generation_method,
+        "stages": initial.get("stages", []),
+    })
 
 
 @app.get("/api/video/generate/runs/{run_id}")
@@ -3118,6 +3759,71 @@ async def video_generate(
             content={"success": False, "error": "Title cannot be empty"},
         )
 
+    # v0.6.3 — dispatch on generation_method. Default is the existing
+    # Seedance Video chain (preserves all v0.6.2 behaviour). Image Video
+    # runs the local Pillow + FFmpeg pipeline and never calls APX, Seedance,
+    # Image2, or TTS.
+    generation_method, method_error = _normalize_generation_method(
+        request.generation_method
+    )
+    if method_error:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": method_error},
+        )
+
+    if generation_method == "image_video":
+        duration_for_image = request.duration_seconds or 15
+        if duration_for_image not in (5, 15, 30, 60, 90):
+            # snap to nearest supported bucket
+            duration_for_image = min(
+                (5, 15, 30, 60, 90),
+                key=lambda x: abs(x - duration_for_image),
+            )
+        slug = generate_unique_slug(title)
+        output_dir = project_root / "outputs" / slug
+        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            record = VideoHistoryRepository.create_history_record(
+                db=db,
+                title=title,
+                slug=slug,
+                prompt_text=f"[Image Video] {title}",
+                output_dir=str(output_dir),
+                model="image_video_local_renderer",
+                mode="video",
+                status="success",
+                overview_cn=None,
+                web_copy_text=None,
+                generation_method="image_video",
+            )
+            pipeline_result = _run_image_video_pipeline(
+                db=db,
+                title=title,
+                slug=slug,
+                duration_seconds=duration_for_image,
+                output_dir=output_dir,
+                history_id=record.id,
+            )
+            db.refresh(record)
+            payload = _build_image_video_response_payload(
+                record=record,
+                pipeline_result=pipeline_result,
+                title=title,
+                duration_seconds=duration_for_image,
+            )
+            status_code = 200 if payload["success"] else 200
+            return JSONResponse(content=payload, status_code=status_code)
+        except Exception as exc:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": f"Image Video pipeline crashed: {exc}",
+                    "generation_method": "image_video",
+                },
+            )
+
     slug = generate_unique_slug(title)
     script_path = project_root / "scripts" / "generate_video_package.py"
     if not script_path.exists():
@@ -3197,6 +3903,7 @@ async def video_generate(
                 status='success',
                 overview_cn=overview_cn,
                 web_copy_text=None,
+                generation_method='seedance_video',
             )
 
             # v0.6.1: pull the user-selected duration from the request body
@@ -4843,6 +5550,51 @@ async def video_asset_thumbnail(
     }
     media_type = media_map.get(suffix, "application/octet-stream")
     return FileResponse(str(safe_path), media_type=media_type)
+
+
+# =============================================================================
+# Diagnostics
+# =============================================================================
+
+
+@app.get("/api/video/diagnostics/ffmpeg")
+async def video_diagnostics_ffmpeg() -> Dict[str, Any]:
+    """v0.6.3 stabilization — read-only FFmpeg discovery report.
+
+    Reuses ``image_video_pipeline.resolve_ffmpeg_binary()`` so the
+    diagnostics endpoint and the production rendering path agree on which
+    locations were probed and which one was selected. Calls no external
+    APIs, never modifies any file, and never reads or returns API keys.
+    When ffmpeg is found, the first line of ``ffmpeg -version`` is included
+    so the operator can confirm the build.
+    """
+    from web.image_video_pipeline import resolve_ffmpeg_binary
+
+    found, diagnostics = resolve_ffmpeg_binary()
+    version_line: Optional[str] = None
+    if found:
+        try:
+            proc = subprocess.run(
+                [found, "-version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                version_line = proc.stdout.splitlines()[0].strip()
+        except Exception:
+            version_line = None
+    payload: Dict[str, Any] = {
+        "found": bool(found),
+        "path": diagnostics.get("path"),
+        "checked_paths": diagnostics.get("checked_paths") or [],
+        "server_path_env": diagnostics.get("server_path_env"),
+    }
+    if found:
+        payload["version"] = version_line
+    else:
+        payload["install_hint"] = diagnostics.get(
+            "install_hint", "macOS: brew install ffmpeg"
+        )
+    return {"success": True, "ffmpeg": payload}
 
 
 # =============================================================================

@@ -2034,11 +2034,101 @@ function refreshProviderContractSummary(historyId) {
         .catch(() => {});
 }
 
+// v0.6.3 stabilization — when the backend reports an FFmpeg-missing error,
+// render multi-line guidance instead of a single grey sentence so the user
+// knows exactly what to do (brew install, restart, diagnostics endpoint).
+function renderImageVideoErrorMessage(targetEl, message) {
+    if (!targetEl) return;
+    const text = String(message || '');
+    const isFfmpeg = /FFmpeg is required for Image Video composition/i.test(text);
+    if (!isFfmpeg) {
+        targetEl.textContent = text || '未知错误';
+        return;
+    }
+    targetEl.innerHTML = '';
+    const lines = [
+        'FFmpeg is required for Image Video composition.',
+        '',
+        'macOS:',
+        '    brew install ffmpeg',
+        '',
+        'Then restart the backend server:',
+        '    python3 -m uvicorn web.app:app --reload --port 8000',
+        '',
+        'Diagnostics:',
+        '    GET /api/video/diagnostics/ffmpeg',
+    ];
+    const pre = document.createElement('pre');
+    pre.className = 'ffmpeg-missing-help';
+    pre.textContent = lines.join('\n');
+    targetEl.appendChild(pre);
+}
+
+function renderGenerationEvidencePanel(record, payload) {
+    // v0.6.3 — render evidence for the local Image Video route.
+    const panel = document.getElementById('generation-evidence-panel');
+    if (!panel) return;
+    const method = ((record && record.generation_method) || (payload && payload.generation_method) || '').toLowerCase();
+    if (method !== 'image_video') {
+        panel.classList.add('hidden');
+        panel.setAttribute('hidden', '');
+        return;
+    }
+    panel.classList.remove('hidden');
+    panel.removeAttribute('hidden');
+    const meta = (payload && payload.image_video) || {};
+    const evidence = (payload && payload.generation_evidence) || {};
+    const set = (key, value) => {
+        const el = panel.querySelector(`[data-evidence="${key}"]`);
+        if (!el) return;
+        if (typeof value === 'boolean') {
+            el.textContent = value ? 'Yes' : 'No';
+        } else if (value === null || value === undefined || value === '') {
+            el.textContent = '—';
+        } else {
+            el.textContent = String(value);
+        }
+    };
+    set('route', 'image_video');
+    set('media_api_called', false);
+    set('content_llm_called', !!(evidence.content_llm_called || meta.content_llm_called));
+    set('seedance_called', false);
+    set('apx_called', false);
+    set('image2_called', false);
+    set('tts_called', false);
+    set('local_slides_generated', evidence.local_slides_generated != null
+        ? !!evidence.local_slides_generated : true);
+    set('ffmpeg_composed', !!evidence.ffmpeg_composed);
+    set('final_video_available', !!evidence.final_video_available);
+    set('slide_count', meta.slide_count);
+    set('duration_seconds', meta.duration_seconds != null
+        ? `${meta.duration_seconds}s` : null);
+    set('has_audio', false);
+    set('tts_status', meta.tts_status || 'not_implemented_v0.6.3');
+}
+
 function renderProviderEvidencePanel(historyId, payload) {
     const panel = document.getElementById('provider-evidence-panel');
     if (!panel) return;
     if (currentHistoryId != null && historyId != null && Number(currentHistoryId) !== Number(historyId)) {
         return;
+    }
+    // v0.6.3 — when the active record is an Image Video record, hide the
+    // Provider Evidence panel entirely and route to the Generation Evidence
+    // panel instead. Otherwise render Provider Evidence as before.
+    const recordMethod = (currentVideoRecord && currentVideoRecord.generation_method)
+        || (payload && payload.generation_method) || 'seedance_video';
+    if (String(recordMethod).toLowerCase() === 'image_video') {
+        panel.classList.add('hidden');
+        panel.setAttribute('hidden', '');
+        renderGenerationEvidencePanel(currentVideoRecord, payload || {});
+        return;
+    }
+    // Hide image-video panel when we're on a Seedance record.
+    const imgPanel = document.getElementById('generation-evidence-panel');
+    if (imgPanel) {
+        imgPanel.classList.add('hidden');
+        imgPanel.setAttribute('hidden', '');
     }
     const evidence = (payload && payload.provider_evidence) || null;
     if (!evidence) {
@@ -2124,27 +2214,32 @@ function _videoProgressEls() {
     };
 }
 
+// v0.6.3.2 — render the progress list directly from whatever the backend
+// snapshot reports. The Seedance route returns 9 stages, the Image Video
+// route returns 6 — the frontend no longer hardcodes either list, so each
+// row reflects a real stage with a real duration. ``initialStages`` (passed
+// from the start API response) is used to paint pending rows immediately
+// while the worker thread is still spinning up.
+let _videoProgressInitialStages = null;
+
 function _renderVideoProgressListFromStages(stages, finalState) {
     const { list } = _videoProgressEls();
     if (!list) return;
-    const stageMap = {};
-    (stages || []).forEach((s) => {
-        if (s && s.key) stageMap[s.key] = s;
-    });
-    const html = VIDEO_GENERATION_STEPS.map((step) => {
-        const live = stageMap[step.key] || null;
+    const live = (stages && stages.length) ? stages : (_videoProgressInitialStages || []);
+    const html = live.map((step) => {
+        const status = String(step.status || 'pending');
         let cls = 'pending';
-        if (live) {
-            if (live.status === 'done') cls = 'done';
-            else if (live.status === 'running') cls = 'active';
-            else if (live.status === 'failed') cls = 'failed';
-        }
+        if (status === 'done') cls = 'done';
+        else if (status === 'running') cls = 'active';
+        else if (status === 'failed') cls = 'failed';
         if (finalState === 'failed' && cls === 'active') cls = 'failed';
-        const ms = (live && typeof live.duration_ms === 'number')
-            ? `<span class="video-progress-step-time">${live.duration_ms} ms</span>` : '';
-        return `<li class="video-progress-step ${cls}" data-step="${step.key}">
+        const ms = (typeof step.duration_ms === 'number')
+            ? `<span class="video-progress-step-time">${step.duration_ms} ms</span>` : '';
+        const key = step.key || '';
+        const label = step.label || key;
+        return `<li class="video-progress-step ${cls}" data-step="${key}">
             <span class="video-progress-step-marker"></span>
-            <span class="video-progress-step-label">${step.label}</span>
+            <span class="video-progress-step-label">${label}</span>
             ${ms}
         </li>`;
     }).join('');
@@ -2254,6 +2349,7 @@ function failVideoGenerationProgress(errorText) {
 function resetVideoGenerationProgress() {
     _stopVideoRunPolling();
     _videoRunCurrentRunId = null;
+    _videoProgressInitialStages = null;
     const { panel, list, message, spinner } = _videoProgressEls();
     if (panel) {
         panel.classList.add('hidden');
@@ -2552,11 +2648,20 @@ async function triggerGenerate() {
                 body: JSON.stringify({
                     title,
                     duration_seconds: getCurrentVideoDurationSeconds(),
+                    generation_method: getCurrentGenerationMethod(),
                 }),
             });
             const startData = await startResp.json();
             if (!startData || !startData.success || !startData.run_id) {
                 throw new Error((startData && startData.error) || 'Failed to start video run.');
+            }
+            // v0.6.3.2 — paint the right number of pending rows immediately
+            // so the user sees the route-specific stages before the worker
+            // thread emits its first status update.
+            _videoProgressInitialStages = Array.isArray(startData.stages)
+                ? startData.stages : null;
+            if (_videoProgressInitialStages) {
+                _renderVideoProgressListFromStages([], null);
             }
             // v0.6.2 — clear any stale video src before the new run starts
             // so the previous record's mp4 can never bleed through.
@@ -2589,10 +2694,36 @@ async function triggerGenerate() {
             // Video tab can show the status panel after we transition to the
             // result section.
             currentVideoJob = data.video_job || null;
+            // v0.6.3: capture the record so renderProviderEvidencePanel /
+            // renderGenerationEvidencePanel can read generation_method.
+            if (data.item) {
+                currentVideoRecord = data.item;
+            } else if (data.generation_method) {
+                currentVideoRecord = Object.assign(
+                    {}, currentVideoRecord || {},
+                    { id: currentHistoryId, generation_method: data.generation_method }
+                );
+            }
             if (currentAppMode === 'video') {
                 completeVideoGenerationProgress(currentVideoJob);
             }
             renderVideoJobStatus(currentVideoJob);
+            // v0.6.3: when the run came back as image_video, render the
+            // Generation Evidence panel directly from the run result so the
+            // user sees real_api_call=No / seedance_called=No / etc.
+            if (data.generation_method === 'image_video') {
+                try { renderGenerationEvidencePanel(currentVideoRecord, data); }
+                catch (e) { /* defensive */ }
+                // Apply the local mp4 src so the Video tab plays it.
+                if (data.video_file_path && currentHistoryId != null) {
+                    try {
+                        const vid = document.getElementById('video-element');
+                        if (vid) {
+                            vid.src = `/api/video/history/${currentHistoryId}/asset/video?ts=${Date.now()}`;
+                        }
+                    } catch (e) {}
+                }
+            }
 
             // Update prompt view state. In Video Mode v0.5.4 the backend sets
             // `prompt` to the provider_prompt produced by the Video Content
@@ -2648,7 +2779,7 @@ async function triggerGenerate() {
             }, 100);
         } else {
             // Show error
-            errorMessage.textContent = data.error || '未知错误';
+            renderImageVideoErrorMessage(errorMessage, data.error || '未知错误');
 
             // Show detailed error if available
             if (data.stdout || data.stderr) {
@@ -4138,15 +4269,15 @@ function applyModeChrome(mode) {
     // v0.5.3: swap homepage circular generate button per mode.
     updateGenerateButtonForCurrentMode();
 
-    // v0.6.1: duration selector is Video-Mode-only.
-    const durSel = document.getElementById('video-duration-selector');
-    if (durSel) {
+    // v0.6.3: combined Video Mode options panel (duration + generation method).
+    const optsPanel = document.getElementById('video-options-panel');
+    if (optsPanel) {
         if (mode === 'video') {
-            durSel.classList.remove('hidden');
-            durSel.removeAttribute('hidden');
+            optsPanel.classList.remove('hidden');
+            optsPanel.removeAttribute('hidden');
         } else {
-            durSel.classList.add('hidden');
-            durSel.setAttribute('hidden', '');
+            optsPanel.classList.add('hidden');
+            optsPanel.setAttribute('hidden', '');
         }
     }
 }
@@ -4484,5 +4615,42 @@ applyModeChrome(currentAppMode);
         const v = parseInt(btn.getAttribute('data-duration'), 10);
         if (!isFinite(v)) return;
         setVideoDurationSelectorActive(v);
+    });
+})();
+
+// v0.6.3 — wire generation method selector. Two routes:
+//   "seedance_video" (default) -> existing v0.6.2 Seedance/APX chain
+//   "image_video"              -> local Pillow + FFmpeg static-image MVP
+const VALID_GENERATION_METHODS = ['seedance_video', 'image_video'];
+let currentGenerationMethod = 'seedance_video';
+
+function getCurrentGenerationMethod() {
+    return VALID_GENERATION_METHODS.includes(currentGenerationMethod)
+        ? currentGenerationMethod
+        : 'seedance_video';
+}
+
+function setGenerationMethodActive(method) {
+    if (!VALID_GENERATION_METHODS.includes(method)) {
+        method = 'seedance_video';
+    }
+    currentGenerationMethod = method;
+    document.querySelectorAll('.video-method-option').forEach((btn) => {
+        const m = btn.getAttribute('data-method');
+        const active = m === method;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+}
+
+(function wireVideoMethodSelector() {
+    const root = document.getElementById('video-method-selector');
+    if (!root) return;
+    setGenerationMethodActive(currentGenerationMethod);
+    root.addEventListener('click', (e) => {
+        const btn = e.target.closest('.video-method-option');
+        if (!btn) return;
+        const m = btn.getAttribute('data-method');
+        setGenerationMethodActive(m);
     });
 })();

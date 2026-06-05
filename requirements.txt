@@ -16,3 +16,9 @@ SQLAlchemy>=2.0.0
 
 # HTTP client used by ApxSeedanceProvider (v0.6.0+)
 requests>=2.31.0
+
+# Pillow (v0.6.3+) — used by web/image_video_pipeline.py to draw the
+# educational slide PNGs that FFmpeg then concatenates into final_video.mp4.
+# The Image Video MVP renders text and shapes locally; no remote Image2 /
+# Seedance / TTS calls are made.
+Pillow>=10.0.0

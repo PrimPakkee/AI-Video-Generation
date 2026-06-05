@@ -154,17 +154,30 @@
                                 <span class="send-tooltip">Generate Prompt</span>
                             </button>
                         </div>
-                        <!-- v0.6.1 Video Mode duration selector. Hidden in Prompt Mode. -->
-                        <div id="video-duration-selector" class="video-duration-selector hidden" hidden>
-                            <span class="video-duration-label">Video duration</span>
-                            <div class="video-duration-options" role="radiogroup" aria-label="Video duration">
-                                <button type="button" class="video-duration-option" data-duration="5" role="radio" aria-checked="false">5s</button>
-                                <button type="button" class="video-duration-option active" data-duration="15" role="radio" aria-checked="true">15s</button>
-                                <button type="button" class="video-duration-option" data-duration="30" role="radio" aria-checked="false">30s</button>
-                                <button type="button" class="video-duration-option" data-duration="60" role="radio" aria-checked="false">60s</button>
-                                <button type="button" class="video-duration-option" data-duration="90" role="radio" aria-checked="false">90s</button>
+                        <!-- Video Mode options (duration + generation method) — single
+                             panel so the two rows read as one settings group. -->
+                        <div id="video-options-panel" class="video-options-panel hidden" hidden>
+                            <div id="video-duration-selector" class="video-duration-selector">
+                                <span class="video-duration-label">Video duration</span>
+                                <div class="video-duration-options" role="radiogroup" aria-label="Video duration">
+                                    <button type="button" class="video-duration-option" data-duration="5" role="radio" aria-checked="false">5s</button>
+                                    <button type="button" class="video-duration-option active" data-duration="15" role="radio" aria-checked="true">15s</button>
+                                    <button type="button" class="video-duration-option" data-duration="30" role="radio" aria-checked="false">30s</button>
+                                    <button type="button" class="video-duration-option" data-duration="60" role="radio" aria-checked="false">60s</button>
+                                    <button type="button" class="video-duration-option" data-duration="90" role="radio" aria-checked="false">90s</button>
+                                </div>
                             </div>
-                            <span class="video-duration-hint">Default 15s. 16:9 landscape, English on-screen text only.</span>
+                            <div id="video-method-selector" class="video-method-selector">
+                                <span class="video-method-label">Generation method</span>
+                                <div class="video-method-options" role="radiogroup" aria-label="Generation method">
+                                    <button type="button" class="video-method-option active" data-method="seedance_video" role="radio" aria-checked="true">
+                                        <span class="video-method-option-title">Seedance Video</span>
+                                    </button>
+                                    <button type="button" class="video-method-option" data-method="image_video" role="radio" aria-checked="false">
+                                        <span class="video-method-option-title">Image Video</span>
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -323,6 +336,28 @@
                                             <li><strong>Duration:</strong> <span data-evidence="duration_seconds">—</span></li>
                                             <li><strong>Prompt quality:</strong> <span data-evidence="prompt_quality">—</span></li>
                                             <li class="provider-evidence-block-reason hidden"><strong>Block reason:</strong> <span data-evidence="block_reason">—</span></li>
+                                        </ul>
+                                    </div>
+                                    <!-- Generation Evidence panel for the local Image Video route.
+                                         Shown only when the current record was produced by the
+                                         image_video pipeline. Confirms no remote API was called. -->
+                                    <div id="generation-evidence-panel" class="generation-evidence-panel hidden" hidden>
+                                        <h4 class="generation-evidence-title">Generation Evidence</h4>
+                                        <ul class="generation-evidence-list">
+                                            <li><strong>Route:</strong> <span data-evidence="route">image_video</span></li>
+                                            <li><strong>Media API call:</strong> <span data-evidence="media_api_called">No</span></li>
+                                            <li><strong>Content LLM:</strong> <span data-evidence="content_llm_called">—</span></li>
+                                            <li><strong>Seedance called:</strong> <span data-evidence="seedance_called">No</span></li>
+                                            <li><strong>APX called:</strong> <span data-evidence="apx_called">No</span></li>
+                                            <li><strong>Image2 called:</strong> <span data-evidence="image2_called">No</span></li>
+                                            <li><strong>TTS called:</strong> <span data-evidence="tts_called">No</span></li>
+                                            <li><strong>Local slides generated:</strong> <span data-evidence="local_slides_generated">—</span></li>
+                                            <li><strong>FFmpeg composed:</strong> <span data-evidence="ffmpeg_composed">—</span></li>
+                                            <li><strong>Final video available:</strong> <span data-evidence="final_video_available">—</span></li>
+                                            <li><strong>Slide count:</strong> <span data-evidence="slide_count">—</span></li>
+                                            <li><strong>Duration:</strong> <span data-evidence="duration_seconds">—</span></li>
+                                            <li><strong>Audio:</strong> <span data-evidence="has_audio">No</span></li>
+                                            <li><strong>TTS status:</strong> <span data-evidence="tts_status">not_implemented_v0.6.3</span></li>
                                         </ul>
                                     </div>
                                     <div class="video-player-panel">

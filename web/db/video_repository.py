@@ -52,6 +52,7 @@ class VideoHistoryRepository:
         overview_cn: Optional[str] = None,
         web_copy_text: Optional[str] = None,
         metadata_json: Optional[str] = None,
+        generation_method: Optional[str] = None,
     ) -> VideoHistory:
         """Create a new video history record with version management."""
         title_normalized = normalize_video_title(title)
@@ -86,6 +87,7 @@ class VideoHistoryRepository:
             overview_cn=overview_cn,
             web_copy_text=web_copy_text,
             video_status='not_generated',
+            generation_method=(generation_method or 'seedance_video'),
         )
         db.add(record)
         db.commit()
@@ -349,6 +351,46 @@ class VideoHistoryRepository:
             record.overview_cn = overview_cn
         if metadata_json is not None:
             record.metadata_json = metadata_json
+        record.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(record)
+        return record
+
+    @staticmethod
+    def update_image_video_result(
+        db: Session,
+        history_id: int,
+        video_file_path: Optional[str],
+        video_duration_seconds: Optional[int],
+        video_status: str = 'ready',
+        metadata_json: Optional[str] = None,
+        preview_text: Optional[str] = None,
+        overview_cn: Optional[str] = None,
+        prompt_text: Optional[str] = None,
+    ) -> Optional[VideoHistory]:
+        """v0.6.3 — persist the result of the local Image Video pipeline.
+
+        Writes ``video_file_path`` (relative outputs path), the duration, the
+        status, and optional preview/overview/metadata. Never touches Prompt
+        Mode tables.
+        """
+        record = db.query(VideoHistory).filter(VideoHistory.id == history_id).first()
+        if not record:
+            return None
+        if video_file_path is not None:
+            record.video_file_path = video_file_path
+        if video_duration_seconds is not None:
+            record.video_duration_seconds = video_duration_seconds
+        if video_status:
+            record.video_status = video_status
+        if metadata_json is not None:
+            record.metadata_json = metadata_json
+        if preview_text is not None:
+            record.preview_text = preview_text
+        if overview_cn is not None:
+            record.overview_cn = overview_cn
+        if prompt_text is not None:
+            record.prompt_text = prompt_text
         record.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(record)
