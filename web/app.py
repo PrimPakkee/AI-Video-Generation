@@ -3157,6 +3157,7 @@ IMAGE_VIDEO_RUN_STAGES = (
     ("select_bgm",             "Select background music"),
     ("generate_slide_images",  "Generate slide images (gpt-image-2)"),
     ("render_slide_overlays",  "Render on-screen text overlays"),
+    ("synthesize_narration",   "Synthesize narration with Edge TTS"),
     ("compose_final_video",    "Compose final video with FFmpeg"),
     ("save_history",           "Save to history"),
 )

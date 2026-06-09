@@ -446,6 +446,17 @@ def _build_llm_user_prompt(
         "     sits across the upper third'). Do NOT repeat the palette /\n"
         "     background / mood here — those live in art_direction. Just\n"
         "     the slide-specific scene + text.\n"
+        "  6b. SUBTITLE SAFE-AREA — burned-in narration subtitles will\n"
+        "      be overlaid on the BOTTOM 22% of the frame at runtime. To\n"
+        "      avoid covering the slide's on-screen text or focal point,\n"
+        "      EVERY image_prompt MUST keep all rendered text and the\n"
+        "      central subject in the upper 70% of the frame. Allowed\n"
+        "      text positions: 'across the upper third', 'top-left\n"
+        "      banner', 'top-right banner', 'mid-left third', 'mid-right\n"
+        "      third', 'centered just above the middle'. Never write\n"
+        "      'bottom', 'lower third', 'across the bottom band', or any\n"
+        "      similar bottom-area phrasing — that area is reserved for\n"
+        "      subtitles.\n"
         "  7. The narrative should genuinely teach: hook a question, set\n"
         "     up the problem, walk through real reasoning, deliver an\n"
         "     answer, end with a takeaway.\n"
@@ -464,6 +475,21 @@ def _build_llm_user_prompt(
         "     cheerful topic → uplifting / kid-friendly track, awe-leaning\n"
         "     topic → harp / new-age / cinematic track. Always include a\n"
         "     short why (≤ 18 words) explaining the match.\n"
+        f"  9b. narration_line — for EACH slide, write exactly ONE\n"
+        "      English sentence (8 to 22 words) that the narrator will\n"
+        "      speak WHILE THIS SLIDE'S IMAGE IS ON SCREEN. The line MUST\n"
+        "      be about the same idea as the slide's title / caption /\n"
+        "      visual_focus — viewers will SEE the image and HEAR this\n"
+        "      sentence at the same time, so they MUST match. End with a\n"
+        "      period, question mark, or exclamation point. No stage\n"
+        "      directions, no '[pause]' tags, no slide numbers, no SSML.\n"
+        "      Use everyday words a curious learner would understand.\n"
+        "      The full narration is automatically built by joining all\n"
+        f"      narration_line values in slide order; aim for {max(8, int(duration_seconds * 2.6 / max(slide_count, 1)))}-{max(12, int(duration_seconds * 3.0 / max(slide_count, 1)))}\n"
+        f"      words per slide so the total fills the {duration_seconds}-\n"
+        "      second video at ~150 wpm without leaving dead air.\n"
+        "      WRITING A SHORT narration_line LEAVES SILENCE WHILE THE\n"
+        "      SLIDE IS ON SCREEN AND IS A FAILURE.\n"
         "  10. IMAGE MODERATION SAFETY — every image_prompt is sent to a\n"
         "      hosted image generator that runs an Azure-style content\n"
         "      filter. Phrases that look harmless to a human can trip the\n"
@@ -519,6 +545,7 @@ def _build_llm_user_prompt(
         "      \"highlight\": string,\n"
         "      \"visual_focus\": string,\n"
         "      \"badge\": string (<= 2 words, English),\n"
+        "      \"narration_line\": string (8-22 words, one English sentence the narrator speaks WHILE this slide is on screen — MUST match this slide's idea),\n"
         "      \"image_prompt\": string (40-90 words, detailed) },\n"
         "    ... one entry per slide, in order ...\n"
         "  ]\n"
@@ -861,6 +888,7 @@ def _parse_llm_slide_response(
         visual_focus = str(item.get("visual_focus") or "").strip()
         badge = str(item.get("badge") or "").strip()
         image_prompt_raw = str(item.get("image_prompt") or "").strip()
+        narration_line = str(item.get("narration_line") or "").strip()
         if not title or not caption:
             return None
 
@@ -878,6 +906,15 @@ def _parse_llm_slide_response(
         else:
             image_prompt_resolved = image_prompt_raw
 
+        # v0.6.7.2 — fall back to caption when narration_line is missing,
+        # so older LLM outputs still produce some audio. Strip trailing
+        # punctuation that's missing and add one sentence-end mark.
+        if not narration_line:
+            narration_line = caption
+        narration_line = narration_line[:240].strip()
+        if narration_line and narration_line[-1] not in ".!?":
+            narration_line += "."
+
         cleaned_slides.append({
             "index": i + 1,
             "role": roles[i] if i < len(roles) else "explanation",
@@ -886,6 +923,7 @@ def _parse_llm_slide_response(
             "highlight": (highlight or title)[:60],
             "visual_focus": visual_focus[:140],
             "badge": (badge or roles[i].title())[:24],
+            "narration_line": narration_line,
             "image_prompt_template": image_prompt_raw[:1500],
             "image_prompt": image_prompt_resolved[:2400],
         })
@@ -905,6 +943,18 @@ def _parse_llm_slide_response(
                 "why": chosen_why[:160],
             }
 
+    # v0.6.7.2 — narration_script_en is now BUILT from per-slide
+    # narration_line values, so the audio is guaranteed to be in the
+    # same order as the images, and TTS sentence boundaries map 1:1 to
+    # slides. We still accept top-level narration_script_en (legacy /
+    # fallback) but the per-slide path takes precedence.
+    per_slide_lines = [s.get("narration_line", "").strip() for s in cleaned_slides]
+    per_slide_lines = [ln for ln in per_slide_lines if ln]
+    if per_slide_lines:
+        narration_script_en = " ".join(per_slide_lines)
+    else:
+        narration_script_en = str(data.get("narration_script_en") or "").strip()
+
     return {
         "video_title_en": str(data.get("video_title_en") or "").strip()[:80],
         "hook_question_en": str(data.get("hook_question_en") or "").strip()[:160],
@@ -913,6 +963,7 @@ def _parse_llm_slide_response(
         "art_direction": art_direction,
         "art_style": art_style,
         "bgm_choice": bgm_choice,
+        "narration_script_en": narration_script_en,
         "slides": cleaned_slides,
     }
 
@@ -2179,6 +2230,176 @@ def _format_ffmpeg_missing_message(diagnostics: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _format_ass_time(seconds: float) -> str:
+    """ASS timestamps look like H:MM:SS.cc (centiseconds, not ms)."""
+    seconds = max(0.0, seconds)
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds - h * 3600 - m * 60
+    return f"{h:d}:{m:02d}:{s:05.2f}"
+
+
+def _wrap_sentence_to_lines(text: str, max_chars_per_line: int = 50, max_lines: int = 2) -> str:
+    """Wrap a sentence into AT MOST ``max_lines`` lines.
+
+    v0.6.7.2 — hard cap at 2 lines so the subtitle box never grows tall
+    enough to push the visible top edge into the picture area. If a
+    sentence is too long for 2 lines at ``max_chars_per_line``, we
+    progressively widen the line budget (up to 80 chars) instead of
+    spilling onto a 3rd line. This guarantees the box height is
+    constant regardless of sentence length.
+    """
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars_per_line:
+        return text
+
+    def _wrap_at(width: int) -> List[str]:
+        words = text.split()
+        out: List[str] = []
+        cur = ""
+        for w in words:
+            cand = (cur + " " + w).strip() if cur else w
+            if len(cand) <= width:
+                cur = cand
+                continue
+            if cur:
+                out.append(cur)
+            cur = w
+        if cur:
+            out.append(cur)
+        return out
+
+    # Try increasing widths until we fit in max_lines lines.
+    for width in (max_chars_per_line, 60, 70, 80):
+        lines = _wrap_at(width)
+        if len(lines) <= max_lines:
+            return r"\N".join(lines)
+
+    # Last resort — even at width 80 we have >max_lines lines. Greedily
+    # merge until we hit max_lines (this is rare for ≤22-word sentences).
+    lines = _wrap_at(80)
+    while len(lines) > max_lines:
+        i = min(range(len(lines) - 1), key=lambda j: len(lines[j]) + len(lines[j + 1]))
+        lines[i] = (lines[i] + " " + lines[i + 1]).strip()
+        del lines[i + 1]
+    return r"\N".join(lines)
+
+
+def _build_ass_subtitles(
+    narration: str,
+    total_duration_seconds: float,
+    output_path: Path,
+    font_size: int = 56,
+    sentence_timings: Optional[List[Any]] = None,
+) -> Tuple[Path, int]:
+    """Generate an .ass subtitle file.
+
+    v0.6.7.1 — when ``sentence_timings`` (list of objects with .text,
+    .start_s, .end_s) is provided, each subtitle line uses the EXACT
+    spoken time of that sentence. This guarantees the on-screen text is
+    always synchronized with what the TTS is saying.
+
+    Style: white text on a translucent black box (BorderStyle=3) so the
+    subtitle stays readable over any image background. Bottom-center,
+    auto-wrapped to ≤3 lines.
+
+    When sentence_timings is missing/empty, we fall back to splitting
+    the narration text on punctuation and time-evenly distributing
+    across total_duration_seconds (legacy behavior, less synchronized).
+
+    Returns ``(path, line_count)``.
+    """
+    # v0.6.7.3 — NO background box. The previous BorderStyle=3 (filled
+    # box) approach made the subtitle look like a black bar covering the
+    # picture, no matter how transparent BackColour was — libass's
+    # treatment of BackColour alpha for BorderStyle=3 isn't reliable
+    # across renderers, and a 100%-clear box is just text-on-image
+    # anyway. Better: use BorderStyle=1 (outline + shadow ONLY, no box)
+    # with a thick black outline + soft shadow so white text is readable
+    # on ANY background — and the picture is 100% visible underneath.
+    #
+    # ASS color encoding is &HAABBGGRR (alpha-blue-green-red, hex).
+    # AA: 00 = opaque, FF = fully transparent.
+    #   PrimaryColour: &H00FFFFFF (opaque white text)
+    #   OutlineColour: &H00000000 (opaque black outline)
+    #   BackColour:    &H80000000 (drop-shadow color, 50% transparent)
+    # BorderStyle=1 = outline + shadow (no fill box).
+    # Outline=5 = thick black halo around every glyph (readable on any bg).
+    # Shadow=2  = soft drop shadow for extra contrast on busy images.
+    #
+    # Position: per-Dialogue `\pos(960, 1010)` with Alignment=2
+    # (bottom-center anchor) → the BOTTOM-CENTER of the subtitle is
+    # locked at (960, 1010). 1-line, 2-line subtitles all share the
+    # same bottom edge → the visual "position" no longer jumps.
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1920\n"
+        "PlayResY: 1080\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,Arial,{font_size},&H00FFFFFF,&H00FFFFFF,"
+        "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,80,80,60,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text\n"
+    )
+
+    # Bottom-center anchor for Alignment=2 → \pos(x, y) where (x, y)
+    # is the BOTTOM-CENTER of the rendered text. y=1010 keeps the
+    # subtitle 70 px clear of the 1080-px frame bottom, regardless of
+    # whether it wraps to 1 line or 2.
+    SUB_X, SUB_Y = 960, 1010
+    pos_tag = f"{{\\pos({SUB_X},{SUB_Y})}}"
+
+    events: List[str] = []
+
+    if sentence_timings:
+        # Sync mode: each line has the exact start/end time of its sentence.
+        for st in sentence_timings:
+            start = max(0.0, float(getattr(st, "start_s", 0.0)))
+            end = max(start + 0.05, float(getattr(st, "end_s", start + 0.05)))
+            text = (getattr(st, "text", "") or "").strip()
+            if not text:
+                continue
+            wrapped = _wrap_sentence_to_lines(text)
+            safe_line = wrapped.replace("{", "(").replace("}", ")")
+            events.append(
+                f"Dialogue: 0,{_format_ass_time(start)},{_format_ass_time(end)},"
+                f"Default,,0,0,0,,{pos_tag}{safe_line}"
+            )
+    else:
+        # Fallback (no timings) — split by sentence punctuation and
+        # time-evenly distribute. Used only if SentenceBoundary events
+        # didn't arrive.
+        text = re.sub(r"\s+", " ", narration or "").strip()
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if not sentences or total_duration_seconds <= 0:
+            output_path.write_text(header, encoding="utf-8")
+            return output_path, 0
+        per_line = total_duration_seconds / len(sentences)
+        for i, sent in enumerate(sentences):
+            start = i * per_line
+            end = (i + 1) * per_line
+            wrapped = _wrap_sentence_to_lines(sent)
+            safe_line = wrapped.replace("{", "(").replace("}", ")")
+            events.append(
+                f"Dialogue: 0,{_format_ass_time(start)},{_format_ass_time(end)},"
+                f"Default,,0,0,0,,{pos_tag}{safe_line}"
+            )
+
+    output_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+    return output_path, len(events)
+
+
 def _compose_with_ffmpeg(
     ffmpeg_bin: str,
     slide_paths: List[Path],
@@ -2188,23 +2409,44 @@ def _compose_with_ffmpeg(
     bgm_path: Optional[Path] = None,
     bgm_volume_db: float = -15.0,
     total_duration_seconds: Optional[float] = None,
+    narration_path: Optional[Path] = None,
+    narration_duration_seconds: float = 0.0,
+    bgm_base_volume_db: float = -15.0,
+    subtitles_path: Optional[Path] = None,
+    per_slide_durations: Optional[List[float]] = None,
 ) -> Tuple[bool, str, List[str], Path]:
     """Concat slide PNGs into an mp4 using the ffmpeg concat demuxer.
 
     v0.6.5 — when ``bgm_path`` is provided, the BGM mp3 is muxed in as a
-    second input. The audio is volume-attenuated (default -15 dB), looped
-    if shorter than the video, and faded out in the final 1 second so the
-    end never feels abrupt. ``-shortest`` guarantees the audio stops the
-    instant the video does, so we never get a black-screen tail with
-    leftover music.
+    second input.
+    v0.6.7 — when ``narration_path`` is provided, the narration mp3 is
+    muxed at full volume and the BGM (if any) is auto-ducked. When
+    ``subtitles_path`` is provided, the .ass file is burned into the
+    video via the subtitles filter.
+
+    Audio mix logic:
+      - narration only            → narration at 0 dB
+      - narration + BGM           → narration at 0 dB, BGM ducked + faded
+      - BGM only (legacy v0.6.5)  → BGM at bgm_volume_db, fade-out 1s
+      - none                      → silent video (no audio track)
 
     Returns ``(ok, message, ffmpeg_args, concat_txt_path)``.
     """
     concat_txt = work_dir / "concat.txt"
     lines: List[str] = []
-    for p in slide_paths:
-        lines.append(f"file '{p.resolve().as_posix()}'")
-        lines.append(f"duration {duration_per_slide:.4f}")
+    # v0.6.7.2 — when per_slide_durations is provided (one duration per
+    # slide, derived from edge-tts sentence_timings), each slide stays on
+    # screen for exactly the time the narrator spends on its sentence.
+    # This guarantees image↔narration alignment: when the narrator says
+    # sentence N, slide N is on screen.
+    if per_slide_durations is not None and len(per_slide_durations) == len(slide_paths):
+        for p, d in zip(slide_paths, per_slide_durations):
+            lines.append(f"file '{p.resolve().as_posix()}'")
+            lines.append(f"duration {max(0.4, float(d)):.4f}")
+    else:
+        for p in slide_paths:
+            lines.append(f"file '{p.resolve().as_posix()}'")
+            lines.append(f"duration {duration_per_slide:.4f}")
     # FFmpeg concat demuxer requires the last file to be repeated without a
     # duration line so the final frame holds for the right amount of time.
     if slide_paths:
@@ -2217,38 +2459,135 @@ def _compose_with_ffmpeg(
         "-i", str(concat_txt.resolve()),
     ]
 
+    # Track input indexes as we add them.
+    narration_idx: Optional[int] = None
+    bgm_idx: Optional[int] = None
+    next_idx = 1
+
+    if narration_path is not None:
+        narration_idx = next_idx
+        next_idx += 1
+        args.extend(["-i", str(narration_path.resolve())])
+
     if bgm_path is not None:
-        # Loop the BGM if it might be shorter than the final video. -shortest
-        # at the end will still cut everything to the video length, but
-        # without -stream_loop short tracks would just go silent partway.
+        bgm_idx = next_idx
+        next_idx += 1
         args.extend([
             "-stream_loop", "-1",
             "-i", str(bgm_path.resolve()),
         ])
 
-        # Fade out the last 1 second so the BGM doesn't hard-cut. Default
-        # to total_duration_seconds when known; otherwise compute fade-out
-        # start as max(0, video_duration - 1) inside ffmpeg by using the
-        # total duration the caller knows about.
-        fade_dur = 1.0
-        if total_duration_seconds is not None and total_duration_seconds > fade_dur:
-            fade_start = max(0.0, total_duration_seconds - fade_dur)
-        else:
-            # Fallback: compute from slide_paths * duration_per_slide.
-            est_dur = max(0.0, len(slide_paths) * duration_per_slide)
-            fade_start = max(0.0, est_dur - fade_dur)
+    # Compute fade-out start for BGM tail (so music doesn't hard-cut).
+    fade_dur = 1.0
+    if total_duration_seconds is not None and total_duration_seconds > fade_dur:
+        fade_start = max(0.0, total_duration_seconds - fade_dur)
+    else:
+        est_dur = max(0.0, len(slide_paths) * duration_per_slide)
+        fade_start = max(0.0, est_dur - fade_dur)
 
-        # `volume=…dB` attenuates the BGM; `afade=t=out:st=…:d=…` smooths
-        # the tail. The chain runs on input #1 (the BGM) only.
+    # Subtitle filter is part of the video chain. ffmpeg's filter
+    # parser is finicky about paths in two ways:
+    #   1. spaces in absolute paths (e.g. "/Users/tal/Desktop/Claude Code/")
+    #      are not reliably honored even with single-quotes around the value,
+    #   2. `ass=subtitles.ass` (where the value contains a `.ass` extension)
+    #      gets parsed weirdly because `subtitles` is also a filter name.
+    # The bullet-proof workaround: copy the .ass to /tmp with a simple
+    # alphanumeric name, then reference it via the `subtitles` filter
+    # using the explicit `filename=` keyword. No spaces, no ambiguity.
+    subtitle_filter = ""
+    subtitle_tmp_path: Optional[Path] = None
+    if subtitles_path is not None and subtitles_path.exists():
+        # Use the parent directory's stable name as a unique-ish suffix
+        # so concurrent runs don't clobber each other's tmp file.
+        unique_id = work_dir.name[:32] if work_dir else "run"
+        subtitle_tmp_path = Path("/tmp") / f"aivideo_subs_{unique_id}.ass"
+        try:
+            shutil.copyfile(str(subtitles_path), str(subtitle_tmp_path))
+            subtitle_filter = f",subtitles=filename={subtitle_tmp_path.as_posix()}"
+        except Exception:
+            # If even the /tmp copy fails, drop subtitles silently rather
+            # than blowing up the whole compose.
+            subtitle_filter = ""
+    video_filter = f"fps={FPS},format=yuv420p{subtitle_filter}"
+
+    if narration_idx is not None and bgm_idx is not None:
+        # Narration + BGM. Three-stage BGM volume curve so the music
+        # supports the speech and then returns once the narrator stops:
+        #   [0, narration_end]  → ducked (bgm_volume_db, e.g. -22 dB)
+        #   ramp 0.6 s          → base BGM volume
+        #   [narration_end+ramp, fade_start] → base volume
+        #   [fade_start, end]   → linear fade-out 1 s
+        narr_end = max(0.0, float(narration_duration_seconds or 0.0))
+        ramp = 0.6
+        ramp_end = narr_end + ramp
+        base_db = float(bgm_base_volume_db)
+        duck_db = float(bgm_volume_db)
+        if narr_end > 0.0 and ramp_end < fade_start:
+            # volume expression on the BGM stream (in dB):
+            #   t < narr_end                → duck
+            #   narr_end <= t < ramp_end    → linear interp duck → base
+            #   t >= ramp_end               → base
+            # ffmpeg's volume filter accepts an expression with `t`.
+            vol_expr = (
+                f"if(lt(t,{narr_end:.3f}),{duck_db:.2f},"
+                f"if(lt(t,{ramp_end:.3f}),"
+                f"{duck_db:.2f}+({base_db:.2f}-({duck_db:.2f}))*(t-{narr_end:.3f})/{ramp:.3f},"
+                f"{base_db:.2f}))"
+            )
+            bgm_chain = (
+                f"[{bgm_idx}:a]volume='{vol_expr}':eval=frame,"
+                f"afade=t=out:st={fade_start:.3f}:d={fade_dur:.3f}[bgm]"
+            )
+        else:
+            # Narration covers the whole clip (or no narration timing) →
+            # legacy single-volume duck.
+            bgm_chain = (
+                f"[{bgm_idx}:a]volume={duck_db:.1f}dB,"
+                f"afade=t=out:st={fade_start:.3f}:d={fade_dur:.3f}[bgm]"
+            )
+        narr_chain = f"[{narration_idx}:a]volume=0dB[narr]"
+        mix_chain = "[narr][bgm]amix=inputs=2:duration=longest:dropout_transition=0[a]"
+        filter_complex = ";".join([narr_chain, bgm_chain, mix_chain])
+        args.extend([
+            "-filter_complex", filter_complex,
+            "-map", "0:v",
+            "-map", "[a]",
+            "-vf", video_filter,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            "-movflags", "+faststart",
+            str(output_path.resolve()),
+        ])
+    elif narration_idx is not None:
+        # Narration only.
+        narr_chain = f"[{narration_idx}:a]volume=0dB[a]"
+        args.extend([
+            "-filter_complex", narr_chain,
+            "-map", "0:v",
+            "-map", "[a]",
+            "-vf", video_filter,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            "-movflags", "+faststart",
+            str(output_path.resolve()),
+        ])
+    elif bgm_idx is not None:
+        # BGM only — legacy v0.6.5 path.
         bgm_filter = (
-            f"[1:a]volume={bgm_volume_db:.1f}dB,"
+            f"[{bgm_idx}:a]volume={bgm_volume_db:.1f}dB,"
             f"afade=t=out:st={fade_start:.3f}:d={fade_dur:.3f}[a]"
         )
         args.extend([
             "-filter_complex", bgm_filter,
             "-map", "0:v",
             "-map", "[a]",
-            "-vf", f"fps={FPS},format=yuv420p",
+            "-vf", video_filter,
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
@@ -2258,8 +2597,9 @@ def _compose_with_ffmpeg(
             str(output_path.resolve()),
         ])
     else:
+        # Silent video.
         args.extend([
-            "-vf", f"fps={FPS},format=yuv420p",
+            "-vf", video_filter,
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
@@ -2636,6 +2976,126 @@ def generate_image_video_package(
             "overview_cn": (llm_content or {}).get("overview_cn"),
         }
 
+    # ----------------------------------------------------------------
+    # v0.6.7 — synthesize_narration: feed LLM's narration_script_en into
+    # ElevenLabs, save narration.mp3 + subtitles.ass next to the slides.
+    # When IMAGE_VIDEO_NARRATION_ENABLED=false (or the LLM didn't return
+    # a script), we skip and fall back to the BGM-only path.
+    # ----------------------------------------------------------------
+    narration_audio_path: Optional[Path] = None
+    narration_duration: float = 0.0
+    subtitles_ass_path: Optional[Path] = None
+    narration_status = "skipped"
+    narration_error: Optional[str] = None
+    narration_voice_id: Optional[str] = None
+    narration_model_id: Optional[str] = None
+    narration_char_count = 0
+    narration_subtitle_lines = 0
+    # v0.6.7.2 — per-slide on-screen duration. When narration succeeds we
+    # set each slide's duration to match the time edge-tts spends speaking
+    # that slide's narration_line (so image N is on screen exactly while
+    # sentence N is being said). Falls back to the even split otherwise.
+    per_slide_durations: Optional[List[float]] = None
+
+    narration_enabled_env = (os.getenv("IMAGE_VIDEO_NARRATION_ENABLED", "true") or "").strip().lower()
+    narration_enabled = narration_enabled_env in ("1", "true", "yes", "on", "")
+    narration_script = (llm_content or {}).get("narration_script_en") if llm_content else None
+    narration_script = (narration_script or "").strip()
+
+    if narration_enabled and narration_script:
+        _emit("synthesize_narration", "running",
+              f"0% In progress — calling Edge TTS ({len(narration_script)} chars)...")
+        try:
+            from web.audio_providers.edge_tts_provider import (
+                synthesize_narration as _edge_synth,
+                EdgeTtsError,
+            )
+        except Exception as exc:
+            _emit("synthesize_narration", "failed",
+                  f"Failed to import edge-tts provider: {exc}")
+            narration_status = "import_failed"
+            narration_error = f"import: {exc}"
+        else:
+            narration_audio_path_candidate = image_video_dir / "narration.mp3"
+            try:
+                tts_result = _edge_synth(
+                    text=narration_script,
+                    output_path=narration_audio_path_candidate,
+                )
+                narration_audio_path = tts_result.audio_path
+                narration_duration = tts_result.duration_seconds
+                narration_voice_id = tts_result.voice_id
+                narration_model_id = tts_result.model_id
+                narration_char_count = tts_result.char_count
+                narration_status = "succeeded"
+                _emit("synthesize_narration", "running",
+                      f"60% In progress — narration mp3 saved ({narration_duration:.1f}s).")
+            except EdgeTtsError as exc:
+                _emit("synthesize_narration", "failed", f"Edge TTS failed: {exc}")
+                narration_status = "tts_failed"
+                narration_error = str(exc)
+            except Exception as exc:
+                _emit("synthesize_narration", "failed", f"Unexpected TTS error: {exc}")
+                narration_status = "tts_failed"
+                narration_error = f"unexpected: {exc}"
+
+        # Build subtitles AFTER narration succeeds — duration is the
+        # measured mp3 length so subtitle line timing matches the audio.
+        # v0.6.7.1: pass through sentence_timings from edge-tts so each
+        # subtitle line is shown for the EXACT span of audio that speaks
+        # it (no more time-even drift).
+        if narration_status == "succeeded" and narration_duration > 0.0:
+            subtitles_ass_path_candidate = image_video_dir / "subtitles.ass"
+            try:
+                subtitles_ass_path, narration_subtitle_lines = _build_ass_subtitles(
+                    narration_script,
+                    total_duration_seconds=narration_duration,
+                    output_path=subtitles_ass_path_candidate,
+                    sentence_timings=getattr(tts_result, "sentence_timings", None),
+                )
+                _emit("synthesize_narration", "done",
+                      f"100% Done — narration {narration_duration:.1f}s, "
+                      f"{narration_subtitle_lines} subtitle lines.")
+            except Exception as exc:
+                _emit("synthesize_narration", "done",
+                      f"Narration ready but subtitle build failed (continuing without subs): {exc}")
+                subtitles_ass_path = None
+                narration_error = f"subtitles: {exc}"
+
+            # v0.6.7.2 — derive per-slide on-screen durations from the
+            # SentenceBoundary timings. We assume one sentence ↔ one
+            # slide (which is what the narration_line schema enforces).
+            # If the counts don't match (model wrote multi-sentence
+            # narration_lines, or merged some), fall back to the even
+            # split for safety.
+            sts = getattr(tts_result, "sentence_timings", None) or []
+            if sts and len(sts) == slide_count:
+                durs: List[float] = []
+                for i, st in enumerate(sts):
+                    s = max(0.0, float(getattr(st, "start_s", 0.0)))
+                    if i + 1 < len(sts):
+                        next_s = float(getattr(sts[i + 1], "start_s", s))
+                        durs.append(max(0.4, next_s - s))
+                    else:
+                        # Last slide holds until the end of the audio.
+                        durs.append(max(0.4, narration_duration - s))
+                per_slide_durations = durs
+            else:
+                # Sentence count ≠ slide count → safest is the even split
+                # so we don't desync the whole video.
+                per_slide_durations = None
+    else:
+        # Skip narration entirely — emit a 'done' so the UI advances and
+        # downstream compose still runs (BGM-only legacy path).
+        skip_reason = (
+            "IMAGE_VIDEO_NARRATION_ENABLED=false" if not narration_enabled
+            else "no narration_script_en in LLM output"
+        )
+        _emit("synthesize_narration", "done",
+              f"Skipped narration ({skip_reason}).")
+        narration_status = "skipped"
+        narration_error = skip_reason
+
     final_video_path = image_video_dir / "final_video.mp4"
     ffmpeg_command_path = image_video_dir / "ffmpeg_command.txt"
 
@@ -2698,15 +3158,43 @@ def generate_image_video_package(
         bgm_volume_db_default = 0.0
     if bgm_volume_db_default < -40.0:
         bgm_volume_db_default = -40.0
+
+    # v0.6.7 — when narration is on, BGM ducks further so speech stays
+    # intelligible. Default -22 dB; clamped to the same sane range.
+    bgm_volume_db_effective = bgm_volume_db_default
+    if narration_audio_path is not None:
+        try:
+            duck_db = float(os.getenv("IMAGE_VIDEO_NARRATION_BGM_DUCK_DB", "-22.0"))
+        except Exception:
+            duck_db = -22.0
+        if duck_db > 0.0:
+            duck_db = 0.0
+        if duck_db < -40.0:
+            duck_db = -40.0
+        bgm_volume_db_effective = duck_db
+
     _emit("compose_final_video", "running",
           (f"Composing final mp4 with FFmpeg ({slide_count} slides"
+           + (f" + narration ({narration_duration:.1f}s)" if narration_audio_path is not None else "")
            + (f" + BGM '{bgm_track.display_name}'" if bgm_track is not None else " + no BGM")
+           + (" + subtitles" if subtitles_ass_path is not None else "")
            + ")..."))
+    # When per-slide durations are set, the on-screen total = sum of them
+    # (≈ narration_duration). When they are not, fall back to the
+    # original duration_seconds (legacy even split).
+    effective_total_duration = (
+        sum(per_slide_durations) if per_slide_durations else float(duration_seconds)
+    )
     ok, msg, ffmpeg_args, concat_path = _compose_with_ffmpeg(
         ffmpeg_bin, slide_paths, duration_per_slide, final_video_path, image_video_dir,
         bgm_path=bgm_compose_path,
-        bgm_volume_db=bgm_volume_db_default,
-        total_duration_seconds=float(duration_seconds),
+        bgm_volume_db=bgm_volume_db_effective,
+        total_duration_seconds=float(effective_total_duration),
+        narration_path=narration_audio_path,
+        narration_duration_seconds=float(narration_duration or 0.0),
+        bgm_base_volume_db=float(bgm_volume_db_default),
+        subtitles_path=subtitles_ass_path,
+        per_slide_durations=per_slide_durations,
     )
     # Always persist the command we ran (for debugging / transparency).
     ffmpeg_command_path.write_text(
@@ -2796,10 +3284,19 @@ def generate_image_video_package(
         "image2_skipped_reason": image2_debug.get("skipped_reason"),
         "image2_debug_path": str(image2_debug_path),
         "image_sources": image_sources,
-        "tts_called": False,
-        "has_audio": bool(bgm_track is not None),
-        "tts_status": "not_implemented_v0.6.5",
-        "voiceover_source": "none",
+        "tts_called": narration_status in ("succeeded", "tts_failed", "import_failed"),
+        "has_audio": bool(bgm_track is not None) or narration_status == "succeeded",
+        "tts_status": narration_status,
+        "tts_error": narration_error,
+        "voiceover_source": "elevenlabs" if narration_status == "succeeded" else "none",
+        "narration_audio_path": str(narration_audio_path) if narration_audio_path else None,
+        "narration_duration_seconds": float(narration_duration),
+        "narration_voice_id": narration_voice_id,
+        "narration_model_id": narration_model_id,
+        "narration_char_count": narration_char_count,
+        "subtitles_path": str(subtitles_ass_path) if subtitles_ass_path else None,
+        "subtitle_lines": narration_subtitle_lines,
+        "narration_script_en": (llm_content or {}).get("narration_script_en"),
         "bgm_used": bool(bgm_track is not None),
         "bgm_filename": (bgm_track.filename if bgm_track is not None else None),
         "bgm_display_name": (bgm_track.display_name if bgm_track is not None else None),

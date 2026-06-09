@@ -2293,14 +2293,18 @@ const VP_PHASE_DEFS = [
         id: 'overlays',
         title: 'Render overlays',
         caption: 'Drawing on-screen text',
-        // Subtitle burn-in (TTS captions) will land here when added —
-        // the backend just needs to add a stage key into this bucket.
         keys: ['render_slide_overlays'],
+    },
+    {
+        id: 'narrate',
+        title: 'Narrate',
+        caption: 'Synthesizing voice with Edge TTS',
+        keys: ['synthesize_narration'],
     },
     {
         id: 'compose',
         title: 'Compose video',
-        caption: 'Encoding with FFmpeg',
+        caption: 'Encoding with FFmpeg + subtitles',
         keys: ['compile_seedance_prompt', 'validate_prompt_quality',
                'submit_video_job', 'open_video_status_panel',
                'compose_final_video', 'save_history'],
