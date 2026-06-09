@@ -71,3 +71,4 @@ outputs/
 # Database repair backups
 data/*.db.repair_backup_*
 data/*repair_backup*
+.claude/worktrees/

@@ -258,11 +258,34 @@ def _resolve_llm_api_key() -> Tuple[Optional[str], str]:
     return None, ""
 
 
+def _format_bgm_catalog_for_prompt(bgm_options: Optional[List[Dict[str, Any]]]) -> str:
+    """Render the BGM manifest as a compact catalog the LLM can read.
+
+    Returns an empty string when the catalog is empty so the prompt can
+    skip the whole BGM section.
+    """
+    if not bgm_options:
+        return ""
+    lines: List[str] = []
+    for entry in bgm_options:
+        moods = ", ".join(entry.get("mood_keywords") or []) or "—"
+        lines.append(
+            f"  - filename: {entry['filename']}\n"
+            f"      display_name: {entry.get('display_name') or entry['filename']}\n"
+            f"      mood_keywords: {moods}\n"
+            f"      tempo: {entry.get('tempo') or '—'}; energy: {entry.get('energy') or '—'}\n"
+            f"      instruments: {entry.get('instruments') or '—'}\n"
+            f"      fits: {entry.get('fits') or '—'}"
+        )
+    return "\n".join(lines)
+
+
 def _build_llm_user_prompt(
     title: str,
     duration_seconds: int,
     slide_count: int,
     roles: List[str],
+    bgm_options: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Build the single user message we send to the LLM.
 
@@ -270,31 +293,77 @@ def _build_llm_user_prompt(
     paragraph overview. We give the model the role sequence so it knows
     the narrative arc and can write content matching each beat.
     """
+    bgm_catalog = _format_bgm_catalog_for_prompt(bgm_options)
     role_lines = "\n".join(
         f"  - slide {i+1} ({role})" for i, role in enumerate(roles)
     )
     return (
-        "You are designing a short-form educational explainer video in the\n"
-        "visual style of Google NotebookLM's video overviews.\n"
+        "You are designing a short-form educational explainer video.\n"
+        "The visual aesthetic is 'clean, bold, editorial' — simple, generous\n"
+        "with negative space, designed to read on a phone in 1-2 seconds.\n"
         "\n"
-        "WHAT IS UNIVERSALLY TRUE OF NOTEBOOKLM-STYLE VIDEOS\n"
-        "(applies to every topic, do not change):\n"
-        "  - Paper-craft / cut-paper / layered torn-paper illustrations.\n"
-        "    Layered shapes with soft drop shadows, hand-cut edges,\n"
-        "    tactile material feel. NOT vector flat art, NOT 3D render,\n"
-        "    NOT photo, NOT line drawing.\n"
-        "  - One single large subject sits in the center of the frame and\n"
-        "    occupies roughly 50–65%% of the canvas. The rest of the frame\n"
-        "    is generous negative space.\n"
-        "  - Any on-screen English text is rendered AS PART OF the paper-\n"
-        "    craft artwork itself — bold chunky paper-cut letters integrated\n"
-        "    into the composition. NEVER a caption bar, NEVER a watermark,\n"
-        "    NEVER a translucent overlay.\n"
-        "  - 16:9 landscape composition. No badges, no progress counters,\n"
-        "    no Chinese characters anywhere on the canvas.\n"
-        "  - All N slides for a single video share the SAME palette,\n"
-        "    background texture, and overall mood — the video reads as one\n"
-        "    visual world, not N unrelated illustrations.\n"
+        "UNIVERSAL CONSTRAINTS (apply to every video, every style):\n"
+        "  - One single large subject sits in the center, occupying ~50–65%%\n"
+        "    of the frame. The rest is generous negative space.\n"
+        "  - English on-screen text is rendered AS PART OF the artwork in\n"
+        "    the chosen medium (cut-paper letters / chalk-drawn letters /\n"
+        "    flat type / collaged letters / risograph type — never a HTML\n"
+        "    caption bar, never a watermark, never a translucent overlay).\n"
+        "  - 16:9 landscape. No badges, no progress counters, no Chinese\n"
+        "    characters anywhere on the canvas.\n"
+        "  - All N slides for a single video share the SAME chosen art_style\n"
+        "    + palette + background texture + mood. The video reads as one\n"
+        "    visual world.\n"
+        "\n"
+        "ART STYLE — PICK ONE per video to match the topic's tone.\n"
+        "Set art_style to exactly one of these IDs:\n"
+        "\n"
+        "  paper_craft\n"
+        "    Layered cut-paper / torn-paper illustrations with soft drop\n"
+        "    shadows, hand-cut edges, tactile material feel. Letters are\n"
+        "    cut from coloured paper. The default Google-NotebookLM look.\n"
+        "    Best for: stories, daily life, soft / human topics, kid-\n"
+        "    friendly explainers, anything with emotional warmth.\n"
+        "\n"
+        "  flat_minimal\n"
+        "    Clean minimal flat-vector illustration. Solid colour blocks,\n"
+        "    1–2 px stroke outlines, simple geometric shapes, no texture,\n"
+        "    no shadows, no gradients. Letters are bold sans-serif type.\n"
+        "    Best for: math, logic, pure abstract concepts, programming,\n"
+        "    statistics — anything where the idea is structural rather\n"
+        "    than emotional.\n"
+        "\n"
+        "  editorial_collage\n"
+        "    Magazine / newspaper editorial collage. Cut-out photo-style\n"
+        "    fragments arranged with bold geometric shapes, mixed serif\n"
+        "    + sans-serif type, hand-torn paper edges, halftone accents,\n"
+        "    visible underlying grid. Letters are big editorial headline\n"
+        "    type, sometimes overlapping the imagery.\n"
+        "    Best for: business, economics, finance, marketing, social /\n"
+        "    cultural topics, behavioural psychology.\n"
+        "\n"
+        "  risograph_print\n"
+        "    Risograph / screen-print look: 2–3 limited inks (e.g. red +\n"
+        "    blue, or fluorescent orange + black) with visible mis-register\n"
+        "    offset, halftone dot texture, slightly grainy off-white paper,\n"
+        "    chunky retro display type.\n"
+        "    Best for: philosophy, history, literature, vintage / retro\n"
+        "    topics, indie / cultural / counter-intuitive ideas.\n"
+        "\n"
+        "  chalkboard_sketch\n"
+        "    Hand-drawn chalkboard or warm-cream notebook page. Loose\n"
+        "    chalk / pen lines, hand-drawn arrows, simple cartoon icons,\n"
+        "    handwritten labels. Subtle paper or slate texture. The\n"
+        "    teacher-at-the-blackboard feel.\n"
+        "    Best for: math derivations, physics, classic 'first-\n"
+        "    principles' explainers, anything that wants to feel like\n"
+        "    a great teacher walking you through a problem.\n"
+        "\n"
+        "Pick the style honestly — vary across videos. Don't default to\n"
+        "paper_craft every time. A finance topic looks better in\n"
+        "editorial_collage; a probability topic looks better in\n"
+        "flat_minimal; a Greek philosophy topic looks better in\n"
+        "risograph_print or chalkboard_sketch.\n"
         "\n"
         "WHAT IS *NOT* UNIVERSAL — YOU PICK PER TOPIC:\n"
         "  - The actual color palette\n"
@@ -344,13 +413,15 @@ def _build_llm_user_prompt(
         "  5. art_direction is a SHARED 60–100 word description that EVERY\n"
         "     slide will reuse to keep the video visually consistent. It\n"
         "     must specify, for THIS topic:\n"
-        "       a) Paper-craft medium reminder (cut-paper / layered torn\n"
-        "          paper / soft shadows / hand-cut edges).\n"
+        "       a) The chosen art_style ID (paper_craft / flat_minimal /\n"
+        "          editorial_collage / risograph_print / chalkboard_sketch)\n"
+        "          and the medium reminder appropriate for that style\n"
+        "          (e.g. for paper_craft: 'cut-paper, soft drop shadows';\n"
+        "          for chalkboard_sketch: 'chalk lines on slate, slight\n"
+        "          dust';  for risograph_print: 'visible mis-register, halftone\n"
+        "          dots, slightly grainy paper').\n"
         "       b) Background texture and color you have CHOSEN for this\n"
-        "          topic — be specific (e.g. 'aged cream parchment paper\n"
-        "          with subtle fiber texture' / 'deep navy starfield paper'\n"
-        "          / 'pale sky-blue paper with faint grid'). Do NOT say\n"
-        "          'either A or B' — pick one.\n"
+        "          topic — be specific. Pick ONE, not 'either A or B'.\n"
         "       c) Palette of 3–5 specific colors with hex codes you've\n"
         "          chosen for THIS topic.\n"
         "       d) Mood / lighting (e.g. 'cautionary, low-key' /\n"
@@ -359,20 +430,22 @@ def _build_llm_user_prompt(
         "          single centered subject ≈60%% of frame, generous\n"
         "          negative space, no text bands, no badges, no progress\n"
         "          counters, no Chinese characters, English text only,\n"
-        "          rendered as paper-cut lettering integrated into the\n"
-        "          artwork, 16:9 landscape.\n"
+        "          rendered AS PART of the chosen medium (e.g. cut-paper\n"
+        "          letters / chalk-drawn letters / flat type / collaged\n"
+        "          letters / risograph type), 16:9 landscape.\n"
         "  6. image_prompt for each slide MUST start with the literal\n"
         "     string '<USE ART_DIRECTION>' (5 words including angle\n"
         "     brackets) — the pipeline will replace that token with the\n"
         "     shared art_direction text before sending to gpt-image-2.\n"
         "     After that token, describe in 50–90 words THIS slide's\n"
-        "     specific subject: what paper-cut object/scene appears, how\n"
-        "     it's positioned, and the exact English on-screen text the\n"
-        "     image must render as part of the paper-cut composition\n"
-        "     (e.g. 'Bold chunky paper-cut English title \\\"WHY DOES IT\n"
-        "     REPEAT?\\\" sits across the upper third'). Do NOT repeat the\n"
-        "     palette / background / mood here — those live in\n"
-        "     art_direction. Just the slide-specific scene + text.\n"
+        "     specific subject: what object/scene appears (in the chosen\n"
+        "     medium — cut-paper / flat-vector / collage / riso / chalk),\n"
+        "     how it's positioned, and the exact English on-screen text\n"
+        "     the image must render as part of the composition (e.g.\n"
+        "     'Bold chalk-drawn English title \\\"WHY DOES IT REPEAT?\\\"\n"
+        "     sits across the upper third'). Do NOT repeat the palette /\n"
+        "     background / mood here — those live in art_direction. Just\n"
+        "     the slide-specific scene + text.\n"
         "  7. The narrative should genuinely teach: hook a question, set\n"
         "     up the problem, walk through real reasoning, deliver an\n"
         "     answer, end with a takeaway.\n"
@@ -383,16 +456,61 @@ def _build_llm_user_prompt(
         "     Use the user's original Chinese phrasing where possible.\n"
         "     Do NOT mention TTS, Pillow, FFmpeg, slides, providers, or\n"
         "     any technical implementation detail.\n"
-        "  9. Output a SINGLE JSON object — no markdown fence, no prose\n"
-        "     outside the JSON.\n"
+        "  9. bgm_choice — pick one BGM track from the catalog below by\n"
+        "     filename (the post-processing pipeline will mux it under the\n"
+        "     finished video). Pick whichever track best matches the\n"
+        "     emotional tone you wrote in art_direction. Mood and topic\n"
+        "     should agree: cautionary topic → reflective / lounge track,\n"
+        "     cheerful topic → uplifting / kid-friendly track, awe-leaning\n"
+        "     topic → harp / new-age / cinematic track. Always include a\n"
+        "     short why (≤ 18 words) explaining the match.\n"
+        "  10. IMAGE MODERATION SAFETY — every image_prompt is sent to a\n"
+        "      hosted image generator that runs an Azure-style content\n"
+        "      filter. Phrases that look harmless to a human can trip the\n"
+        "      'self-harm', 'violence', or 'sexual' filters and get the\n"
+        "      whole request rejected. To stay safe, you MUST avoid all of\n"
+        "      these words and concepts in image_prompt fields:\n"
+        "        - rope / noose / hanging / dangling rope / rope around\n"
+        "        - blood / wound / bleeding / cut / knife / blade / sword\n"
+        "        - gun / pistol / rifle / weapon / shooting / shot\n"
+        "        - die / death / dead / kill / killed / corpse / grave\n"
+        "        - jumping off / falling from a height / cliff edge\n"
+        "        - pills / overdose / drugs / syringe / needle\n"
+        "        - fire consuming a person / burning person\n"
+        "        - any depiction of bodily harm to a person\n"
+        "      Even when the topic is metaphorically about giving up,\n"
+        "      letting go, sacrifice, loss, or risk, you MUST illustrate\n"
+        "      these ideas with NEUTRAL paper-craft objects: open hands,\n"
+        "      doors, paths, scales, jars, calendars, chess pieces, coins,\n"
+        "      bridges, keys, gates, balloons, leaves, flags, signposts,\n"
+        "      empty/full vessels. Concept of 'release' = an open hand or\n"
+        "      paper balloon drifting up. Concept of 'sacrifice' = a chess\n"
+        "      knight tipping over, or a single coin set aside. Concept of\n"
+        "      'failure' = a paper graph dipping. NEVER use rope, noose,\n"
+        "      blood, weapons, or harm imagery — even tastefully — because\n"
+        "      the filter does not understand metaphor.\n"
+        "      No human figures in distress. No dark dripping liquids.\n"
+        "      No bandages. No hospital beds. No tombstones. No skulls.\n"
+        "  11. Output a SINGLE JSON object — no markdown fence, no prose\n"
+        "      outside the JSON.\n"
         "\n"
-        "Schema:\n"
+        + (
+            "BGM catalog (pick one filename for bgm_choice.filename):\n"
+            f"{bgm_catalog}\n\n"
+            if bgm_catalog else
+            "BGM catalog: none provided — set bgm_choice to null.\n\n"
+        )
+        + "Schema:\n"
         "{\n"
         "  \"video_title_en\": string (<= 9 words, English),\n"
         "  \"hook_question_en\": string (<= 18 words, English),\n"
         "  \"answer_en\": string (<= 22 words, the actual answer),\n"
         "  \"overview_cn\": string (Chinese paragraph, 4-7 sentences),\n"
+        "  \"art_style\": one of \"paper_craft\" | \"flat_minimal\" | "
+        "\"editorial_collage\" | \"risograph_print\" | \"chalkboard_sketch\",\n"
         "  \"art_direction\": string (60-100 words, shared by all slides),\n"
+        "  \"bgm_choice\": { \"filename\": string-from-catalog,"
+        " \"why\": string (<= 18 words) } | null,\n"
         "  \"slides\": [\n"
         "    { \"index\": 1,\n"
         "      \"role\": \"hook\",\n"
@@ -408,11 +526,164 @@ def _build_llm_user_prompt(
     )
 
 
+def _safe_rewrite_image_prompt(
+    failing_prompt: str,
+    moderation_error: str,
+    slide_title: str,
+    slide_caption: str,
+    slide_role: str,
+    art_direction: str,
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """v0.6.5.2 — when the image2 gateway rejects a prompt for moderation
+    reasons, ask the LLM to rewrite ONLY that prompt with safer wording.
+    Returns ``(rewritten_prompt_or_None, debug)``. Never raises.
+
+    The new prompt is constrained to keep the same paper-craft art
+    direction, the same on-screen English text, and the same role/scene
+    intent — but with all moderation triggers (rope, blood, weapons,
+    death, harm) swapped for neutral metaphors (open hand, scale, gate,
+    chess piece, balloon, etc.).
+    """
+    debug: Dict[str, Any] = {
+        "called": False,
+        "fallback_reason": None,
+        "rewrite_chars": 0,
+    }
+    api_key, _ = _resolve_llm_api_key()
+    base_url = os.getenv("AI_VIDEO_LLM_BASE_URL", "https://api.openai.com/v1")
+    model = os.getenv("AI_VIDEO_LLM_MODEL", "gpt-5-chat")
+    try:
+        timeout = int(os.getenv("AI_VIDEO_LLM_TIMEOUT", "60"))
+    except Exception:
+        timeout = 60
+    if not api_key:
+        debug["fallback_reason"] = "AI_VIDEO_LLM_API_KEY not configured"
+        return None, debug
+    if (os.getenv("IMAGE_VIDEO_DISABLE_LLM") or "").strip().lower() in (
+        "1", "true", "yes", "on"
+    ):
+        debug["fallback_reason"] = "IMAGE_VIDEO_DISABLE_LLM enabled"
+        return None, debug
+
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception as exc:
+        debug["fallback_reason"] = f"openai package unavailable: {exc}"
+        return None, debug
+
+    user_prompt = (
+        "An image generation request was REJECTED by the content moderation\n"
+        "filter. Rewrite the image_prompt below so it conveys the same\n"
+        "educational meaning but with NEUTRAL paper-craft imagery only.\n"
+        "\n"
+        "Banned (must NOT appear, even metaphorically):\n"
+        "  rope, noose, hanging, blood, wound, cut, knife, blade, sword,\n"
+        "  gun, pistol, weapon, die, death, dead, kill, killed, corpse,\n"
+        "  grave, tombstone, skull, syringe, pills, drug, overdose,\n"
+        "  jumping off, cliff edge, falling from, burning person, bandage,\n"
+        "  hospital bed, body in distress.\n"
+        "\n"
+        "Safe replacements you SHOULD use:\n"
+        "  open hand letting a paper balloon drift up = release / letting go\n"
+        "  a single coin set aside, scales tipping = sacrifice / trade-off\n"
+        "  chess piece tipped over = giving up / surrender\n"
+        "  a paper door opening, a paper key turning = opportunity\n"
+        "  a paper graph line dipping then rising = setback / recovery\n"
+        "  empty paper jar, full paper jar = scarcity vs abundance\n"
+        "  paper signpost, paper crossroads = decision\n"
+        "  paper bridge, paper path = transition\n"
+        "\n"
+        f"Slide role: {slide_role}\n"
+        f"On-screen title (must still appear in the artwork verbatim): {slide_title}\n"
+        f"On-screen caption (informs the visual but is NOT drawn into the image): {slide_caption}\n"
+        f"Shared art direction (preserve palette + paper-craft medium):\n"
+        f"  {art_direction}\n"
+        "\n"
+        f"Original (rejected) image_prompt:\n"
+        f"  {failing_prompt}\n"
+        "\n"
+        f"Moderation error from the gateway:\n"
+        f"  {moderation_error[:400]}\n"
+        "\n"
+        "Output ONE JSON object with a single field: "
+        "{\"image_prompt\": \"<the rewritten prompt, 60-110 words, "
+        "preserves art direction + on-screen title>\"}. No markdown, no prose."
+    )
+
+    try:
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+    except Exception as exc:
+        debug["fallback_reason"] = f"OpenAI client init failed: {exc}"
+        return None, debug
+
+    debug["called"] = True
+    try:
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content":
+                        "You rewrite image-generation prompts to bypass content "
+                        "moderation while preserving educational intent. Output "
+                        "strict JSON only."},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=1024,
+                temperature=0.4,
+            )
+        except Exception:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content":
+                        "You rewrite image-generation prompts to bypass content "
+                        "moderation while preserving educational intent. Output "
+                        "strict JSON only."},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=1024,
+                temperature=0.4,
+            )
+    except Exception as exc:
+        debug["fallback_reason"] = f"safe-rewrite LLM call failed: {exc}"
+        return None, debug
+
+    raw_text = resp.choices[0].message.content if resp and resp.choices else None
+    if not raw_text:
+        debug["fallback_reason"] = "safe-rewrite returned empty content"
+        return None, debug
+    debug["rewrite_chars"] = len(raw_text)
+
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n", "", text)
+        text = re.sub(r"\n```\s*$", "", text)
+    try:
+        data = json.loads(text)
+    except Exception:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            debug["fallback_reason"] = "safe-rewrite response was not JSON"
+            return None, debug
+        try:
+            data = json.loads(match.group(0))
+        except Exception as exc:
+            debug["fallback_reason"] = f"safe-rewrite JSON parse failed: {exc}"
+            return None, debug
+    new_prompt = str(data.get("image_prompt") or "").strip()
+    if not new_prompt:
+        debug["fallback_reason"] = "safe-rewrite missing image_prompt field"
+        return None, debug
+    return new_prompt[:2400], debug
+
+
 def _call_llm_for_slide_content(
     title: str,
     duration_seconds: int,
     slide_count: int,
     roles: List[str],
+    bgm_options: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """Call the AI_VIDEO_LLM_* model and parse the structured response.
 
@@ -477,7 +748,10 @@ def _call_llm_for_slide_content(
         debug["fallback_reason"] = f"openai package unavailable: {exc}"
         return None, debug
 
-    user_prompt = _build_llm_user_prompt(title, duration_seconds, slide_count, roles)
+    user_prompt = _build_llm_user_prompt(
+        title, duration_seconds, slide_count, roles,
+        bgm_options=bgm_options,
+    )
 
     try:
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
@@ -567,6 +841,15 @@ def _parse_llm_slide_response(
     # is missing (e.g. the model forgot), prepend the art_direction
     # automatically so we still get a topic-consistent visual world.
     art_direction = str(data.get("art_direction") or "").strip()[:1200]
+    # v0.6.6 — LLM picks one of 5 art styles per video. Validate the
+    # value; anything off-list defaults to paper_craft for backward
+    # compatibility with v0.6.4-era videos.
+    _ALLOWED_ART_STYLES = {
+        "paper_craft", "flat_minimal", "editorial_collage",
+        "risograph_print", "chalkboard_sketch",
+    }
+    art_style_raw = str(data.get("art_style") or "").strip().lower().replace("-", "_")
+    art_style = art_style_raw if art_style_raw in _ALLOWED_ART_STYLES else "paper_craft"
 
     cleaned_slides: List[Dict[str, Any]] = []
     for i, item in enumerate(slides):
@@ -607,12 +890,29 @@ def _parse_llm_slide_response(
             "image_prompt": image_prompt_resolved[:2400],
         })
     overview_cn = str(data.get("overview_cn") or "").strip()
+
+    # v0.6.5 — pull the LLM's bgm_choice. The pipeline post-validates the
+    # filename against the manifest in audio_providers.bgm_selector, so we
+    # only sanity-clean the field shape here.
+    bgm_choice_raw = data.get("bgm_choice")
+    bgm_choice: Optional[Dict[str, str]] = None
+    if isinstance(bgm_choice_raw, dict):
+        chosen_filename = str(bgm_choice_raw.get("filename") or "").strip()
+        chosen_why = str(bgm_choice_raw.get("why") or "").strip()
+        if chosen_filename:
+            bgm_choice = {
+                "filename": chosen_filename[:200],
+                "why": chosen_why[:160],
+            }
+
     return {
         "video_title_en": str(data.get("video_title_en") or "").strip()[:80],
         "hook_question_en": str(data.get("hook_question_en") or "").strip()[:160],
         "answer_en": str(data.get("answer_en") or "").strip()[:200],
         "overview_cn": overview_cn,
         "art_direction": art_direction,
+        "art_style": art_style,
+        "bgm_choice": bgm_choice,
         "slides": cleaned_slides,
     }
 
@@ -1459,22 +1759,33 @@ def _generate_image2_backgrounds(
     debug["called"] = True
     debug["requested"] = len(slides)
 
-    _emit("generate_slide_images", "running",
-          f"Calling gpt-image-2 for {len(slides)} slides "
-          f"(concurrency={concurrency}, size={provider.default_size}, "
-          f"quality={provider.default_quality})...")
+    _emit("generate_slide_images", "running", "0% In progress...")
 
     backgrounds_dir = image_video_dir / "image2_backgrounds"
     backgrounds_dir.mkdir(parents=True, exist_ok=True)
 
+    import time as _time_mod
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from .image_providers.base import ImageProviderError
+    from .image_providers.base import ImageProviderError, TransientImageProviderError
+
+    # v0.6.5.1 — retry config. Tail latency on the gateway makes single-shot
+    # failures common (10-30% on 60-90s videos), and the v0.6.4 "fall back
+    # to Pillow geometric template" policy was unacceptable visually. Now
+    # every transient failure gets retried up to RETRY_MAX_ATTEMPTS times
+    # with exponential backoff. The last attempt downgrades quality
+    # (high → medium) so the gateway has a higher chance of returning in
+    # time.
+    try:
+        retry_max_attempts = int(os.getenv("APX_IMAGE2_RETRY_ATTEMPTS", "3"))
+    except Exception:
+        retry_max_attempts = 3
+    retry_max_attempts = max(1, min(retry_max_attempts, 5))
+    retry_backoff_base = 2.0  # 2s, 4s, 8s
 
     def _one(slide: Dict[str, Any]) -> Tuple[int, Optional[bytes], Dict[str, Any]]:
         idx = int(slide.get("index") or 0)
         prompt = (slide.get("image_prompt") or "").strip()
         if not prompt:
-            # Build a fallback image_prompt out of title/caption/visual_focus.
             bits = [
                 slide.get("title") or "",
                 slide.get("caption") or "",
@@ -1485,24 +1796,84 @@ def _generate_image2_backgrounds(
             return idx, None, {
                 "index": idx, "ok": False,
                 "error": "no image_prompt available",
+                "attempts": 0, "transient_failures": 0,
             }
-        try:
-            rendered = provider.generate(prompt)
-            return idx, rendered.png_bytes, {
-                "index": idx, "ok": True,
-                "width": rendered.width, "height": rendered.height,
-                "bytes": len(rendered.png_bytes),
-            }
-        except ImageProviderError as exc:
-            return idx, None, {"index": idx, "ok": False, "error": str(exc)}
-        except Exception as exc:
-            return idx, None, {
-                "index": idx, "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+
+        attempts = 0
+        transient_failures = 0
+        last_error_str: str = ""
+        while attempts < retry_max_attempts:
+            attempts += 1
+            # Final attempt downgrades quality so the gateway returns
+            # faster — better a slightly-less-detailed paper-craft image
+            # than a Pillow placeholder.
+            if attempts == retry_max_attempts and attempts > 1:
+                quality_for_attempt: Optional[str] = "medium"
+            else:
+                quality_for_attempt = None  # = use provider default
+
+            # Retry attempts are silent in the UI — they don't bump the
+            # aggregate progress (the slide hasn't completed yet) and
+            # they don't print over the "N% In progress..." line. The
+            # retry counter shows up in image2_debug.json after the run
+            # for monitoring.
+            try:
+                rendered = provider.generate(prompt, quality=quality_for_attempt)
+                return idx, rendered.png_bytes, {
+                    "index": idx, "ok": True,
+                    "width": rendered.width, "height": rendered.height,
+                    "bytes": len(rendered.png_bytes),
+                    "attempts": attempts,
+                    "transient_failures": transient_failures,
+                    "quality_used": quality_for_attempt or provider.default_quality,
+                }
+            except TransientImageProviderError as exc:
+                transient_failures += 1
+                last_error_str = str(exc)
+                if attempts >= retry_max_attempts:
+                    break
+                # Exponential backoff before next attempt: 2s, 4s, 8s, ...
+                sleep_for = retry_backoff_base * (2 ** (attempts - 1))
+                try:
+                    _time_mod.sleep(sleep_for)
+                except Exception:
+                    pass
+                continue
+            except ImageProviderError as exc:
+                # Permanent (4xx, malformed response, etc.) — no retry.
+                return idx, None, {
+                    "index": idx, "ok": False,
+                    "error": str(exc),
+                    "attempts": attempts,
+                    "transient_failures": transient_failures,
+                    "permanent": True,
+                }
+            except Exception as exc:
+                last_error_str = f"{type(exc).__name__}: {exc}"
+                if attempts >= retry_max_attempts:
+                    break
+                sleep_for = retry_backoff_base * (2 ** (attempts - 1))
+                try:
+                    _time_mod.sleep(sleep_for)
+                except Exception:
+                    pass
+                continue
+
+        return idx, None, {
+            "index": idx, "ok": False,
+            "error": (
+                f"image2 failed after {attempts} attempts "
+                f"({transient_failures} transient): {last_error_str}"
+            ),
+            "attempts": attempts,
+            "transient_failures": transient_failures,
+            "permanent": False,
+        }
 
     images: Dict[int, "Image.Image"] = {}
     per_slide_debug: List[Dict[str, Any]] = []
+    total = len(slides)
+    completed = 0
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futures = [ex.submit(_one, s) for s in slides]
         for fut in as_completed(futures):
@@ -1510,31 +1881,207 @@ def _generate_image2_backgrounds(
             per_slide_debug.append(info)
             if not png_bytes:
                 debug["failed"] += 1
-                continue
-            try:
-                from io import BytesIO
-                img = Image.open(BytesIO(png_bytes))
-                img.load()
-                images[idx] = img
-                debug["succeeded"] += 1
-                # Persist the raw image2 PNG for transparency / debugging.
+            else:
                 try:
-                    (backgrounds_dir / f"slide_{idx:02d}_image2.png").write_bytes(png_bytes)
-                except Exception:
-                    pass
-            except Exception as exc:
-                debug["failed"] += 1
-                info["ok"] = False
-                info["error"] = (
-                    f"PNG decode failed: {type(exc).__name__}: {exc}"
+                    from io import BytesIO
+                    img = Image.open(BytesIO(png_bytes))
+                    img.load()
+                    images[idx] = img
+                    debug["succeeded"] += 1
+                    # Persist the raw image2 PNG for transparency / debugging.
+                    try:
+                        (backgrounds_dir / f"slide_{idx:02d}_image2.png").write_bytes(png_bytes)
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    debug["failed"] += 1
+                    info["ok"] = False
+                    info["error"] = (
+                        f"PNG decode failed: {type(exc).__name__}: {exc}"
+                    )
+            # Live progress beat: emit a "running" message every time a
+            # slide finishes so the frontend can show "N / total slides"
+            # and a derived percentage. The stage is kept in `running`
+            # state until the loop ends; the final `done` emit overwrites
+            # this last message with the real wall-clock duration.
+            completed += 1
+            try:
+                progress_pct = int(round((completed / total) * 100)) if total else 0
+                _emit(
+                    "generate_slide_images", "running",
+                    f"{progress_pct}% In progress...",
                 )
+            except Exception:
+                pass
+
+    # v0.6.5.2 — Layer 3: safe-rewrite-and-retry for slides that still
+    # failed after the standard retry loop. We ask the LLM to rewrite the
+    # image_prompt with safer wording, then call image2 once more. This
+    # is the recovery step for moderation-triggered rejections that the
+    # banned-words list (Layer 2 in the LLM system prompt) didn't already
+    # prevent.
+    failed_indices_before_rewrite = [
+        p.get("index") for p in per_slide_debug if not p.get("ok")
+    ]
+    safe_rewrite_attempts = 0
+    safe_rewrite_recovered = 0
+    safe_rewrite_failed = 0
+    safe_rewrite_log: List[Dict[str, Any]] = []
+
+    if failed_indices_before_rewrite:
+        # Build a quick lookup from slide.index → slide dict.
+        slides_by_idx: Dict[int, Dict[str, Any]] = {
+            int(s.get("index") or 0): s for s in slides
+        }
+        art_direction_for_rewrite = str(slide_plan.get("art_direction") or "")
+
+        _emit(
+            "generate_slide_images", "running",
+            f"Recovering {len(failed_indices_before_rewrite)} blocked slide(s) "
+            "with safer prompts...",
+        )
+
+        for failed_idx in failed_indices_before_rewrite:
+            if not failed_idx:
+                continue
+            slide = slides_by_idx.get(int(failed_idx))
+            if slide is None:
+                continue
+            # Find the existing per-slide debug entry so we can append.
+            existing_entry = next(
+                (p for p in per_slide_debug if p.get("index") == failed_idx),
+                None,
+            )
+            original_error = (existing_entry or {}).get("error", "") if existing_entry else ""
+            failing_prompt = str(slide.get("image_prompt") or "")
+            slide_title = str(slide.get("title") or "")
+            slide_caption = str(slide.get("caption") or "")
+            slide_role = str(slide.get("role") or "")
+
+            safe_rewrite_attempts += 1
+            new_prompt, rewrite_debug = _safe_rewrite_image_prompt(
+                failing_prompt=failing_prompt,
+                moderation_error=original_error,
+                slide_title=slide_title,
+                slide_caption=slide_caption,
+                slide_role=slide_role,
+                art_direction=art_direction_for_rewrite,
+            )
+            entry_log: Dict[str, Any] = {
+                "index": failed_idx,
+                "rewrite_called": bool(rewrite_debug.get("called")),
+                "rewrite_fallback_reason": rewrite_debug.get("fallback_reason"),
+            }
+
+            if not new_prompt:
+                # LLM rewrite itself failed — bail; this slide stays failed.
+                entry_log["recovered"] = False
+                entry_log["recovery_failed_reason"] = (
+                    rewrite_debug.get("fallback_reason") or "no rewrite produced"
+                )
+                safe_rewrite_failed += 1
+                safe_rewrite_log.append(entry_log)
+                continue
+
+            # Update the slide_plan in place so downstream consumers see
+            # the safer prompt. The original is preserved in
+            # `image_prompt_template` already (untouched by this rewrite).
+            slide["image_prompt"] = new_prompt
+            entry_log["rewritten_prompt_chars"] = len(new_prompt)
+
+            # Try image2 once more with the rewritten prompt + medium
+            # quality (fastest tier — moderation is the bottleneck, not
+            # render time).
+            try:
+                rendered = provider.generate(new_prompt, quality="medium")
+                try:
+                    from io import BytesIO
+                    img = Image.open(BytesIO(rendered.png_bytes))
+                    img.load()
+                    images[int(failed_idx)] = img
+                    debug["succeeded"] += 1
+                    debug["failed"] = max(0, debug["failed"] - 1)
+                    try:
+                        (backgrounds_dir / f"slide_{int(failed_idx):02d}_image2.png").write_bytes(
+                            rendered.png_bytes
+                        )
+                    except Exception:
+                        pass
+                    if existing_entry is not None:
+                        existing_entry["ok"] = True
+                        existing_entry["recovered_via_safe_rewrite"] = True
+                        existing_entry["error"] = None
+                        existing_entry["bytes"] = len(rendered.png_bytes)
+                        existing_entry["width"] = rendered.width
+                        existing_entry["height"] = rendered.height
+                        existing_entry["quality_used"] = "medium"
+                    safe_rewrite_recovered += 1
+                    entry_log["recovered"] = True
+                except Exception as exc:
+                    safe_rewrite_failed += 1
+                    entry_log["recovered"] = False
+                    entry_log["recovery_failed_reason"] = (
+                        f"PNG decode after rewrite: {type(exc).__name__}: {exc}"
+                    )
+            except Exception as exc:
+                safe_rewrite_failed += 1
+                entry_log["recovered"] = False
+                entry_log["recovery_failed_reason"] = (
+                    f"image2 still failed after rewrite: {type(exc).__name__}: {exc}"
+                )
+
+            safe_rewrite_log.append(entry_log)
+
+        if safe_rewrite_recovered > 0:
+            _emit(
+                "generate_slide_images", "running",
+                f"Recovered {safe_rewrite_recovered}/{safe_rewrite_attempts} "
+                "blocked slide(s) via safe-rewrite.",
+            )
+
+    debug["safe_rewrite_attempts"] = safe_rewrite_attempts
+    debug["safe_rewrite_recovered"] = safe_rewrite_recovered
+    debug["safe_rewrite_failed"] = safe_rewrite_failed
+    debug["safe_rewrite_log"] = safe_rewrite_log
 
     per_slide_debug.sort(key=lambda d: d.get("index") or 0)
     debug["per_slide"] = per_slide_debug
 
-    _emit("generate_slide_images", "done",
-          f"image2 returned {debug['succeeded']}/{debug['requested']} slides "
-          f"(failed={debug['failed']}; failures fall back to Pillow per slide).")
+    # v0.6.5.1 — surface retry stats so we can monitor gateway tail latency.
+    total_attempts = sum(int(p.get("attempts") or 0) for p in per_slide_debug)
+    total_transient = sum(int(p.get("transient_failures") or 0) for p in per_slide_debug)
+    total_extra_attempts = max(0, total_attempts - len(per_slide_debug))
+    debug["retry_total_attempts"] = total_attempts
+    debug["retry_extra_attempts"] = total_extra_attempts
+    debug["retry_transient_failures"] = total_transient
+    debug["retry_max_attempts_per_slide"] = retry_max_attempts
+
+    retry_summary_parts: List[str] = []
+    if total_extra_attempts > 0:
+        retry_summary_parts.append(
+            f"{total_extra_attempts} retry" + ("s" if total_extra_attempts != 1 else "")
+        )
+    if safe_rewrite_recovered > 0:
+        retry_summary_parts.append(
+            f"{safe_rewrite_recovered} safe-rewrite recover"
+            + ("s" if safe_rewrite_recovered != 1 else "")
+        )
+    retry_summary = f" ({', '.join(retry_summary_parts)})" if retry_summary_parts else ""
+
+    if debug["failed"] == 0:
+        _emit("generate_slide_images", "done",
+              f"image2 returned {debug['succeeded']}/{debug['requested']} slides"
+              + retry_summary + ".")
+    else:
+        # Layer 4 — fail loud. Don't pretend the video is OK; the caller
+        # turns route_status into 'failed' so the frontend tells the user
+        # to regenerate. We do NOT mix Pillow geometric placeholders in
+        # with image2 paper-craft.
+        _emit("generate_slide_images", "failed",
+              f"image2 could not produce {debug['failed']}/{debug['requested']} "
+              "slide(s) even after retries and safe-rewrite. The pipeline "
+              "will mark this run as failed instead of substituting a "
+              "Pillow placeholder.")
 
     return images, debug
 
@@ -1638,10 +2185,20 @@ def _compose_with_ffmpeg(
     duration_per_slide: float,
     output_path: Path,
     work_dir: Path,
+    bgm_path: Optional[Path] = None,
+    bgm_volume_db: float = -15.0,
+    total_duration_seconds: Optional[float] = None,
 ) -> Tuple[bool, str, List[str], Path]:
     """Concat slide PNGs into an mp4 using the ffmpeg concat demuxer.
 
-    Returns (ok, message, ffmpeg_args, concat_txt_path).
+    v0.6.5 — when ``bgm_path`` is provided, the BGM mp3 is muxed in as a
+    second input. The audio is volume-attenuated (default -15 dB), looped
+    if shorter than the video, and faded out in the final 1 second so the
+    end never feels abrupt. ``-shortest`` guarantees the audio stops the
+    instant the video does, so we never get a black-screen tail with
+    leftover music.
+
+    Returns ``(ok, message, ffmpeg_args, concat_txt_path)``.
     """
     concat_txt = work_dir / "concat.txt"
     lines: List[str] = []
@@ -1654,16 +2211,61 @@ def _compose_with_ffmpeg(
         lines.append(f"file '{slide_paths[-1].resolve().as_posix()}'")
     concat_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    args = [
+    args: List[str] = [
         ffmpeg_bin, "-y",
         "-f", "concat", "-safe", "0",
         "-i", str(concat_txt.resolve()),
-        "-vf", f"fps={FPS},format=yuv420p",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        str(output_path.resolve()),
     ]
+
+    if bgm_path is not None:
+        # Loop the BGM if it might be shorter than the final video. -shortest
+        # at the end will still cut everything to the video length, but
+        # without -stream_loop short tracks would just go silent partway.
+        args.extend([
+            "-stream_loop", "-1",
+            "-i", str(bgm_path.resolve()),
+        ])
+
+        # Fade out the last 1 second so the BGM doesn't hard-cut. Default
+        # to total_duration_seconds when known; otherwise compute fade-out
+        # start as max(0, video_duration - 1) inside ffmpeg by using the
+        # total duration the caller knows about.
+        fade_dur = 1.0
+        if total_duration_seconds is not None and total_duration_seconds > fade_dur:
+            fade_start = max(0.0, total_duration_seconds - fade_dur)
+        else:
+            # Fallback: compute from slide_paths * duration_per_slide.
+            est_dur = max(0.0, len(slide_paths) * duration_per_slide)
+            fade_start = max(0.0, est_dur - fade_dur)
+
+        # `volume=…dB` attenuates the BGM; `afade=t=out:st=…:d=…` smooths
+        # the tail. The chain runs on input #1 (the BGM) only.
+        bgm_filter = (
+            f"[1:a]volume={bgm_volume_db:.1f}dB,"
+            f"afade=t=out:st={fade_start:.3f}:d={fade_dur:.3f}[a]"
+        )
+        args.extend([
+            "-filter_complex", bgm_filter,
+            "-map", "0:v",
+            "-map", "[a]",
+            "-vf", f"fps={FPS},format=yuv420p",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            "-movflags", "+faststart",
+            str(output_path.resolve()),
+        ])
+    else:
+        args.extend([
+            "-vf", f"fps={FPS},format=yuv420p",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            str(output_path.resolve()),
+        ])
+
     try:
         proc = subprocess.run(
             args,
@@ -1738,7 +2340,7 @@ def generate_image_video_package(
             "image2_called": False,
             "tts_called": False,
             "has_audio": False,
-            "tts_status": "not_implemented_v0.6.3",
+            "tts_status": "not_implemented_v0.6.5",
             "voiceover_source": "none",
         }
     if duration_seconds not in DURATION_SLIDE_RANGES:
@@ -1755,7 +2357,7 @@ def generate_image_video_package(
             "image2_called": False,
             "tts_called": False,
             "has_audio": False,
-            "tts_status": "not_implemented_v0.6.3",
+            "tts_status": "not_implemented_v0.6.5",
             "voiceover_source": "none",
         }
 
@@ -1772,26 +2374,82 @@ def generate_image_video_package(
     _emit("plan_slides", "done",
           f"Planned {slide_count} slides ({duration_per_slide:.2f}s each).")
 
+    # v0.6.5 — load the local BGM manifest so we can hand the LLM a
+    # short catalog of available tracks and let it pick one as part of
+    # the same JSON response. The LLM never listens to the mp3 itself.
+    # When BGM is disabled by env, we still call the LLM but pass an
+    # empty catalog so the model knows to set bgm_choice to null.
+    from web.audio_providers import bgm_disabled_by_env, load_bgm_manifest
+    bgm_options_for_llm: List[Dict[str, Any]] = []
+    bgm_manifest_debug: Dict[str, Any] = {
+        "loaded": False,
+        "disabled_by_env": False,
+        "track_count": 0,
+    }
+    if bgm_disabled_by_env():
+        bgm_manifest_debug["disabled_by_env"] = True
+    else:
+        bgm_tracks_for_llm, _bgm_default, bgm_manifest_inner = load_bgm_manifest()
+        bgm_manifest_debug["loaded"] = bool(bgm_manifest_inner.get("manifest_exists"))
+        bgm_manifest_debug["track_count"] = len(bgm_tracks_for_llm)
+        bgm_options_for_llm = [
+            {
+                "filename": t.filename,
+                "display_name": t.display_name,
+                "mood_keywords": list(t.mood_keywords or []),
+                "fits": t.fits,
+                "tempo": t.tempo,
+                "energy": t.energy,
+                "instruments": t.instruments,
+            }
+            for t in bgm_tracks_for_llm
+        ]
+
     # v0.6.3 — call the configured AI_VIDEO_LLM_* model (gpt-5-chat by default)
     # to write per-slide content tailored to the user's topic and a Chinese
     # paragraph overview. Fall back to the static template on any failure so
     # the video always renders. This LLM is NOT a forbidden API — APX,
     # Seedance, Image2, and TTS remain off.
     _emit("write_slide_content", "running",
-          "Calling AI_VIDEO_LLM_* for slide titles, captions, and image prompts...")
+          "Calling AI_VIDEO_LLM_* for slide titles, captions, image prompts, and BGM choice...")
     llm_content, llm_debug = _call_llm_for_slide_content(
         title=title_clean,
         duration_seconds=duration_seconds,
         slide_count=slide_count,
         roles=roles,
+        bgm_options=bgm_options_for_llm,
     )
     if llm_content:
         _emit("write_slide_content", "done",
               f"AI wrote {len(llm_content.get('slides', []))} slide blocks "
-              f"+ Chinese overview.")
+              f"+ Chinese overview + BGM choice.")
     else:
         _emit("write_slide_content", "done",
               f"Static template used ({llm_debug.get('fallback_reason') or 'fallback'}).")
+
+    # v0.6.5 — resolve the BGM choice into a real on-disk path. This stage
+    # is fast (file existence check + manifest lookup) but we still emit a
+    # progress beat so the user sees it as a distinct step. When BGM is
+    # disabled, we still mark the stage done so the UI is honest.
+    from web.audio_providers import resolve_bgm_track
+    _emit("select_bgm", "running", "Picking BGM from local library...")
+    llm_bgm_choice = (llm_content or {}).get("bgm_choice") or {}
+    chosen_filename_for_bgm = (
+        str(llm_bgm_choice.get("filename") or "").strip() if isinstance(llm_bgm_choice, dict) else ""
+    )
+    bgm_track, bgm_debug = resolve_bgm_track(chosen_filename_for_bgm or None)
+    bgm_debug["manifest_loaded"] = bgm_manifest_debug
+    if bgm_track is not None:
+        _emit("select_bgm", "done",
+              f"Selected BGM: {bgm_track.display_name} ({bgm_track.filename}).")
+    else:
+        if bgm_debug.get("disabled_by_env"):
+            _emit("select_bgm", "done",
+                  "Skipped — IMAGE_VIDEO_DISABLE_BGM set; final video will be silent.")
+        else:
+            _emit("select_bgm", "done",
+                  f"No BGM resolved ({bgm_debug.get('fallback_reason') or 'unknown'}); "
+                  "final video will be silent.")
 
     slide_plan, overlay_plan = _build_slide_plan(
         title_clean, duration_seconds, slide_count, llm_content=llm_content,
@@ -1846,6 +2504,84 @@ def generate_image_video_package(
     except Exception:
         pass
 
+    # v0.6.5.2 — Layer 4: fail-loud. If image2 was actually configured
+    # and tried (i.e. the user expects real images), and any slide is
+    # still missing after the retry + safe-rewrite layers, abort the
+    # whole run. We do NOT silently substitute a Pillow geometric
+    # placeholder for the failed slide — that produced visually
+    # inconsistent videos that the user (correctly) called unacceptable.
+    image2_attempted_real = (
+        bool(image2_debug.get("called"))
+        and not image2_debug.get("disabled_by_env")
+    )
+    image2_unrecovered = int(image2_debug.get("failed") or 0)
+    if image2_attempted_real and image2_unrecovered > 0:
+        failed_indices = [
+            p.get("index") for p in (image2_debug.get("per_slide") or [])
+            if not p.get("ok")
+        ]
+        moderation_blocked = any(
+            "moderation" in str(p.get("error") or "").lower()
+            or "safety" in str(p.get("error") or "").lower()
+            or "content_policy" in str(p.get("error") or "").lower()
+            for p in (image2_debug.get("per_slide") or [])
+            if not p.get("ok")
+        )
+        error_msg = (
+            f"image2 could not produce {image2_unrecovered} of "
+            f"{image2_debug.get('requested')} slide image(s) "
+            f"({failed_indices}) even after retries and safe-rewrite. "
+            "The pipeline refuses to substitute a Pillow placeholder. "
+            "Click Generate to try again — this often succeeds because "
+            "the gateway's content moderation is non-deterministic."
+        )
+        if moderation_blocked:
+            error_msg += (
+                " Tip: rephrase the topic to avoid any words the image "
+                "moderation filter could associate with self-harm, "
+                "violence, or other restricted categories."
+            )
+        return {
+            "generation_method": "image_video",
+            "route_status": "failed",
+            "duration_seconds": duration_seconds,
+            "slide_count": slide_count,
+            "slide_plan_path": str(slide_plan_path),
+            "overlay_plan_path": str(overlay_plan_path),
+            "slides_dir": str(slides_dir),
+            "final_video_path": None,
+            "error": error_msg,
+            "ffmpeg_found": None,
+            "ffmpeg_path": None,
+            "ffmpeg_diagnostics": None,
+            "content_llm_called": bool(llm_debug.get("called")),
+            "media_api_called": True,
+            "external_api_called": True,
+            "seedance_called": False,
+            "apx_called": False,
+            "image2_called": True,
+            "image2_succeeded": int(image2_debug.get("succeeded") or 0),
+            "image2_failed": image2_unrecovered,
+            "image2_requested": int(image2_debug.get("requested") or 0),
+            "image2_disabled_by_env": False,
+            "image2_skipped_reason": None,
+            "image2_debug_path": str(image2_debug_path),
+            "image2_failed_indices": failed_indices,
+            "image2_moderation_blocked": moderation_blocked,
+            "tts_called": False,
+            "has_audio": False,
+            "tts_status": "not_implemented_v0.6.5",
+            "voiceover_source": "none",
+            "image_source": "image2_partial_failure",
+            "image_sources": [],
+            "video_composer": "skipped",
+            "content_source": "llm" if llm_content else "static_template",
+            "llm_used": bool(llm_content),
+            "llm_fallback_used": bool(llm_debug.get("fallback_used")),
+            "llm_fallback_reason": llm_debug.get("fallback_reason"),
+            "overview_cn": (llm_content or {}).get("overview_cn"),
+        }
+
     slide_paths: List[Path] = []
     image_sources: List[str] = []
     _emit("render_slide_overlays", "running",
@@ -1889,7 +2625,7 @@ def generate_image_video_package(
             "image2_skipped_reason": image2_debug.get("skipped_reason"),
             "tts_called": False,
             "has_audio": False,
-            "tts_status": "not_implemented_v0.6.3",
+            "tts_status": "not_implemented_v0.6.5",
             "voiceover_source": "none",
             "image_source": "local_static_renderer",
             "video_composer": "ffmpeg",
@@ -1937,7 +2673,7 @@ def generate_image_video_package(
             "image2_called": False,
             "tts_called": False,
             "has_audio": False,
-            "tts_status": "not_implemented_v0.6.3",
+            "tts_status": "not_implemented_v0.6.5",
             "voiceover_source": "none",
             "image_source": "local_static_renderer",
             "video_composer": "ffmpeg_missing",
@@ -1948,10 +2684,29 @@ def generate_image_video_package(
             "overview_cn": (llm_content or {}).get("overview_cn"),
         }
 
+    bgm_compose_path = bgm_track.absolute_path if bgm_track is not None else None
+    # v0.6.5 — operator-tunable BGM volume. Default -15 dB sits well below
+    # any future TTS narration. Set IMAGE_VIDEO_BGM_VOLUME_DB in .env to
+    # override; clamped to a sane range so a typo can't blow speakers.
+    try:
+        bgm_volume_db_default = float(
+            os.getenv("IMAGE_VIDEO_BGM_VOLUME_DB", "-15.0")
+        )
+    except Exception:
+        bgm_volume_db_default = -15.0
+    if bgm_volume_db_default > 0.0:
+        bgm_volume_db_default = 0.0
+    if bgm_volume_db_default < -40.0:
+        bgm_volume_db_default = -40.0
     _emit("compose_final_video", "running",
-          f"Composing final mp4 with FFmpeg ({slide_count} slides)...")
+          (f"Composing final mp4 with FFmpeg ({slide_count} slides"
+           + (f" + BGM '{bgm_track.display_name}'" if bgm_track is not None else " + no BGM")
+           + ")..."))
     ok, msg, ffmpeg_args, concat_path = _compose_with_ffmpeg(
-        ffmpeg_bin, slide_paths, duration_per_slide, final_video_path, image_video_dir
+        ffmpeg_bin, slide_paths, duration_per_slide, final_video_path, image_video_dir,
+        bgm_path=bgm_compose_path,
+        bgm_volume_db=bgm_volume_db_default,
+        total_duration_seconds=float(duration_seconds),
     )
     # Always persist the command we ran (for debugging / transparency).
     ffmpeg_command_path.write_text(
@@ -1987,7 +2742,7 @@ def generate_image_video_package(
             "image2_skipped_reason": image2_debug.get("skipped_reason"),
             "tts_called": False,
             "has_audio": False,
-            "tts_status": "not_implemented_v0.6.3",
+            "tts_status": "not_implemented_v0.6.5",
             "voiceover_source": "none",
             "image_source": "local_static_renderer",
             "video_composer": "ffmpeg",
@@ -2042,9 +2797,26 @@ def generate_image_video_package(
         "image2_debug_path": str(image2_debug_path),
         "image_sources": image_sources,
         "tts_called": False,
-        "has_audio": False,
-        "tts_status": "not_implemented_v0.6.3",
+        "has_audio": bool(bgm_track is not None),
+        "tts_status": "not_implemented_v0.6.5",
         "voiceover_source": "none",
+        "bgm_used": bool(bgm_track is not None),
+        "bgm_filename": (bgm_track.filename if bgm_track is not None else None),
+        "bgm_display_name": (bgm_track.display_name if bgm_track is not None else None),
+        "bgm_mood_keywords": (
+            list(bgm_track.mood_keywords) if bgm_track is not None else []
+        ),
+        "bgm_volume_db": float(bgm_volume_db_default),
+        "bgm_chosen_by_llm": bool(
+            llm_bgm_choice and isinstance(llm_bgm_choice, dict) and llm_bgm_choice.get("filename")
+        ),
+        "bgm_llm_why": (
+            (llm_bgm_choice or {}).get("why")
+            if isinstance(llm_bgm_choice, dict) else None
+        ),
+        "bgm_disabled_by_env": bool(bgm_debug.get("disabled_by_env")),
+        "bgm_fallback_used": bool(bgm_debug.get("fallback_used")),
+        "bgm_fallback_reason": bgm_debug.get("fallback_reason"),
         "image_source": (
             "image2" if (image2_debug.get("succeeded") or 0) > 0
             else "local_static_renderer"
@@ -2059,5 +2831,6 @@ def generate_image_video_package(
         "hook_question_en": (llm_content or {}).get("hook_question_en"),
         "answer_en": (llm_content or {}).get("answer_en"),
         "overview_cn": (llm_content or {}).get("overview_cn"),
+        "art_style": (llm_content or {}).get("art_style") or "paper_craft",
         "error": None,
     }

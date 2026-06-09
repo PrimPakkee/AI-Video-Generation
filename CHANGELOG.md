@@ -2,6 +2,56 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.6.5 - 本地 BGM 库 + LLM 选曲 + FFmpeg 同步混音
+
+> v0.6.5 给 Image Video 加上背景音乐。BGM 来源是本地 `assets/bgm/` 库，LLM
+> 在写 slide 内容的同一次调用里挑一首匹配 art_direction 的曲子，FFmpeg 用
+> `-shortest` + `afade` + `volume` 把音乐混进 mp4。视频结束 BGM 同时结束。
+> TTS 旁白还没接（v0.6.6+）。本版本**不**调任何 TTS / Seedance / APX video
+> API，**不**修改 .env。详见
+> [`docs/v0.6.5_bgm_integration.md`](docs/v0.6.5_bgm_integration.md)。
+
+### 新增
+- `web/audio_providers/__init__.py` + `bgm_selector.py`：本地 BGM 选取层；不
+  import `requests` / `openai`。读 `assets/bgm/manifest.json`，验证文件存在，
+  按 LLM 的 `bgm_choice` 解析；支持 `IMAGE_VIDEO_DISABLE_BGM` 关闭、
+  `IMAGE_VIDEO_BGM_FORCE` 强制指定。
+- `assets/bgm/manifest.json`（操作员手写）：8 首 mixkit-* 曲子的 mood / fits /
+  tempo / energy / instruments 描述 + `default_track`。
+- LLM schema 加 `bgm_choice: { filename, why }`，prompt 内嵌 BGM 目录给模型挑。
+- `IMAGE_VIDEO_RUN_STAGES` 7→8 个 stage，新增 `select_bgm`（位于 `write_slide_content`
+  之后、`generate_slide_images` 之前），真实计时。
+- `_compose_with_ffmpeg` 增加 `bgm_path` / `bgm_volume_db` / `total_duration_seconds`
+  参数。FFmpeg 命令使用 `-stream_loop -1 -i bgm.mp3` + `volume=-15.0dB,afade=
+  t=out:st=N-1:d=1` filter + `-map 0:v -map [a]` + `-shortest` + `-c:a aac -b:a 192k`
+  + `+faststart`，确保「视频开始 BGM 开始 / 视频结束 BGM 结束」。
+- Generation Evidence 面板新增 3 行：BGM used / BGM track / BGM volume。
+- pipeline_result + metadata + response payload 透传 `bgm_used` / `bgm_filename` /
+  `bgm_display_name` / `bgm_mood_keywords` / `bgm_volume_db` / `bgm_chosen_by_llm` /
+  `bgm_llm_why` / `bgm_disabled_by_env` / `bgm_fallback_used` / `bgm_fallback_reason`。
+- `scripts/smoke_image_video_pipeline.py` 新增 `--with-bgm` flag，默认
+  `IMAGE_VIDEO_DISABLE_BGM=1`。
+- `scripts/run_stability_checks.py` 升级 v0.6.5 + 新增 `check_v065_bgm_integration`
+  全套静态校验：包结构、env 引用、selector 不 import 网络库、manifest 文件存在、
+  pipeline 用 select_bgm 阶段、ffmpeg 命令含 `-shortest / afade / volume / aac`、
+  app.py 透传字段、前端 evidence 暴露 BGM 字段、smoke `--with-bgm` flag。
+- 新增 `docs/v0.6.5_bgm_integration.md`，更新 CHANGELOG / README / technical_roadmap。
+
+### 行为
+- 默认开启时 BGM 体积压低到 -15 dB（约 18% 音量），最后 1 秒淡出。
+- LLM 选错文件名（曲子不在 manifest 里）时自动 fallback 到 `default_track`，
+  视频依然能合成。
+- Image Video 视频现在含 AAC 192k 立体声音轨；之前是纯静音。
+- `tts_status` 字符串从 `not_implemented_v0.6.3` 升级为 `not_implemented_v0.6.5`。
+- v0.6.4 的 image2 + paper-craft 行为完全保留。
+
+### 不做
+- 不调任何 BGM 生成 / TTS / Seedance / APX video API。
+- LLM **不**听音频文件本身——它只读 manifest 里的文字描述。
+- 不修改 .env。
+- 默认 smoke 仍纯本地（`IMAGE_VIDEO_DISABLE_LLM=1` + `IMAGE_VIDEO_DISABLE_IMAGE2=1`
+  + `IMAGE_VIDEO_DISABLE_BGM=1`）。
+
 ## v0.6.4 - Image2 接入（gpt-image-2 真实图像生成）
 
 > v0.6.4 把 Image Video 路线从纯 Pillow 几何图升级成 gpt-image-2 真实图像生成 +

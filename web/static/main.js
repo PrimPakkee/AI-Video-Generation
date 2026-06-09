@@ -1864,6 +1864,10 @@ function renderCurrentPromptView() {
     reviewEl.classList.add('hidden');
     if (videoEl) videoEl.classList.add('hidden');
     if (webCopyEl) webCopyEl.classList.add('hidden');
+    // v0.6.6 — Overview-only Provider/Generation evidence panels live in
+    // their own wrapper so the Video tab stays clean (just the player).
+    const overviewExtrasEl = document.getElementById('prompt-overview-extras');
+    if (overviewExtrasEl) overviewExtrasEl.classList.add('hidden');
 
     if (mode === 'raw') {
         // CRITICAL: Always hydrate from currentRawText
@@ -1891,6 +1895,11 @@ function renderCurrentPromptView() {
         }
         overviewEl.innerHTML = overviewHTML;
         overviewEl.classList.remove('hidden');
+        // v0.6.6 — Provider/Generation evidence panels render below the
+        // Overview content so the Video tab can stay text-free.
+        if (overviewExtrasEl && currentAppMode === 'video') {
+            overviewExtrasEl.classList.remove('hidden');
+        }
         if (currentAppMode === 'video' && currentHistoryId != null) {
             refreshProviderContractSummary(currentHistoryId);
         }
@@ -1978,6 +1987,7 @@ const VIDEO_GENERATION_STEPS = [
 
 let _videoRunPollTimer = null;
 let _videoRunCurrentRunId = null;
+let _videoRun404Count = 0;
 
 // v0.5.5 — Render the Provider Contract Summary block shown at the bottom
 // of the Overview tab in Video Mode. Initial render uses static defaults
@@ -2104,6 +2114,14 @@ function renderGenerationEvidencePanel(record, payload) {
     } else {
         set('image2_ratio', null);
     }
+    // v0.6.5 BGM
+    const bgmUsed = !!(evidence.bgm_used || meta.bgm_used);
+    set('bgm_used', bgmUsed);
+    const bgmName = evidence.bgm_display_name || meta.bgm_display_name;
+    set('bgm_display_name', bgmName || null);
+    const bgmVol = (evidence.bgm_volume_db != null
+        ? evidence.bgm_volume_db : meta.bgm_volume_db);
+    set('bgm_volume_db', (bgmUsed && bgmVol != null) ? `${bgmVol} dB` : null);
     set('tts_called', false);
     set('local_slides_generated', evidence.local_slides_generated != null
         ? !!evidence.local_slides_generated : true);
@@ -2231,26 +2249,150 @@ function _videoProgressEls() {
 // while the worker thread is still spinning up.
 let _videoProgressInitialStages = null;
 
+function _escapeHtmlForProgress(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// v0.6.6.1 — Apple-style phase grouping. Each visible "phase" maps to one
+// or more backend stage keys. Phases without any matching backend stage
+// are not rendered — that's how we leave room for future TTS / subtitle
+// burn-in work without polluting the current video pipeline.
+const VP_PHASE_DEFS = [
+    {
+        id: 'plan',
+        title: 'Plan',
+        caption: 'Outlining slides',
+        keys: ['validate_topic', 'plan_slides',
+               'build_llm_content_package', 'parse_package_output',
+               'create_video_history_record'],
+    },
+    {
+        id: 'write',
+        title: 'Write content',
+        caption: 'Drafting slide text with GPT',
+        keys: ['write_slide_content'],
+    },
+    {
+        id: 'music',
+        title: 'Select music',
+        caption: 'Picking a background track',
+        keys: ['select_bgm'],
+    },
+    {
+        id: 'images',
+        title: 'Generate images',
+        caption: 'Calling gpt-image-2',
+        keys: ['generate_slide_images', 'build_video_assets'],
+    },
+    {
+        id: 'overlays',
+        title: 'Render overlays',
+        caption: 'Drawing on-screen text',
+        // Subtitle burn-in (TTS captions) will land here when added —
+        // the backend just needs to add a stage key into this bucket.
+        keys: ['render_slide_overlays'],
+    },
+    {
+        id: 'compose',
+        title: 'Compose video',
+        caption: 'Encoding with FFmpeg',
+        keys: ['compile_seedance_prompt', 'validate_prompt_quality',
+               'submit_video_job', 'open_video_status_panel',
+               'compose_final_video', 'save_history'],
+    },
+];
+
 function _renderVideoProgressListFromStages(stages, finalState) {
     const { list } = _videoProgressEls();
     if (!list) return;
     const live = (stages && stages.length) ? stages : (_videoProgressInitialStages || []);
-    const html = live.map((step) => {
-        const status = String(step.status || 'pending');
-        let cls = 'pending';
-        if (status === 'done') cls = 'done';
-        else if (status === 'running') cls = 'active';
-        else if (status === 'failed') cls = 'failed';
-        if (finalState === 'failed' && cls === 'active') cls = 'failed';
-        const ms = (typeof step.duration_ms === 'number')
-            ? `<span class="video-progress-step-time">${step.duration_ms} ms</span>` : '';
-        const key = step.key || '';
-        const label = step.label || key;
-        return `<li class="video-progress-step ${cls}" data-step="${key}">
-            <span class="video-progress-step-marker"></span>
-            <span class="video-progress-step-label">${label}</span>
-            ${ms}
-        </li>`;
+
+    // Bucket each backend stage into its phase. Stages whose key isn't
+    // mapped fall into the catch-all 'compose' phase so nothing is lost.
+    const byKey = {};
+    live.forEach((s) => { if (s && s.key) byKey[s.key] = s; });
+
+    const visiblePhases = VP_PHASE_DEFS
+        .map((def) => ({
+            ...def,
+            stages: def.keys.map((k) => byKey[k]).filter(Boolean),
+        }))
+        .filter((p) => p.stages.length > 0);
+
+    // Global progress: ratio of done backend stages to total backend stages.
+    const total = live.length || 1;
+    const doneCount = live.filter(s => String(s.status || '') === 'done').length;
+    const pct = Math.min(100, Math.round((doneCount / total) * 100));
+    const fill = document.getElementById('video-progress-bar-fill');
+    if (fill) fill.style.width = `${pct}%`;
+    const pctLabel = document.getElementById('video-progress-percent');
+    if (pctLabel) pctLabel.textContent = `${pct}%`;
+
+    const html = visiblePhases.map((p) => {
+        const statuses = p.stages.map(s => String(s.status || 'pending'));
+        let phaseStatus = 'pending';
+        if (statuses.some(s => s === 'failed')) {
+            phaseStatus = 'failed';
+        } else if (statuses.length && statuses.every(s => s === 'done')) {
+            phaseStatus = 'done';
+        } else if (statuses.some(s => s === 'running' || s === 'done')) {
+            phaseStatus = 'active';
+        }
+        if (finalState === 'failed' && phaseStatus === 'active') phaseStatus = 'failed';
+
+        const running = p.stages.find(s => String(s.status || '') === 'running');
+
+        // v0.6.6.1 — phase detail line:
+        //   pending → static caption ("Outlining slides")
+        //   active  → "<X% In progress>" if backend message has it, else
+        //             the running stage's label, else caption
+        //   done    → "Complete"
+        //   failed  → backend message or "Something went wrong"
+        let detail = p.caption;
+        let progressBadge = '';
+        if (phaseStatus === 'active' && running) {
+            const msg = String(running.message || '').trim();
+            if (msg) {
+                detail = msg;
+                // Hoist a leading "NN%" into a separate badge so the row
+                // reads "Generate images   45%   In progress…"
+                const pctMatch = msg.match(/^(\d{1,3})%\s*(.*)$/);
+                if (pctMatch) {
+                    progressBadge = `<span class="vp-phase-badge">${pctMatch[1]}%</span>`;
+                    detail = pctMatch[2] || 'In progress…';
+                }
+            } else {
+                detail = (running.label || p.caption) + ' — In progress…';
+            }
+        } else if (phaseStatus === 'done') {
+            detail = 'Complete';
+        } else if (phaseStatus === 'failed') {
+            const msg = (p.stages.find(s => s && s.message) || {}).message;
+            detail = msg || 'Something went wrong';
+        }
+
+        const totalMs = p.stages.reduce((acc, s) => {
+            const v = typeof s.duration_ms === 'number' ? s.duration_ms : 0;
+            return acc + v;
+        }, 0);
+        const timeChip = (phaseStatus === 'done' && totalMs > 0)
+            ? `<span class="vp-phase-time">${(totalMs / 1000).toFixed(1)}s</span>`
+            : '';
+
+        return `<div class="vp-phase vp-phase-${phaseStatus}" data-phase="${p.id}">
+            <span class="vp-phase-glyph" aria-hidden="true"></span>
+            <div class="vp-phase-text">
+                <span class="vp-phase-title">${_escapeHtmlForProgress(p.title)}</span>
+                <span class="vp-phase-detail">${_escapeHtmlForProgress(detail)}</span>
+            </div>
+            ${progressBadge}
+            ${timeChip}
+        </div>`;
     }).join('');
     list.innerHTML = html;
 }
@@ -2260,10 +2402,21 @@ function startVideoGenerationProgress() {
     if (!panel) return;
     panel.removeAttribute('hidden');
     panel.classList.remove('hidden');
+    // v0.6.6.1 — Apple-style hero owns the title; hide the legacy spinner
+    // and "Generating your prompt..." copy so the panel is the only thing
+    // on screen during a video run.
     if (spinner) spinner.classList.add('hidden');
-    if (loadingText) loadingText.textContent = 'Generating your video assets...';
+    if (loadingText) loadingText.classList.add('hidden');
+    const titleEl = document.getElementById('video-progress-title');
+    const subEl = document.getElementById('video-progress-subtitle');
+    if (titleEl) titleEl.textContent = 'Generating your video';
+    if (subEl) subEl.textContent = 'This usually takes 60–90 seconds.';
+    const fill = document.getElementById('video-progress-bar-fill');
+    if (fill) fill.style.width = '0%';
+    const pctLabel = document.getElementById('video-progress-percent');
+    if (pctLabel) pctLabel.textContent = '0%';
     _renderVideoProgressListFromStages([], null);
-    if (message) message.textContent = 'Preparing...';
+    if (message) message.textContent = '';
 }
 
 function _stopVideoRunPolling() {
@@ -2279,11 +2432,38 @@ async function _pollVideoRun(runId, onComplete, onFailure) {
     try {
         const resp = await fetch(`/api/video/generate/runs/${runId}`);
         if (!resp.ok) {
+            // 404 most often means uvicorn auto-reloaded (--reload) and
+            // dropped the in-memory run store. Be tolerant: count 404s
+            // and only give up after a few in a row, with a clear error
+            // message that tells the user what to do.
+            if (resp.status === 404) {
+                _videoRun404Count = (_videoRun404Count || 0) + 1;
+                if (_videoRun404Count < 4) {
+                    // Schedule another poll; the run might have just been
+                    // re-registered.
+                    _videoRunPollTimer = setTimeout(
+                        () => _pollVideoRun(runId, onComplete, onFailure),
+                        1000,
+                    );
+                    return;
+                }
+                if (typeof onFailure === 'function') {
+                    onFailure({
+                        error: 'The backend lost track of this run '
+                            + '(uvicorn likely auto-reloaded). '
+                            + 'Please click Generate again — your previous '
+                            + 'progress is gone, but the saved code edits '
+                            + 'are now active.',
+                    });
+                }
+                return;
+            }
             if (typeof onFailure === 'function') {
                 onFailure({ error: `Run lookup failed (HTTP ${resp.status})` });
             }
             return;
         }
+        _videoRun404Count = 0;
         const data = await resp.json();
         if (!data || !data.success || !data.run) {
             if (typeof onFailure === 'function') {
@@ -2293,18 +2473,15 @@ async function _pollVideoRun(runId, onComplete, onFailure) {
         }
         const run = data.run;
         _renderVideoProgressListFromStages(run.stages || [], run.status === 'failed' ? 'failed' : null);
+        // v0.6.6.1 — running stage detail now lives inside the phase card,
+        // so the bottom message line stays empty during a healthy run and
+        // is only used for failure / completion copy.
         const { message } = _videoProgressEls();
         if (message) {
-            const running = (run.stages || []).find(s => s && s.status === 'running');
-            const lastDone = [...(run.stages || [])].reverse().find(s => s && s.status === 'done');
             if (run.status === 'failed') {
                 message.textContent = run.error || 'Video generation failed.';
-            } else if (running) {
-                message.textContent = running.label + '...';
-            } else if (lastDone) {
-                message.textContent = lastDone.label + ' done.';
             } else {
-                message.textContent = 'Preparing...';
+                message.textContent = '';
             }
         }
         if (run.status === 'completed') {
@@ -2324,6 +2501,7 @@ async function _pollVideoRun(runId, onComplete, onFailure) {
 function startVideoRunPolling(runId, onComplete, onFailure) {
     _stopVideoRunPolling();
     _videoRunCurrentRunId = runId;
+    _videoRun404Count = 0;
     _pollVideoRun(runId, onComplete, onFailure);
 }
 
@@ -2359,7 +2537,7 @@ function resetVideoGenerationProgress() {
     _stopVideoRunPolling();
     _videoRunCurrentRunId = null;
     _videoProgressInitialStages = null;
-    const { panel, list, message, spinner } = _videoProgressEls();
+    const { panel, list, message, spinner, loadingText } = _videoProgressEls();
     if (panel) {
         panel.classList.add('hidden');
         panel.setAttribute('hidden', '');
@@ -2367,6 +2545,13 @@ function resetVideoGenerationProgress() {
     if (list) list.innerHTML = '';
     if (message) message.textContent = '';
     if (spinner) spinner.classList.remove('hidden');
+    // v0.6.6.1 — restore the Prompt-Mode spinner copy that the Apple-style
+    // hero hid when the video panel took over.
+    if (loadingText) loadingText.classList.remove('hidden');
+    const fill = document.getElementById('video-progress-bar-fill');
+    if (fill) fill.style.width = '0%';
+    const pctLabel = document.getElementById('video-progress-percent');
+    if (pctLabel) pctLabel.textContent = '0%';
 }
 
 /**
@@ -4201,6 +4386,8 @@ function enterEditMode() {
         document.getElementById('prompt-review').classList.add('hidden');
         const videoEl = document.getElementById('prompt-video');
         if (videoEl) videoEl.classList.add('hidden');
+        const overviewExtrasEl2 = document.getElementById('prompt-overview-extras');
+        if (overviewExtrasEl2) overviewExtrasEl2.classList.add('hidden');
     } else {
         // Show textarea with content, hide preview/overview/review
         promptContent.value = contentToEdit;
@@ -4210,6 +4397,8 @@ function enterEditMode() {
         document.getElementById('prompt-preview').classList.add('hidden');
         document.getElementById('prompt-overview').classList.add('hidden');
         document.getElementById('prompt-review').classList.add('hidden');
+        const overviewExtrasEl3 = document.getElementById('prompt-overview-extras');
+        if (overviewExtrasEl3) overviewExtrasEl3.classList.add('hidden');
         promptContent.focus({ preventScroll: true });
     }
 }
@@ -4933,8 +5122,32 @@ function refreshVideoPlayPauseIcons(isPlaying) {
     video.addEventListener('ended', () => refreshVideoPlayPauseIcons(false));
 
     video.addEventListener('loadedmetadata', () => {
+        // v0.6.6 — once the video has metadata, the source is loaded and
+        // valid: hide the "Video preview will appear here…" placeholder
+        // immediately so the user sees the first frame, not a wall of text.
+        if (placeholder) placeholder.style.display = 'none';
         if (controls) controls.removeAttribute('hidden');
         if (timeEl) timeEl.textContent = `${formatVideoTime(0)} / ${formatVideoTime(video.duration)}`;
+        // v0.6.6 — show the first frame as a poster instead of black.
+        // A tiny seek to 0.01s forces the browser to decode and paint
+        // frame 0; the user no longer thinks generation failed when
+        // they see a black rectangle.
+        try {
+            if (video.currentTime === 0 && isFinite(video.duration) && video.duration > 0.05) {
+                video.currentTime = 0.01;
+            }
+        } catch (e) { /* defensive — Safari occasionally throws on early seek */ }
+    });
+
+    // v0.6.6 — clicking anywhere on the video frame (the <video> element
+    // itself) toggles play / pause. Native `<video>` shadow-DOM controls
+    // — the bottom control bar, the seek scrubber, the fullscreen button
+    // — do NOT bubble click events out, so they keep their built-in
+    // behaviour and we only react to clicks on the actual picture.
+    video.addEventListener('click', (e) => {
+        if (e.target !== video) return;
+        if (!hasSource()) return;
+        togglePlay();
     });
 
     video.addEventListener('timeupdate', () => {

@@ -18,7 +18,12 @@ import base64
 import os
 from typing import Any, Dict
 
-from .base import ImageProvider, ImageProviderError, RenderedImage
+from .base import (
+    ImageProvider,
+    ImageProviderError,
+    RenderedImage,
+    TransientImageProviderError,
+)
 
 
 class ApxImage2Provider(ImageProvider):
@@ -50,9 +55,14 @@ class ApxImage2Provider(ImageProvider):
         self.default_size = os.getenv("APX_IMAGE2_SIZE") or "1792x1024"
         self.default_quality = os.getenv("APX_IMAGE2_QUALITY") or "high"
         try:
-            self.timeout = int(os.getenv("APX_IMAGE2_TIMEOUT", "180"))
+            # v0.6.5.1 — bumped from 180 → 300. The gateway's tail latency
+            # routinely exceeds 180s for `quality=high`, which forced the
+            # pipeline into Pillow fallback for those slides. With 300s the
+            # tail gets covered while the new retry layer in the pipeline
+            # handles whatever still times out.
+            self.timeout = int(os.getenv("APX_IMAGE2_TIMEOUT", "300"))
         except Exception:
-            self.timeout = 180
+            self.timeout = 300
 
     def is_configured(self) -> bool:
         enabled = (os.getenv("APX_IMAGE2_ENABLED") or "").strip().lower()
@@ -104,6 +114,11 @@ class ApxImage2Provider(ImageProvider):
             "quality": chosen_quality,
         }
 
+        # Network-layer failures (timeout, connection reset, DNS) are
+        # almost always recoverable on a retry — surface them as
+        # `TransientImageProviderError` so the pipeline knows to try
+        # again. Anything else (the request reached the gateway but the
+        # response shape was wrong) stays a plain `ImageProviderError`.
         try:
             resp = requests.post(
                 f"{self.base_url}/images/generations",
@@ -114,16 +129,56 @@ class ApxImage2Provider(ImageProvider):
                 json=payload,
                 timeout=self.timeout,
             )
+        except requests.Timeout as exc:
+            raise TransientImageProviderError(
+                f"image2 request timed out after {self.timeout}s: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        except requests.ConnectionError as exc:
+            raise TransientImageProviderError(
+                f"image2 connection error: {type(exc).__name__}: {exc}"
+            ) from exc
         except Exception as exc:
-            raise ImageProviderError(
+            # Unknown low-level failure — treat as transient by default
+            # so we get a retry; if it's truly permanent, the second/third
+            # attempt will surface the same shape and we'll bail out then.
+            raise TransientImageProviderError(
                 f"image2 request failed: {type(exc).__name__}: {exc}"
             ) from exc
 
         if resp.status_code != 200:
             # Trim error body to 400 chars in case the gateway echoes the prompt back.
             body_preview = (resp.text or "")[:400]
+            status = resp.status_code
+            # 5xx and 429 are "the server is having a moment" — retry.
+            if status >= 500 or status == 429:
+                raise TransientImageProviderError(
+                    f"image2 HTTP {status} (transient): {body_preview}"
+                )
+            # v0.6.5.2 — Azure / OpenAI content moderation often returns
+            # HTTP 400 with `moderation_blocked` / `safety_violations` /
+            # `content_policy_violation` / `content_filter` / `image_generation_user_error`.
+            # These are NOT deterministic: the same prompt can pass on a
+            # second attempt, especially after the pipeline rewrites the
+            # prompt with safer wording. Treat them as transient so the
+            # retry layer + safe-rewrite layer get a chance to recover.
+            preview_lower = body_preview.lower()
+            moderation_markers = (
+                "moderation_blocked",
+                "safety_violations",
+                "safety_violation",
+                "content_policy_violation",
+                "content_filter",
+                "image_generation_user_error",
+                "rejected by the safety system",
+            )
+            if status == 400 and any(m in preview_lower for m in moderation_markers):
+                raise TransientImageProviderError(
+                    f"image2 HTTP {status} (moderation): {body_preview}"
+                )
+            # All other 4xx (real auth/quota/bad request) are permanent.
             raise ImageProviderError(
-                f"image2 HTTP {resp.status_code}: {body_preview}"
+                f"image2 HTTP {status}: {body_preview}"
             )
 
         try:

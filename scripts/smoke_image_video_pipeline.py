@@ -12,6 +12,8 @@ Default behaviour (no flags):
 Flags:
     --with-llm     Allow AI_VIDEO_LLM_* (gpt-5-chat) calls.
     --with-image2  Allow gpt-image-2 calls (paid; one call per slide).
+    --with-bgm     Allow the local BGM library to be muxed under the video.
+                   No remote API call — only reads assets/bgm/*.mp3.
     --full         Add 60s and 90s to the duration set.
 
 Examples:
@@ -19,6 +21,7 @@ Examples:
     python3 scripts/smoke_image_video_pipeline.py --full
     python3 scripts/smoke_image_video_pipeline.py --with-llm
     python3 scripts/smoke_image_video_pipeline.py --with-llm --with-image2
+    python3 scripts/smoke_image_video_pipeline.py --with-bgm
 """
 
 from __future__ import annotations
@@ -45,7 +48,7 @@ DURATION_TITLES = [
 
 
 def _check_pipeline(generate_fn, resolve_fn, ranges, title: str, duration: int,
-                    output_dir: Path) -> dict:
+                    output_dir: Path, with_bgm: bool = False) -> dict:
     if output_dir.exists():
         shutil.rmtree(output_dir, ignore_errors=True)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -66,16 +69,26 @@ def _check_pipeline(generate_fn, resolve_fn, ranges, title: str, duration: int,
         )
 
     # Per-provider flags must always be False on the image_video route.
-    for flag in ("seedance_called", "apx_called", "image2_called", "tts_called"):
+    # tts_called is in the disabled set; image2_called toggles with --with-image2
+    # (handled in main()'s invariant block, not here).
+    for flag in ("seedance_called", "apx_called", "tts_called"):
         if result.get(flag):
             failures.append(f"{flag} must be False")
-    if result.get("media_api_called"):
-        failures.append("media_api_called must be False on image_video route")
-    if result.get("has_audio"):
-        failures.append("has_audio must be False")
-    if result.get("tts_status") != "not_implemented_v0.6.3":
+    if not with_bgm and result.get("has_audio"):
         failures.append(
-            f"tts_status={result.get('tts_status')} != 'not_implemented_v0.6.3'"
+            f"has_audio must be False when --with-bgm is off"
+        )
+    if with_bgm and not result.get("has_audio"):
+        # Only flag this when ffmpeg is around — without ffmpeg we can't
+        # have produced an audio track in the first place.
+        if shutil.which("ffmpeg") or os.getenv("FFMPEG_BIN"):
+            failures.append(
+                f"--with-bgm set but has_audio=False (bgm_track={result.get('bgm_filename')!r}, "
+                f"reason={result.get('bgm_fallback_reason')!r})"
+            )
+    if result.get("tts_status") != "not_implemented_v0.6.5":
+        failures.append(
+            f"tts_status={result.get('tts_status')} != 'not_implemented_v0.6.5'"
         )
 
     slide_plan_path = result.get("slide_plan_path")
@@ -146,12 +159,16 @@ def main() -> int:
         help="Allow gpt-image-2 calls (default: disabled — paid endpoint).",
     )
     parser.add_argument(
+        "--with-bgm", action="store_true",
+        help="Allow the local BGM library to be muxed (default: disabled).",
+    )
+    parser.add_argument(
         "--full", action="store_true",
         help="Add 60s and 90s durations (default: 5/15/30s only).",
     )
     args = parser.parse_args()
 
-    offline_mode = not (args.with_llm or args.with_image2)
+    offline_mode = not (args.with_llm or args.with_image2 or args.with_bgm)
     if args.with_llm:
         os.environ.pop("IMAGE_VIDEO_DISABLE_LLM", None)
     else:
@@ -160,6 +177,10 @@ def main() -> int:
         os.environ.pop("IMAGE_VIDEO_DISABLE_IMAGE2", None)
     else:
         os.environ["IMAGE_VIDEO_DISABLE_IMAGE2"] = "1"
+    if args.with_bgm:
+        os.environ.pop("IMAGE_VIDEO_DISABLE_BGM", None)
+    else:
+        os.environ["IMAGE_VIDEO_DISABLE_BGM"] = "1"
 
     # Import after env is set so the pipeline reads the flag correctly.
     from web.image_video_pipeline import (  # noqa: E402
@@ -174,6 +195,7 @@ def main() -> int:
     print(f"[smoke] offline_mode = {offline_mode}")
     print(f"[smoke] with_llm     = {args.with_llm}")
     print(f"[smoke] with_image2  = {args.with_image2}")
+    print(f"[smoke] with_bgm     = {args.with_bgm}")
     print(f"[smoke] ffmpeg       = {ffmpeg_path or '(not found)'}")
     print(f"[smoke] outputs      = {SMOKE_OUTPUT_ROOT}")
     print()
@@ -202,6 +224,7 @@ def main() -> int:
             resolve_ffmpeg_binary,
             DURATION_SLIDE_RANGES,
             title, duration, out_dir,
+            with_bgm=args.with_bgm,
         )
         status = "OK" if not report["failures"] else "FAIL"
         print(

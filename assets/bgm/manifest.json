@@ -1,0 +1,88 @@
+{
+  "schema_version": "bgm_manifest_v0.6.5",
+  "purpose": "Local BGM library descriptor. The LLM never listens to the mp3 itself; it reads this JSON and picks the best-fitting track for a given video's art_direction / mood / topic. Operators (humans) curate mood_keywords and fits.",
+  "field_docs": {
+    "filename": "Exact filename inside assets/bgm/. Must match disk.",
+    "display_name": "Short human-readable label, used in the Generation Evidence panel.",
+    "mood_keywords": "Tags the LLM matches against the video's mood (e.g. cheerful, cautionary, mysterious, contemplative, uplifting, calm, suspenseful, warm, cold).",
+    "fits": "Free-form English sentence — what kinds of topics this track fits.",
+    "tempo": "slow | medium | fast",
+    "energy": "low | medium | high",
+    "instruments": "Comma-separated list of instrument / genre cues."
+  },
+  "default_track": "mixkit-classical-3-film-score-hopeful-reflective.mp3",
+  "tracks": [
+    {
+      "filename": "mixkit-winter-wind-jazz-lounge-relaxed.mp3",
+      "display_name": "Winter Wind (jazz lounge)",
+      "mood_keywords": ["calm", "thoughtful", "reflective", "cold", "moody", "lounge", "jazzy"],
+      "fits": "Slow, reflective explainers — philosophy, history, math intuition, anything that wants a quiet thinking-room atmosphere. Pairs well with cool-toned art direction (deep navy, slate, charcoal).",
+      "tempo": "slow",
+      "energy": "low",
+      "instruments": "jazz piano, soft bass, brushed drums, lounge"
+    },
+    {
+      "filename": "mixkit-my-little-prince-corporate-reflective.mp3",
+      "display_name": "My Little Prince (corporate reflective)",
+      "mood_keywords": ["reflective", "warm", "serious", "earnest", "professional", "thoughtful"],
+      "fits": "Earnest explainers about ideas worth taking seriously — finance, careers, behavioral economics, ethics, decision-making. Sober but humane mood.",
+      "tempo": "slow",
+      "energy": "low",
+      "instruments": "piano, light strings, corporate underscore"
+    },
+    {
+      "filename": "mixkit-the-duel-country-rock-relaxed.mp3",
+      "display_name": "The Duel (country rock)",
+      "mood_keywords": ["energetic", "playful", "confident", "bold", "americana", "outdoorsy"],
+      "fits": "Story-driven topics with a sense of forward motion — surprising experiments, head-to-head comparisons, classic puzzles, road-trip-feeling explainers.",
+      "tempo": "medium",
+      "energy": "medium",
+      "instruments": "country rock guitar, light percussion"
+    },
+    {
+      "filename": "mixkit-classical-3-film-score-hopeful-reflective.mp3",
+      "display_name": "Classical 3 (film score, hopeful)",
+      "mood_keywords": ["hopeful", "reflective", "cinematic", "uplifting", "warm", "graceful"],
+      "fits": "Versatile default — works for most educational / hopeful / discovery topics. Use this when no other track is a clear better fit. Cinematic but never overpowering.",
+      "tempo": "medium",
+      "energy": "medium",
+      "instruments": "orchestral strings, soft piano, film score"
+    },
+    {
+      "filename": "mixkit-classical-vibes-2-film-score-children-uplifting.mp3",
+      "display_name": "Classical Vibes 2 (children, uplifting)",
+      "mood_keywords": ["uplifting", "cheerful", "kid-friendly", "bright", "optimistic", "wholesome"],
+      "fits": "Kid-friendly explainers, learning / growth / curiosity topics, happy science discoveries, anything aimed at a young or family audience.",
+      "tempo": "medium",
+      "energy": "medium",
+      "instruments": "playful classical strings, light woodwinds, children's score"
+    },
+    {
+      "filename": "mixkit-smile-children-folk-pop-happy.mp3",
+      "display_name": "Smile (children folk pop)",
+      "mood_keywords": ["happy", "cheerful", "playful", "kid-friendly", "casual", "warm"],
+      "fits": "The lightest, most explicitly cheerful option. Use for fun/quirky topics, jokes, illusions, party tricks, anything where the goal is to make the viewer smile.",
+      "tempo": "medium",
+      "energy": "medium",
+      "instruments": "ukulele, claps, folk pop, whistled melody"
+    },
+    {
+      "filename": "mixkit-harp-relax-new-age-reflective.mp3",
+      "display_name": "Harp Relax (new age)",
+      "mood_keywords": ["calm", "meditative", "ethereal", "gentle", "mystical", "serene"],
+      "fits": "Slow, awe-leaning topics — astronomy, biology, nature, meditation, anything where the viewer should slow down and feel wonder. Avoid for time-pressured or cautionary topics.",
+      "tempo": "slow",
+      "energy": "low",
+      "instruments": "harp, soft pad, new age"
+    },
+    {
+      "filename": "mixkit-just-walk-lounge-relaxed-emotional.mp3",
+      "display_name": "Just Walk (lounge, emotional)",
+      "mood_keywords": ["emotional", "warm", "reflective", "intimate", "human", "personal"],
+      "fits": "Emotional / human-interest topics — psychology, relationships, behavioral biases, money psychology, anything personal. Use when the video wants to feel like a quiet 1-on-1 conversation."        ,
+      "tempo": "slow",
+      "energy": "low",
+      "instruments": "lounge piano, soft strings, emotional underscore"
+    }
+  ]
+}

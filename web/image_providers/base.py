@@ -21,6 +21,16 @@ class ImageProviderError(Exception):
     """Raised when a provider cannot return a usable image."""
 
 
+class TransientImageProviderError(ImageProviderError):
+    """Raised when the failure is likely temporary (network timeout,
+    gateway 5xx, connection reset). The pipeline retries these.
+
+    Permanent failures — bad prompt, 4xx auth/quota errors, malformed
+    responses — should raise the plain ``ImageProviderError`` so the
+    pipeline does not waste retries on them.
+    """
+
+
 @dataclass
 class RenderedImage:
     """Result of a single ``ImageProvider.generate`` call."""

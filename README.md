@@ -188,7 +188,7 @@ http://127.0.0.1:8000
 
 ### 当前版本状态
 
-- **当前版本阶段**：`v0.6.4 — gpt-image-2 真实图像接入（Image Video 路线）`
+- **当前版本阶段**：`v0.6.5 — 本地 BGM 库 + LLM 选曲 + FFmpeg 同步混音`
 - **已完成**：
   - Prompt Mode v0.4.10 全部能力（Prompt 生成、历史、版本、视图、AI Review、Regenerate、本地 Web 应用）；
   - Video Mode 独立框架（v0.5.2）：独立数据库 / API / 6 tab / 播放器骨架 / 全局 tooltip portal；
@@ -219,7 +219,8 @@ http://127.0.0.1:8000
 | **v0.6.1** | English-only 16:9 横屏视频规范、5/15/30/60/90 时长选择器、覆盖式进度条、history-switch 残留清理（已完成） |
 | **v0.6.2** | Seedance Prompt Quality Gate（默认拒绝 `this topic` / `A` / `AB` / `BAB`）、English compiler 重写、`/api/video/generate/start` 真实 run store、Provider Evidence Summary、`APX_VIDEO_PROMPT_EXTEND` 默认 `false` |
 | **v0.6.3** | Static Image Video MVP（本地 Pillow + FFmpeg）、首页 Generation Method selector、`generation_method` 数据库列、Generation Evidence 面板、Dark mode 大白框修复 |
-| **v0.6.4** | gpt-image-2 真实图像生成接入（每张 slide 调 image2 拿底图，Pillow 仅负责文字叠加；ThreadPoolExecutor 并发；per-slide failure fallback 到 Pillow 几何图）（当前版本） |
+| **v0.6.4** | gpt-image-2 真实图像生成接入（每张 slide 调 image2 拿底图，Pillow 仅负责文字叠加；ThreadPoolExecutor 并发；per-slide failure fallback 到 Pillow 几何图） |
+| **v0.6.5** | 本地 BGM 库 + LLM 选曲 + FFmpeg 同步混音（视频开始 BGM 开始，视频结束 BGM 结束；最后 1 秒淡出；-15dB 音量为之后 TTS 旁白留头）（当前版本） |
 | **v0.6.5** | TTS 接入（旁白 + 音频合成） |
 | **v0.6.6+** | Subtitle burn-in、Video Job 真实 retry / cancel、批量批处理、独立 Video Review prompt / schema |
 | **v0.7.x – v1.0** | 用户登录、用户空间、权限管控、产品化 |

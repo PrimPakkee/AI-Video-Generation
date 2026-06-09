@@ -9,7 +9,7 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.6.4"
+STABILITY_CHECKS_VERSION = "v0.6.5"
 
 import sys
 import os
@@ -4550,8 +4550,8 @@ class StabilityChecker:
                         f"pipeline mentions output artifact '{needle}'")
 
         # 5. has_audio / tts_status flags present.
-        assert_true("not_implemented_v0.6.3" in pipeline_text,
-                    "pipeline marks tts_status='not_implemented_v0.6.3'")
+        assert_true("not_implemented_v0.6.5" in pipeline_text,
+                    "pipeline marks tts_status='not_implemented_v0.6.5'")
         assert_true('"has_audio": False' in pipeline_text or '"has_audio":False' in pipeline_text
                     or "'has_audio': False" in pipeline_text,
                     "pipeline marks has_audio=False")
@@ -4971,6 +4971,173 @@ class StabilityChecker:
             print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} image2 integration checks failed")
             self.checks_failed += 1
 
+    def check_v065_bgm_integration(self):
+        """v0.6.5 — Local BGM library + LLM-driven track selection +
+        ffmpeg mux with -shortest fade-out + volume attenuation."""
+        print("\n" + "=" * 80)
+        print("v0.6.5 BGM Integration")
+        print("=" * 80)
+
+        all_passed = True
+
+        def assert_true(cond, name, hint=""):
+            nonlocal all_passed
+            if cond:
+                print(f"  [OK] {name}")
+            else:
+                print(f"  [FAIL] {name}{(': ' + hint) if hint else ''}")
+                all_passed = False
+
+        # 1. audio_providers package + bgm_selector module exist.
+        assert_true(
+            Path("web/audio_providers/__init__.py").exists(),
+            "web/audio_providers/__init__.py exists",
+        )
+        assert_true(
+            Path("web/audio_providers/bgm_selector.py").exists(),
+            "web/audio_providers/bgm_selector.py exists",
+        )
+
+        sel_src = Path("web/audio_providers/bgm_selector.py").read_text(encoding="utf-8")
+
+        # 2. selector honors disable / force env vars.
+        for env in ("IMAGE_VIDEO_DISABLE_BGM", "IMAGE_VIDEO_BGM_FORCE"):
+            assert_true(
+                env in sel_src,
+                f"bgm_selector references env var '{env}'",
+            )
+
+        # 3. selector does NOT actually `import requests` / `import openai`
+        # at any indentation level. Match real import statements only —
+        # the docstring legitimately contains the substring "import
+        # requests" inside a hygiene reminder.
+        sel_lines = [ln.rstrip() for ln in sel_src.splitlines()]
+        forbidden_imports = []
+        for ln in sel_lines:
+            stripped = ln.lstrip()
+            if stripped.startswith("import requests") or stripped.startswith("from requests "):
+                forbidden_imports.append(("requests", ln))
+            if stripped.startswith("import openai") or stripped.startswith("from openai "):
+                forbidden_imports.append(("openai", ln))
+        assert_true(
+            not forbidden_imports,
+            "bgm_selector does not import requests / openai (network libs)",
+        )
+
+        # 4. Manifest exists and references at least one mp3 that exists.
+        manifest_path = Path("assets/bgm/manifest.json")
+        assert_true(manifest_path.exists(), "assets/bgm/manifest.json exists")
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                manifest = None
+                assert_true(False, f"manifest parses cleanly: {exc}")
+            if manifest:
+                tracks = manifest.get("tracks") or []
+                resolved = sum(
+                    1 for t in tracks
+                    if (Path("assets/bgm") / (t.get("filename") or "")).exists()
+                )
+                assert_true(
+                    resolved >= 1,
+                    f"at least one manifest track resolves on disk (found {resolved}/{len(tracks)})",
+                )
+                default_filename = manifest.get("default_track")
+                assert_true(
+                    bool(default_filename),
+                    "manifest declares a default_track",
+                )
+                if default_filename:
+                    assert_true(
+                        (Path("assets/bgm") / default_filename).exists(),
+                        f"default_track {default_filename!r} exists on disk",
+                    )
+
+        # 5. Pipeline picks up BGM data and threads it through the result.
+        pipeline_src = Path("web/image_video_pipeline.py").read_text(encoding="utf-8")
+        assert_true(
+            "_emit(\"select_bgm\"" in pipeline_src,
+            "pipeline emits the select_bgm progress stage",
+        )
+        assert_true(
+            "from web.audio_providers import" in pipeline_src,
+            "pipeline lazily imports from audio_providers",
+        )
+        assert_true(
+            "bgm_choice" in pipeline_src,
+            "pipeline pulls bgm_choice from the LLM response",
+        )
+        # Pipeline should not import requests at module top level (still
+        # using the v0.6.4 lazy import discipline).
+        toplevel_requests = any(
+            line.strip().startswith("import requests")
+            or line.strip().startswith("from requests ")
+            for line in pipeline_src.splitlines()
+            if not line.startswith(" ") and not line.startswith("\t")
+        )
+        assert_true(
+            not toplevel_requests,
+            "image_video_pipeline.py still imports requests lazily (no top-level import)",
+        )
+
+        # 6. ffmpeg compose accepts bgm_path with -shortest + fade.
+        for token in ("-shortest", "afade=t=out", "-stream_loop", "volume=", "-c:a", "aac"):
+            assert_true(
+                token in pipeline_src,
+                f"ffmpeg compose uses '{token}' for BGM mux",
+            )
+
+        # 7. New stage shows up in IMAGE_VIDEO_RUN_STAGES (app.py).
+        app_src = Path("web/app.py").read_text(encoding="utf-8")
+        assert_true(
+            '"select_bgm"' in app_src,
+            "IMAGE_VIDEO_RUN_STAGES includes select_bgm",
+        )
+
+        # 8. Backend response payload + metadata thread bgm fields.
+        for needle in (
+            'pipeline_result.get("bgm_used")',
+            'pipeline_result.get("bgm_filename")',
+            'pipeline_result.get("bgm_display_name")',
+            'pipeline_result.get("bgm_volume_db")',
+        ):
+            assert_true(
+                needle in app_src,
+                f"web/app.py forwards {needle.split('(')[1][:-1]}",
+            )
+
+        # 9. Frontend evidence panel surfaces bgm_used / track / volume.
+        html_src = Path("web/static/index.html").read_text(encoding="utf-8")
+        for attr in ("bgm_used", "bgm_display_name", "bgm_volume_db"):
+            assert_true(
+                f'data-evidence="{attr}"' in html_src,
+                f"Generation Evidence exposes data-evidence='{attr}'",
+            )
+        js_src = Path("web/static/main.js").read_text(encoding="utf-8")
+        assert_true(
+            "bgm_display_name" in js_src and "bgm_volume_db" in js_src,
+            "main.js renders BGM evidence rows",
+        )
+
+        # 10. Smoke supports --with-bgm and defaults to disabling it.
+        smoke_src = Path("scripts/smoke_image_video_pipeline.py").read_text(encoding="utf-8")
+        assert_true(
+            '"--with-bgm"' in smoke_src,
+            "smoke script accepts --with-bgm",
+        )
+        assert_true(
+            'os.environ["IMAGE_VIDEO_DISABLE_BGM"] = "1"' in smoke_src,
+            "smoke script sets IMAGE_VIDEO_DISABLE_BGM=1 by default",
+        )
+
+        if all_passed:
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} BGM integration checks passed")
+            self.checks_passed += 1
+        else:
+            print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} BGM integration checks failed")
+            self.checks_failed += 1
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -5072,6 +5239,7 @@ def main():
         checker.check_v063_image_video_mvp()
         checker.check_v063_stabilization()
         checker.check_v064_image2_integration()
+        checker.check_v065_bgm_integration()
         checker.check_git_status_hygiene()
         checker.check_database_integrity()
     except Exception as e:

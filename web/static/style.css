@@ -1160,6 +1160,14 @@ body {
     text-align: center;
 }
 
+/* v0.6.6.1 — when the Apple-style video panel takes over the loading
+ * state, drop the 120px top padding so the hero sits near the top of
+ * the viewport and all 6 phase cards fit without scrolling. */
+.loading-state:has(#video-progress-panel:not(.hidden)) {
+    padding-top: 16px;
+    max-width: 720px;
+}
+
 .spinner {
     width: 40px;
     height: 40px;
@@ -3081,80 +3089,227 @@ body.dark-mode .web-copy-empty-state {
 }
 
 /* ============================================================
- * v0.5.3 - Video Mode multi-stage progress panel
+ * v0.6.6.1 — Apple-style generation progress panel.
+ * Replaces the v0.5.3 8-row log layout. Light/dark drive entirely
+ * off existing CSS variables. Single accent color, lots of
+ * negative space, calm motion.
  * ============================================================ */
+
 .video-progress-panel {
-    margin: 16px auto 0;
+    margin: 0 auto;
     width: 100%;
-    max-width: 480px;
-    text-align: left;
+    max-width: 560px;
+    padding: 8px 24px 16px;
+    text-align: center;
 }
 
-.video-progress-list {
-    list-style: none;
+.vp-hero {
+    margin-bottom: 16px;
+}
+
+.vp-title {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+    font-size: 32px;
+    line-height: 1.1;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text-main);
+    margin: 0 0 6px;
+}
+
+.vp-subtitle {
+    font-size: 15px;
+    line-height: 1.4;
+    color: var(--text-secondary);
     margin: 0;
-    padding: 0;
+    font-weight: 400;
+}
+
+/* Slim global progress bar — the only horizontal accent in the layout. */
+.vp-bar {
+    height: 4px;
+    background: var(--bg-elevated);
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 0 auto 6px;
+    max-width: 360px;
+}
+
+.vp-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--text-main);
+    border-radius: 999px;
+    transition: width 600ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.vp-percent {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
+    margin-bottom: 16px;
+    letter-spacing: 0.02em;
+}
+
+/* Phase cards stacked vertically. */
+.vp-phases {
     display: flex;
     flex-direction: column;
     gap: 6px;
+    text-align: left;
 }
 
-.video-progress-step {
+.vp-phase {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 6px 10px;
-    border-radius: 6px;
-    font-size: 13px;
-    color: #555;
-    background: #f5f6f8;
+    gap: 14px;
+    padding: 10px 16px;
+    border-radius: 12px;
+    background: var(--bg-elevated);
+    border: 1px solid transparent;
+    transition: background 220ms ease, border-color 220ms ease;
 }
 
-.video-progress-step-marker {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: #c8c8ce;
+.vp-phase-glyph {
     flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: transparent;
+    border: 1.5px solid var(--text-tertiary);
+    position: relative;
+    transition: all 240ms ease;
 }
 
-.video-progress-step.active {
-    background: #eef3ff;
-    color: #1f4ea1;
-}
-.video-progress-step.active .video-progress-step-marker {
-    background: #1f4ea1;
-    box-shadow: 0 0 0 3px rgba(31, 78, 161, 0.18);
-}
-
-.video-progress-step.done {
-    color: #2c7a3a;
-}
-.video-progress-step.done .video-progress-step-marker {
-    background: #2c7a3a;
+.vp-phase-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
 }
 
-.video-progress-step.failed {
-    color: #b3261e;
-    background: #fdecec;
-}
-.video-progress-step.failed .video-progress-step-marker {
-    background: #b3261e;
-}
-
-.video-progress-step.not-configured {
-    color: #8a6d00;
-    background: #fff7e1;
-}
-.video-progress-step.not-configured .video-progress-step-marker {
-    background: #d39e00;
+.vp-phase-title {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-main);
+    letter-spacing: -0.01em;
 }
 
-.video-progress-message {
-    margin-top: 10px;
+.vp-phase-detail {
+    font-size: 13px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Numeric badge that hosts the "NN%" extracted from the backend
+ * "NN% In progress..." message. Only shown while a phase is active. */
+.vp-phase-badge {
+    flex-shrink: 0;
     font-size: 12px;
-    color: #666;
-    text-align: left;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-main);
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    padding: 2px 10px;
+    margin-left: 8px;
+    letter-spacing: 0.01em;
+}
+
+.vp-phase-time {
+    flex-shrink: 0;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-tertiary);
+    margin-left: 8px;
+}
+
+/* Pending — quiet placeholder. */
+.vp-phase-pending {
+    opacity: 0.55;
+}
+
+/* Active — accent ring + soft pulse, no color flood. */
+.vp-phase-active {
+    background: var(--bg-card);
+    border-color: var(--border-color);
+}
+.vp-phase-active .vp-phase-glyph {
+    border-color: var(--text-main);
+    background: var(--text-main);
+    box-shadow: 0 0 0 4px var(--bg-elevated);
+    animation: vpPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes vpPulse {
+    0%, 100% { box-shadow: 0 0 0 4px var(--bg-elevated); transform: scale(1); }
+    50%      { box-shadow: 0 0 0 6px var(--bg-elevated); transform: scale(1.08); }
+}
+
+/* Done — solid filled glyph + checkmark. */
+.vp-phase-done .vp-phase-glyph {
+    border-color: var(--text-main);
+    background: var(--text-main);
+}
+.vp-phase-done .vp-phase-glyph::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    top: 2px;
+    width: 5px;
+    height: 10px;
+    border-right: 1.75px solid var(--bg-card);
+    border-bottom: 1.75px solid var(--bg-card);
+    transform: rotate(45deg);
+    animation: vpCheckIn 280ms ease both;
+}
+.vp-phase-done .vp-phase-detail {
+    color: var(--text-tertiary);
+}
+
+@keyframes vpCheckIn {
+    from { opacity: 0; transform: rotate(45deg) scale(0.6); }
+    to   { opacity: 1; transform: rotate(45deg) scale(1); }
+}
+
+/* Failed — single red ring + minus glyph. */
+.vp-phase-failed {
+    border-color: rgba(229, 62, 62, 0.4);
+}
+.vp-phase-failed .vp-phase-glyph {
+    border-color: #e53e3e;
+    background: #e53e3e;
+}
+.vp-phase-failed .vp-phase-glyph::after {
+    content: "";
+    position: absolute;
+    left: 6px;
+    top: 9px;
+    width: 8px;
+    height: 1.75px;
+    background: var(--bg-card);
+}
+.vp-phase-failed .vp-phase-detail {
+    color: #e53e3e;
+}
+
+.vp-message {
+    margin-top: 24px;
+    font-size: 13px;
+    color: var(--text-tertiary);
+    text-align: center;
+    min-height: 1em;
+}
+
+@media (max-width: 640px) {
+    .vp-title { font-size: 32px; }
+    .vp-subtitle { font-size: 15px; }
+    .video-progress-panel { padding: 16px 16px 8px; }
+    .vp-phase { padding: 12px 14px; }
 }
 
 /* ============================================================
@@ -3594,3 +3749,7 @@ body.dark-mode .web-copy-empty-state {
 .dark-theme .info-value-display.diag-error {
     color: #fca5a5;
 }
+
+/* v0.6.5 substatus styles retired — superseded by the v0.6.6.1
+ * Apple-style phase cards which surface the same backend `message`
+ * field on the phase row's detail line. */

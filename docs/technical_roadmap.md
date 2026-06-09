@@ -4,7 +4,19 @@
 
 本文档详细规划了从当前版本（V0）到端到端自动化（V4）的完整技术路线。每个 Phase 都有明确的技术目标、实现方案、技术栈和成功标准。
 
-## 当前里程碑（v0.6.4）
+## 当前里程碑（v0.6.5）
+
+- **v0.6.5 — 本地 BGM 库 + LLM 选曲 + FFmpeg 同步混音**：Image Video 视频从纯
+  静音升级成带 BGM 的成片。本地维护 `assets/bgm/` 库（8 首 mixkit-* 曲子 +
+  `manifest.json` 描述每首的 mood / fits / tempo / energy / instruments），LLM 在
+  写 slide 内容的同一次调用里挑一首匹配 art_direction 的曲子，FFmpeg 用
+  `-stream_loop + volume=-15dB + afade out + -shortest` 把音乐混进 mp4，确保
+  视频开始 BGM 开始、视频结束 BGM 结束。新增 `web/audio_providers/bgm_selector.py`
+  （不 import requests / openai），`IMAGE_VIDEO_RUN_STAGES` 新增 `select_bgm` 阶段
+  （7→8 个 stage）。`IMAGE_VIDEO_DISABLE_BGM` / `IMAGE_VIDEO_BGM_FORCE` 用于关闭
+  和强制覆盖。详见 [`v0.6.5_bgm_integration.md`](./v0.6.5_bgm_integration.md)。
+
+## 历史里程碑（v0.6.4）
 
 - **v0.6.4 — gpt-image-2 接入（Image Video 路线升级）**：把 Image Video 从纯
   Pillow 几何图升级成真实图像生成 + 文字叠加。新增 `web/image_providers/`

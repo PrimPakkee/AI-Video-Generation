@@ -13,6 +13,16 @@ Forbidden in this layer:
     - TTS — handled by web/audio_providers/ (planned for v0.6.5).
 """
 
-from .base import ImageProvider, ImageProviderError, RenderedImage
+from .base import (
+    ImageProvider,
+    ImageProviderError,
+    RenderedImage,
+    TransientImageProviderError,
+)
 
-__all__ = ["ImageProvider", "ImageProviderError", "RenderedImage"]
+__all__ = [
+    "ImageProvider",
+    "ImageProviderError",
+    "RenderedImage",
+    "TransientImageProviderError",
+]

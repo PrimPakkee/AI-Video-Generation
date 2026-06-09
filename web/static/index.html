@@ -186,11 +186,20 @@
                 <div id="loading-section" class="loading-state hidden">
                     <div class="spinner" id="loading-spinner"></div>
                     <p class="loading-text" id="loading-text">Generating your prompt...</p>
-                    <!-- Video Mode v0.5.3 multi-stage progress panel.
-                         Hidden by default; shown only during Video Mode generation. -->
+                    <!-- v0.6.6.1 Apple-style generation progress panel.
+                         Hidden by default; shown only during Video Mode
+                         generation. Replaces the v0.5.3 8-row log layout. -->
                     <div id="video-progress-panel" class="video-progress-panel hidden" hidden>
-                        <ol class="video-progress-list" id="video-progress-list"></ol>
-                        <p class="video-progress-message" id="video-progress-message"></p>
+                        <div class="vp-hero">
+                            <h1 class="vp-title" id="video-progress-title">Generating your video</h1>
+                            <p class="vp-subtitle" id="video-progress-subtitle">This usually takes 60–90 seconds.</p>
+                        </div>
+                        <div class="vp-bar" aria-hidden="true">
+                            <div class="vp-bar-fill" id="video-progress-bar-fill"></div>
+                        </div>
+                        <div class="vp-percent" id="video-progress-percent" aria-live="polite">0%</div>
+                        <div class="vp-phases" id="video-progress-list"></div>
+                        <p class="vp-message" id="video-progress-message"></p>
                     </div>
                 </div>
 
@@ -287,6 +296,53 @@
                                 ></textarea>
                                 <div id="prompt-preview" class="prompt-preview hidden"></div>
                                 <div id="prompt-overview" class="prompt-overview hidden"></div>
+                                <!-- v0.6.6 — Generation/Provider evidence panels live at the
+                                     bottom of the Overview tab. They were previously rendered
+                                     above the video player, which cluttered the user-facing
+                                     output. They're moved here (still toggled by the same JS
+                                     that switched their `hidden` attribute) and shown alongside
+                                     #prompt-overview so the Video tab can stay clean. -->
+                                <div id="prompt-overview-extras" class="prompt-overview-extras hidden">
+                                    <div id="provider-evidence-panel" class="provider-evidence-panel hidden" hidden>
+                                        <h4 class="provider-evidence-title">Provider Evidence</h4>
+                                        <ul class="provider-evidence-list">
+                                            <li><strong>Provider:</strong> <span data-evidence="provider">—</span></li>
+                                            <li><strong>Real API call:</strong> <span data-evidence="real_api_call">—</span></li>
+                                            <li><strong>Provider Job ID:</strong> <span data-evidence="provider_job_id" class="provider-evidence-mono">—</span></li>
+                                            <li><strong>Job status:</strong> <span data-evidence="job_status">—</span></li>
+                                            <li><strong>Remote video URL received:</strong> <span data-evidence="has_remote_video_url">—</span></li>
+                                            <li><strong>Local video downloaded:</strong> <span data-evidence="real_video_downloaded">—</span></li>
+                                            <li><strong>Local video available:</strong> <span data-evidence="real_video_available">—</span></li>
+                                            <li><strong>Local file:</strong> <span data-evidence="local_video_filename" class="provider-evidence-mono">—</span></li>
+                                            <li><strong>Duration:</strong> <span data-evidence="duration_seconds">—</span></li>
+                                            <li><strong>Prompt quality:</strong> <span data-evidence="prompt_quality">—</span></li>
+                                            <li class="provider-evidence-block-reason hidden"><strong>Block reason:</strong> <span data-evidence="block_reason">—</span></li>
+                                        </ul>
+                                    </div>
+                                    <div id="generation-evidence-panel" class="generation-evidence-panel hidden" hidden>
+                                        <h4 class="generation-evidence-title">Generation Evidence</h4>
+                                        <ul class="generation-evidence-list">
+                                            <li><strong>Route:</strong> <span data-evidence="route">image_video</span></li>
+                                            <li><strong>Media API call:</strong> <span data-evidence="media_api_called">No</span></li>
+                                            <li><strong>Content LLM:</strong> <span data-evidence="content_llm_called">—</span></li>
+                                            <li><strong>Seedance called:</strong> <span data-evidence="seedance_called">No</span></li>
+                                            <li><strong>APX called:</strong> <span data-evidence="apx_called">No</span></li>
+                                            <li><strong>Image2 called:</strong> <span data-evidence="image2_called">No</span></li>
+                                            <li><strong>Image2 success / total:</strong> <span data-evidence="image2_ratio">—</span></li>
+                                            <li><strong>BGM used:</strong> <span data-evidence="bgm_used">—</span></li>
+                                            <li><strong>BGM track:</strong> <span data-evidence="bgm_display_name">—</span></li>
+                                            <li><strong>BGM volume:</strong> <span data-evidence="bgm_volume_db">—</span></li>
+                                            <li><strong>TTS called:</strong> <span data-evidence="tts_called">No</span></li>
+                                            <li><strong>Local slides generated:</strong> <span data-evidence="local_slides_generated">—</span></li>
+                                            <li><strong>FFmpeg composed:</strong> <span data-evidence="ffmpeg_composed">—</span></li>
+                                            <li><strong>Final video available:</strong> <span data-evidence="final_video_available">—</span></li>
+                                            <li><strong>Slide count:</strong> <span data-evidence="slide_count">—</span></li>
+                                            <li><strong>Duration:</strong> <span data-evidence="duration_seconds">—</span></li>
+                                            <li><strong>Audio:</strong> <span data-evidence="has_audio">No</span></li>
+                                            <li><strong>TTS status:</strong> <span data-evidence="tts_status">not_implemented_v0.6.5</span></li>
+                                        </ul>
+                                    </div>
+                                </div>
                                 <div id="prompt-review" class="prompt-review hidden"></div>
 
                                 <!-- Video Mode panels (v0.5.3) -->
@@ -319,48 +375,9 @@
                                             <span class="video-job-actions-hint" id="video-job-actions-hint"></span>
                                         </div>
                                     </div>
-                                    <!-- v0.6.2 Provider Evidence Summary: proof of whether the real
-                                         APX/Seedance provider was actually called. Never shows API keys
-                                         or signed video URLs — only true/false flags + filenames. -->
-                                    <div id="provider-evidence-panel" class="provider-evidence-panel hidden" hidden>
-                                        <h4 class="provider-evidence-title">Provider Evidence</h4>
-                                        <ul class="provider-evidence-list">
-                                            <li><strong>Provider:</strong> <span data-evidence="provider">—</span></li>
-                                            <li><strong>Real API call:</strong> <span data-evidence="real_api_call">—</span></li>
-                                            <li><strong>Provider Job ID:</strong> <span data-evidence="provider_job_id" class="provider-evidence-mono">—</span></li>
-                                            <li><strong>Job status:</strong> <span data-evidence="job_status">—</span></li>
-                                            <li><strong>Remote video URL received:</strong> <span data-evidence="has_remote_video_url">—</span></li>
-                                            <li><strong>Local video downloaded:</strong> <span data-evidence="real_video_downloaded">—</span></li>
-                                            <li><strong>Local video available:</strong> <span data-evidence="real_video_available">—</span></li>
-                                            <li><strong>Local file:</strong> <span data-evidence="local_video_filename" class="provider-evidence-mono">—</span></li>
-                                            <li><strong>Duration:</strong> <span data-evidence="duration_seconds">—</span></li>
-                                            <li><strong>Prompt quality:</strong> <span data-evidence="prompt_quality">—</span></li>
-                                            <li class="provider-evidence-block-reason hidden"><strong>Block reason:</strong> <span data-evidence="block_reason">—</span></li>
-                                        </ul>
-                                    </div>
-                                    <!-- Generation Evidence panel for the local Image Video route.
-                                         Shown only when the current record was produced by the
-                                         image_video pipeline. Confirms no remote API was called. -->
-                                    <div id="generation-evidence-panel" class="generation-evidence-panel hidden" hidden>
-                                        <h4 class="generation-evidence-title">Generation Evidence</h4>
-                                        <ul class="generation-evidence-list">
-                                            <li><strong>Route:</strong> <span data-evidence="route">image_video</span></li>
-                                            <li><strong>Media API call:</strong> <span data-evidence="media_api_called">No</span></li>
-                                            <li><strong>Content LLM:</strong> <span data-evidence="content_llm_called">—</span></li>
-                                            <li><strong>Seedance called:</strong> <span data-evidence="seedance_called">No</span></li>
-                                            <li><strong>APX called:</strong> <span data-evidence="apx_called">No</span></li>
-                                            <li><strong>Image2 called:</strong> <span data-evidence="image2_called">No</span></li>
-                                            <li><strong>Image2 success / total:</strong> <span data-evidence="image2_ratio">—</span></li>
-                                            <li><strong>TTS called:</strong> <span data-evidence="tts_called">No</span></li>
-                                            <li><strong>Local slides generated:</strong> <span data-evidence="local_slides_generated">—</span></li>
-                                            <li><strong>FFmpeg composed:</strong> <span data-evidence="ffmpeg_composed">—</span></li>
-                                            <li><strong>Final video available:</strong> <span data-evidence="final_video_available">—</span></li>
-                                            <li><strong>Slide count:</strong> <span data-evidence="slide_count">—</span></li>
-                                            <li><strong>Duration:</strong> <span data-evidence="duration_seconds">—</span></li>
-                                            <li><strong>Audio:</strong> <span data-evidence="has_audio">No</span></li>
-                                            <li><strong>TTS status:</strong> <span data-evidence="tts_status">not_implemented_v0.6.3</span></li>
-                                        </ul>
-                                    </div>
+                                    <!-- v0.6.6 — Provider/Generation evidence panels moved
+                                         to the bottom of the Overview tab. The video player
+                                         frame now only contains the player itself. -->
                                     <div class="video-player-panel">
                                         <div class="video-player-shell" id="video-player-shell">
                                             <video id="video-element" class="video-element" preload="metadata" playsinline></video>
