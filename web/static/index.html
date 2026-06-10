@@ -512,7 +512,14 @@
             <aside class="settings-sidebar">
                 <h2 class="settings-title" data-i18n="settings.title">Settings</h2>
                 <nav class="settings-nav">
-                    <button class="settings-nav-item active" data-panel="model">
+                    <button class="settings-nav-item active" data-panel="account">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                            <circle cx="12" cy="7" r="4"/>
+                        </svg>
+                        <span data-i18n="nav.account">Account</span>
+                    </button>
+                    <button class="settings-nav-item" data-panel="model">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <rect x="4" y="4" width="16" height="16" rx="2"/>
                             <rect x="9" y="9" width="6" height="6"/>
@@ -578,8 +585,44 @@
                 </div>
                 <div class="settings-body">
 
+                <!-- Account Panel (v0.6.8.1) -->
+                <div id="panel-account" class="settings-panel">
+                    <h3 class="panel-title" data-i18n="account.title">Account</h3>
+                    <div class="panel-section">
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="account.email">Email</label>
+                            <div class="info-value-display" id="settings-account-email">—</div>
+                        </div>
+                        <div class="info-group">
+                            <label class="info-label" data-i18n="account.role">Role</label>
+                            <div class="info-value-display" id="settings-account-role">—</div>
+                        </div>
+
+                        <div class="info-group account-form-group">
+                            <label class="info-label" data-i18n="account.change_email">Change email</label>
+                            <form id="account-email-form" class="account-form" autocomplete="off">
+                                <input type="email" id="account-new-email" placeholder="New email" required />
+                                <input type="password" id="account-email-password" placeholder="Current password" required minlength="1" />
+                                <button type="submit" class="account-submit">Update email</button>
+                                <p class="account-msg hidden" id="account-email-msg"></p>
+                            </form>
+                        </div>
+
+                        <div class="info-group account-form-group">
+                            <label class="info-label" data-i18n="account.change_password">Change password</label>
+                            <form id="account-password-form" class="account-form" autocomplete="off">
+                                <input type="password" id="account-old-password" placeholder="Current password" required minlength="1" />
+                                <input type="password" id="account-new-password" placeholder="New password (8+ chars)" required minlength="8" />
+                                <input type="password" id="account-new-password-2" placeholder="Confirm new password" required minlength="8" />
+                                <button type="submit" class="account-submit">Update password</button>
+                                <p class="account-msg hidden" id="account-password-msg"></p>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Model Panel -->
-                <div id="panel-model" class="settings-panel">
+                <div id="panel-model" class="settings-panel hidden">
                     <h3 class="panel-title" data-i18n="model.title">Model</h3>
                     <div class="panel-section">
                         <div class="info-group">
@@ -847,6 +890,11 @@
         </div>
     </div>
 
+    <!-- v0.6.8 — auth bootstrap: redirects to /auth.html if not logged in,
+         injects the user chip + logout button into the top header, mounts
+         the admin panel for is_admin users, and patches fetch() so any
+         401 from a protected endpoint also redirects to /auth.html. -->
+    <script src="/static/app_bootstrap.js"></script>
     <script src="/static/ai_review.js"></script>
     <script src="/static/main.js"></script>
 </body>

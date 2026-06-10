@@ -22,3 +22,10 @@ requests>=2.31.0
 # The Image Video MVP renders text and shapes locally; no remote Image2 /
 # Seedance / TTS calls are made.
 Pillow>=10.0.0
+
+# v0.6.8 — auth (login/register + admin approval)
+# bcrypt: password hashing for the users table
+# itsdangerous: required by Starlette's SessionMiddleware for the
+# HttpOnly session cookie
+bcrypt>=4.0.0
+itsdangerous>=2.1.0

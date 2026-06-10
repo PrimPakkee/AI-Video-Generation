@@ -21,6 +21,17 @@ from .video_models import VideoHistory, VideoJob
 from .video_repository import VideoHistoryRepository
 from .video_job_repository import VideoJobRepository
 
+# Auth (v0.6.8) — third independent SQLite database for users only.
+from .auth_database import (
+    AuthBase,
+    AuthSessionLocal,
+    auth_engine,
+    get_auth_db,
+    init_auth_db,
+)
+from .auth_models import User
+from .auth_repository import UserRepository
+
 __all__ = [
     # Prompt Mode
     "engine",
@@ -41,4 +52,12 @@ __all__ = [
     "VideoJob",
     "VideoHistoryRepository",
     "VideoJobRepository",
+    # Auth (v0.6.8)
+    "AuthBase",
+    "AuthSessionLocal",
+    "auth_engine",
+    "get_auth_db",
+    "init_auth_db",
+    "User",
+    "UserRepository",
 ]

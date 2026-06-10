@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Video Mode Job Repository (v0.5.3)
+Video Mode Job Repository (v0.5.3).
 
 Static-method CRUD wrappers around the VideoJob ORM. Operates exclusively on
 the Video Mode database (data/video_history.db) via the session injected by
 the caller. Never touches Prompt Mode tables.
+
+v0.6.8: every public method takes ``user_id`` as the 2nd positional parameter
+and scopes its query by owner.
 """
 
 import json
@@ -17,11 +20,11 @@ from .video_models import VideoJob
 
 
 class VideoJobRepository:
-    """CRUD helpers for the video_jobs table."""
 
     @staticmethod
     def create_job(
         db: Session,
+        user_id: int,
         history_id: int,
         provider: str = 'mock',
         provider_job_id: Optional[str] = None,
@@ -39,8 +42,8 @@ class VideoJobRepository:
         submitted_at: Optional[datetime] = None,
         completed_at: Optional[datetime] = None,
     ) -> VideoJob:
-        """Create a new VideoJob row and return it."""
         job = VideoJob(
+            user_id=user_id,
             history_id=history_id,
             provider=provider,
             provider_job_id=provider_job_id,
@@ -64,23 +67,34 @@ class VideoJobRepository:
         return job
 
     @staticmethod
-    def get_job(db: Session, job_id: int) -> Optional[VideoJob]:
-        return db.query(VideoJob).filter(VideoJob.id == job_id).first()
+    def get_job(db: Session, user_id: int, job_id: int) -> Optional[VideoJob]:
+        return db.query(VideoJob).filter(
+            VideoJob.id == job_id,
+            VideoJob.user_id == user_id,
+        ).first()
 
     @staticmethod
-    def get_latest_job_for_history(db: Session, history_id: int) -> Optional[VideoJob]:
+    def get_latest_job_for_history(db: Session, user_id: int, history_id: int) -> Optional[VideoJob]:
         return (
             db.query(VideoJob)
-            .filter(VideoJob.history_id == history_id)
+            .filter(
+                VideoJob.user_id == user_id,
+                VideoJob.history_id == history_id,
+            )
             .order_by(VideoJob.created_at.desc(), VideoJob.id.desc())
             .first()
         )
 
     @staticmethod
-    def list_jobs_for_history(db: Session, history_id: int, limit: int = 50) -> List[VideoJob]:
+    def list_jobs_for_history(
+        db: Session, user_id: int, history_id: int, limit: int = 50,
+    ) -> List[VideoJob]:
         return (
             db.query(VideoJob)
-            .filter(VideoJob.history_id == history_id)
+            .filter(
+                VideoJob.user_id == user_id,
+                VideoJob.history_id == history_id,
+            )
             .order_by(VideoJob.created_at.desc(), VideoJob.id.desc())
             .limit(max(1, int(limit)))
             .all()
@@ -89,6 +103,7 @@ class VideoJobRepository:
     @staticmethod
     def update_job_status(
         db: Session,
+        user_id: int,
         job_id: int,
         status: Optional[str] = None,
         stage: Optional[str] = None,
@@ -103,8 +118,10 @@ class VideoJobRepository:
         submitted_at: Optional[datetime] = None,
         completed_at: Optional[datetime] = None,
     ) -> Optional[VideoJob]:
-        """Update mutable fields on an existing VideoJob. Returns None if missing."""
-        job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
+        job = db.query(VideoJob).filter(
+            VideoJob.id == job_id,
+            VideoJob.user_id == user_id,
+        ).first()
         if job is None:
             return None
 
@@ -141,11 +158,14 @@ class VideoJobRepository:
     @staticmethod
     def mark_cancelled(
         db: Session,
+        user_id: int,
         job_id: int,
         message: Optional[str] = None,
     ) -> Optional[VideoJob]:
-        """Mark a job as cancelled. No-op for terminal states."""
-        job = db.query(VideoJob).filter(VideoJob.id == job_id).first()
+        job = db.query(VideoJob).filter(
+            VideoJob.id == job_id,
+            VideoJob.user_id == user_id,
+        ).first()
         if job is None:
             return None
         if job.status in ('succeeded', 'failed', 'cancelled', 'provider_not_configured'):

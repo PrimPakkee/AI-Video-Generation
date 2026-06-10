@@ -2,6 +2,114 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.6.8.1 - Auth UX 抛光：登陆页换苹果风 + Settings 加 Account 面板
+
+> v0.6.8 用了一晚上发现登陆页太"小框感"、按钮蓝色不搭工具风格，而且改邮箱
+> 得拉我手工改 SQL。v0.6.8.1 把这两个全收掉。
+
+### 新增
+- `POST /api/auth/change-email` —— 登陆用户带当前密码就能改自己的邮箱。
+  服务端校验：邮箱格式（同 register/login 用同一个 `_validate_email`）、
+  当前密码、不能改成同一个、不能撞别人邮箱（409）。改成功后返回更新后
+  的 user 字典，前端 `__authUser` 和 header chip 同步刷新。
+- Settings 弹窗里加一个 **Account** 面板，被设成默认 tab（原默认是 Model）。
+  面板上半部分只读显示当前邮箱 + 角色（Founder/Admin 或 Member），下半部分
+  两个表单：Change email（新邮箱 + 当前密码）和 Change password（当前密码
+  \+ 新密码 + 确认）。两个表单成功/失败都吐内联消息条，不弹 alert。
+- `web/static/main.js` 的 `SETTINGS_I18N` 加 `nav.account` / `account.*`
+  英中两套翻译，header title 跟着 EN/中切换走。
+
+### 重写
+- `auth.html` + `auth.css` —— 整体推掉重做。原来是居中一张白卡片+蓝按钮，
+  现在是全屏白底，正中大字 **AI Video Generator**（clamp 40-64px，
+  `letter-spacing: -0.025em`），底下灰色一行 tagline，再底下 tab + 输入框
+  + 深灰按钮。提交按钮 `#1d1d1f`（不是蓝色），hover `#2d2d2f`，按下
+  `transform: scale(0.99)`。输入框默认 `#f5f5f7` 浅灰背景，focus 时变白
+  + 黑边框 + 轻光晕。dark mode 自动反相（黑底，白字，白按钮黑字），跟
+  系统主题切换。
+- `auth.js` —— 适配新的 DOM id（`authHero` / `changeHero`），首屏 paint
+  时调一次 `setMode('login')` 把 tagline 和按钮文字钉到正确状态。
+
+### 修改
+- `web/static/index.html` —— Settings 侧边栏加 Account nav-item 并放第一位，
+  原 Model 的 `class="settings-panel"`（默认显示）让位给 `panel-account`，
+  Model 改成默认 hidden。
+
+### 行为
+- 登陆页改完之后整体留白和字号是在屏幕中上 1/3 处对齐，输入框 52px 高，
+  按钮 52px 高，整体跟苹果官网产品页同一节奏。
+- 改邮箱不会改密码、不会注销 session —— cookie 只存 user_id，邮箱变了
+  现有登陆继续有效。
+- v0.6.8 的所有验证规则保持：注册仍然 status=pending、必须 admin 批准
+  才能登陆、首次登陆强制改密码。Account 面板的"Change password"和强制改
+  密码用的是同一个 `/api/auth/change-password` 后端，逻辑完全一致。
+
+### 不做
+- 不做找回密码（继续不发邮件）。
+- 不做"撤销其他设备会话"。
+- 不在 Account 面板里暴露 user_id / created_at 之类 admin 元数据。
+
+---
+
+## v0.6.8 - 多用户登陆/注册 + 创始人审核
+
+> v0.6.8 把工具从单用户变成多用户。每个访客都得注册账号，创始人在 Admin
+> 面板批准后才能登陆。每个账号看到的只有自己生成的 Prompt / Video 历史，
+> 别人的看不到也搜不到。现存的所有 95 行历史数据迁移到一个固定的创始账号
+> 名下。
+
+### 新增
+- `data/auth.db` —— 第三个独立 SQLite 文件，只放 `users` 表。`web/db/auth_database.py` /
+  `auth_models.py` / `auth_repository.py` 跟现有的 video_database 模块同构。
+- `web/auth.py` —— bcrypt 密码哈希 + 三个 FastAPI 依赖：`get_current_user`、
+  `require_active_user`（拦 pending/rejected/must_change_password）、`require_admin`。
+- 9 条新 API 路由 `/api/auth/*` + `/api/admin/users/*`：register / login / logout /
+  me / change-password / list users / approve / reject / list pending。
+- 静态前端：`auth.html` + `auth.css` + `auth.js`（登录注册页 + 强制改密码流程），
+  `app_bootstrap.js`（在 main.js 之前跑：拉 `/api/auth/me`、未登录跳 auth.html、
+  在 header 里加 user chip + 登出按钮 + Admin 弹窗，不动 main.js 5290 行）。
+- `scripts/create_founder.py` —— 一次性 CLI，随机生成默认密码打印一次，写入
+  `users` 表 with `is_admin=1, must_change_password=1`。已存在 admin 时拒绝重跑。
+- `scripts/migrate_legacy_to_founder.py` —— 一次性 CLI，把所有 `user_id IS NULL`
+  的历史行回填到创始人 id。幂等。
+- 依赖增加 `bcrypt>=4.0.0` + `itsdangerous>=2.1.0`（SessionMiddleware 需要）。
+
+### 修改
+- 4 张表加 `user_id INTEGER` 列（idempotent ALTER TABLE 在现有 `init_db()` /
+  `init_video_db()` 风格里）：`prompt_history`、`prompt_reviews`、
+  `video_history`、`video_jobs`，外加 `(user_id, ...)` 复合索引。
+- 全部 4 个 Repository 类的每个公开方法都加 `user_id: int` 作为第二个位置参数。
+  list/search 加 `WHERE user_id = ?` 过滤；get/mutate 把 user_id 合进 WHERE，
+  非命中归一为 None / False，让 API 层吐 404 ——不泄漏存在性。
+- `web/app.py` 51 个原有路由全部加 `current_user: User = Depends(require_active_user)`，
+  把 `current_user.id` 串到 repo 调用。`/api/video/diagnostics/ffmpeg` 改成
+  admin-only。
+- 后台 worker `_video_run_worker` / `_run_image_video_worker` 接受 `user_id`
+  参数，`VIDEO_GENERATION_RUNS[run_id]["user_id"]` 写入；
+  `/api/video/generate/runs/{run_id}` 校验 user_id 不匹配返 404。
+- 创始账号 = 5月 27 日就在用工具的那个人。所有 v0.6.7 之前的 18 条 prompt /
+  31 条 review / 36 条 video / 10 条 video_job 都归属到 founder.id=1。
+
+### 行为
+- 第一次访问 `/` 会重定向到 `/auth.html`。
+- 登陆 → 强制改密码 → 看到原来全套数据。
+- 朋友注册 → "Pending approval" 提示 → 创始人在 Admin 弹窗里点 Approve →
+  朋友能登陆，看到完全空白的应用，自己生成的视频只属于自己。
+- Session 用 HttpOnly Lax Cookie（`SESSION_SECRET` env，30 天有效），
+  现有 main.js 的 fetch() 同源 cookie 自动带上，不改 main.js。
+- `app_bootstrap.js` 的 fetch patch：任何 401 自动跳 auth.html，不需要每个
+  fetch 调用点单独处理。
+
+### 不做
+- 不发邮件（不发激活码、不做密码找回）—— 朋友间分享的内部工具，带宽内沟通。
+- 不做 rate-limit / brute-force 锁定。
+- 不做 OAuth / SSO。
+- 不把 `user_id` 列收紧成 `NOT NULL` —— SQLite 不支持原地 ALTER COLUMN，
+  改成 NOT NULL 需要重建表。Repository 层强制每次必须传 `user_id`，这是
+  实际防线。
+
+---
+
 ## v0.6.5 - 本地 BGM 库 + LLM 选曲 + FFmpeg 同步混音
 
 > v0.6.5 给 Image Video 加上背景音乐。BGM 来源是本地 `assets/bgm/` 库，LLM

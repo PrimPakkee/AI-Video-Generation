@@ -3889,6 +3889,7 @@ const SETTINGS_LANG_KEY = 'ai-video-settings-lang';
 const SETTINGS_I18N = {
     en: {
         'settings.title': 'Settings',
+        'nav.account': 'Account',
         'nav.model': 'Model',
         'nav.language': 'Language',
         'nav.diagnostics': 'Diagnostics',
@@ -3896,6 +3897,12 @@ const SETTINGS_I18N = {
         'nav.help': 'Help Center',
         'nav.privacy': 'Privacy Policy',
         'nav.about': 'About',
+
+        'account.title': 'Account',
+        'account.email': 'Email',
+        'account.role': 'Role',
+        'account.change_email': 'Change email',
+        'account.change_password': 'Change password',
 
         'model.title': 'Model',
         'model.selected': 'Selected model',
@@ -4028,6 +4035,7 @@ const SETTINGS_I18N = {
     },
     zh: {
         'settings.title': '设置',
+        'nav.account': '账号',
         'nav.model': '模型',
         'nav.language': '语言',
         'nav.diagnostics': '系统诊断',
@@ -4035,6 +4043,12 @@ const SETTINGS_I18N = {
         'nav.help': '帮助中心',
         'nav.privacy': '隐私协议',
         'nav.about': '关于',
+
+        'account.title': '账号',
+        'account.email': '邮箱',
+        'account.role': '角色',
+        'account.change_email': '修改邮箱',
+        'account.change_password': '修改密码',
 
         'model.title': '模型',
         'model.selected': '当前模型',

@@ -16,6 +16,11 @@ class PromptHistory(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
+    # Owning user (v0.6.8+). Logical FK to auth.db users.id; not enforced at
+    # the SQLite layer (cross-database FK isn't possible). Backfilled to the
+    # founder during the v0.6.8 migration; new rows MUST set this.
+    user_id = Column(Integer, nullable=True, index=True)
+
     # User input and generated slug
     title = Column(String(500), nullable=False, index=True)
     slug = Column(String(200), nullable=False, unique=True, index=True)
@@ -117,6 +122,10 @@ class PromptReview(Base):
 
     # Link to prompt history
     history_id = Column(Integer, nullable=False, index=True)
+
+    # Owning user (v0.6.8+). Same caveat as PromptHistory.user_id —
+    # logical-only FK to auth.db users.id.
+    user_id = Column(Integer, nullable=True, index=True)
 
     # Review content
     review_json = Column(Text, nullable=False)  # Full structured review data

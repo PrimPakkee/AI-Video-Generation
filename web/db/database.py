@@ -143,6 +143,15 @@ def init_db():
                 conn.execute(text('ALTER TABLE prompt_history ADD COLUMN regenerate_feedback TEXT'))
                 conn.commit()
 
+        # v0.6.8 migrations: add user_id (NULL-allowed initially; backfilled
+        # via scripts/migrate_legacy_to_founder.py before any new code path
+        # tries to read it).
+        if 'user_id' not in columns:
+            with engine.connect() as conn:
+                conn.execute(text('ALTER TABLE prompt_history ADD COLUMN user_id INTEGER'))
+                conn.execute(text('CREATE INDEX IF NOT EXISTS ix_prompt_history_user_id ON prompt_history(user_id)'))
+                conn.commit()
+
         # Backfill legacy data
         with engine.connect() as conn:
             # Check if there are any records without topic_group_id
@@ -177,6 +186,14 @@ def init_db():
             with engine.connect() as conn:
                 conn.execute(text('ALTER TABLE prompt_reviews ADD COLUMN review_schema_version VARCHAR(50)'))
                 conn.execute(text("UPDATE prompt_reviews SET review_schema_version = 'v0.4.5_legacy' WHERE review_schema_version IS NULL"))
+                conn.commit()
+
+        # v0.6.8 migration: prompt_reviews.user_id for ownership-checkable
+        # access without joining prompt_history.
+        if 'user_id' not in review_columns:
+            with engine.connect() as conn:
+                conn.execute(text('ALTER TABLE prompt_reviews ADD COLUMN user_id INTEGER'))
+                conn.execute(text('CREATE INDEX IF NOT EXISTS ix_prompt_reviews_user_id ON prompt_reviews(user_id)'))
                 conn.commit()
 
         # v0.4.6.3 migration: Convert 'active' status to 'completed' for unified state management

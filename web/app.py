@@ -16,11 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.middleware.sessions import SessionMiddleware
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
@@ -46,6 +47,23 @@ from web.db import (
     VideoHistoryRepository,
     VideoJobRepository,
 )
+
+# Auth (v0.6.8) — login/register, founder approval, session middleware.
+from web.db import (
+    UserRepository,
+    init_auth_db,
+    get_auth_db,
+)
+from web.auth import (
+    hash_password,
+    verify_password,
+    login_session,
+    logout_session,
+    get_current_user,
+    require_active_user,
+    require_admin,
+    user_to_public_dict,
+)
 from web.video_providers import MockVideoProvider, ApxSeedanceProvider
 from web.video_providers.apx_seedance_provider import _scrub_api_key as _apx_scrub_api_key
 from web.video_providers.seedance_prompt_compiler import (
@@ -62,6 +80,26 @@ from web.video_asset_pipeline import (
 
 app = FastAPI(title="AI Video Prompt Generator")
 
+# v0.6.8 — HttpOnly session cookie for auth. SESSION_SECRET is required;
+# generate a 32-byte hex secret and store it in .env.
+_session_secret = os.getenv("SESSION_SECRET")
+if not _session_secret:
+    # Fail-loud rather than ship a random secret that resets every restart
+    # (which would silently log everyone out on every code reload).
+    raise RuntimeError(
+        "SESSION_SECRET is not set. Add a 32+ char random string to .env "
+        "(e.g. `python -c 'import secrets; print(secrets.token_hex(32))'`)."
+    )
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=_session_secret,
+    session_cookie="aivg_session",
+    same_site="lax",
+    https_only=False,  # local-only friend-share tool; flip to True if exposed via TLS
+    max_age=60 * 60 * 24 * 30,  # 30 days
+)
+
+
 # Initialize database on startup
 @app.on_event("startup")
 async def startup_event():
@@ -71,6 +109,8 @@ async def startup_event():
     # creates tables in data/video_history.db; it never modifies the
     # Prompt Mode database (data/prompt_history.db).
     init_video_db()
+    # v0.6.8: independent auth database (data/auth.db).
+    init_auth_db()
 
 # Mount static files
 static_dir = Path(__file__).parent / "static"
@@ -161,16 +201,218 @@ def generate_unique_slug(title: str) -> str:
 
 
 @app.get("/")
-async def serve_index():
-    """Serve the main HTML page"""
+async def serve_index(request: Request):
+    """Serve the main HTML page; redirect to /auth.html if not logged in."""
+    if not request.session.get("user_id"):
+        return RedirectResponse(url="/auth.html", status_code=302)
     index_file = static_dir / "index.html"
     if not index_file.exists():
         raise HTTPException(status_code=404, detail="index.html not found")
     return FileResponse(index_file)
 
 
+@app.get("/auth.html")
+async def serve_auth_page():
+    """Serve the login / register page (always public)."""
+    auth_file = static_dir / "auth.html"
+    if not auth_file.exists():
+        raise HTTPException(status_code=404, detail="auth.html not found")
+    return FileResponse(auth_file)
+
+
+# ---------------------------------------------------------------------------
+# v0.6.8 — Auth + admin routes
+# ---------------------------------------------------------------------------
+
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+_MIN_PASSWORD_LEN = 8
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _validate_email(email: str) -> str:
+    e = _normalize_email(email)
+    if not e or not _EMAIL_RE.match(e) or len(e) > 320:
+        raise HTTPException(status_code=400, detail="invalid_email")
+    return e
+
+
+def _validate_password(pw: str) -> str:
+    if not isinstance(pw, str) or len(pw) < _MIN_PASSWORD_LEN or len(pw) > 200:
+        raise HTTPException(status_code=400, detail="invalid_password")
+    return pw
+
+
+class AuthCredentials(BaseModel):
+    email: str = Field(..., min_length=3, max_length=320)
+    password: str = Field(..., min_length=1, max_length=200)
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=1, max_length=200)
+    new_password: str = Field(..., min_length=_MIN_PASSWORD_LEN, max_length=200)
+
+
+class ChangeEmailRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=200)
+    new_email: str = Field(..., min_length=3, max_length=320)
+
+
+@app.post("/api/auth/register")
+async def auth_register(
+    request: Request,
+    credentials: AuthCredentials,
+    db: Session = Depends(get_auth_db),
+) -> JSONResponse:
+    email = _validate_email(credentials.email)
+    _validate_password(credentials.password)
+
+    if UserRepository.get_by_email(db, email) is not None:
+        # Don't leak existence — but here we explicitly tell the user since
+        # this is an internal friend-share tool and "your email is taken" is
+        # the actually-useful UX.
+        raise HTTPException(status_code=409, detail="email_already_registered")
+
+    user = UserRepository.create_pending(db, email, hash_password(credentials.password))
+    return JSONResponse({
+        "ok": True,
+        "user": user_to_public_dict(user),
+        "message": "registered_pending_approval",
+    })
+
+
+@app.post("/api/auth/login")
+async def auth_login(
+    request: Request,
+    credentials: AuthCredentials,
+    db: Session = Depends(get_auth_db),
+) -> JSONResponse:
+    email = _normalize_email(credentials.email)
+    user = UserRepository.get_by_email(db, email)
+    if user is None or not verify_password(credentials.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="invalid_credentials")
+
+    if user.status == "pending":
+        raise HTTPException(status_code=403, detail="account_pending_approval")
+    if user.status == "rejected":
+        raise HTTPException(status_code=403, detail="account_rejected")
+    if user.status != "active":
+        raise HTTPException(status_code=403, detail="account_inactive")
+
+    login_session(request, user.id)
+    return JSONResponse({"ok": True, "user": user_to_public_dict(user)})
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request) -> JSONResponse:
+    logout_session(request)
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/auth/me")
+async def auth_me(user=Depends(get_current_user)) -> JSONResponse:
+    return JSONResponse({"ok": True, "user": user_to_public_dict(user)})
+
+
+@app.post("/api/auth/change-password")
+async def auth_change_password(
+    body: ChangePasswordRequest,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_auth_db),
+) -> JSONResponse:
+    if user.status not in ("active",):
+        raise HTTPException(status_code=403, detail="account_inactive")
+    if not verify_password(body.old_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="old_password_mismatch")
+    if body.new_password == body.old_password:
+        raise HTTPException(status_code=400, detail="new_password_same_as_old")
+    _validate_password(body.new_password)
+    UserRepository.set_password(db, user.id, hash_password(body.new_password))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/auth/change-email")
+async def auth_change_email(
+    body: ChangeEmailRequest,
+    user=Depends(require_active_user),
+    db: Session = Depends(get_auth_db),
+) -> JSONResponse:
+    """v0.6.8.1 — let a signed-in user change their own email after
+    re-confirming the current password. Email format validated server-side;
+    collisions return 409.
+    """
+    new_email = _validate_email(body.new_email)
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="current_password_mismatch")
+    if new_email == user.email:
+        raise HTTPException(status_code=400, detail="new_email_same_as_old")
+    existing = UserRepository.get_by_email(db, new_email)
+    if existing is not None and existing.id != user.id:
+        raise HTTPException(status_code=409, detail="email_already_registered")
+    user.email = new_email
+    db.commit()
+    db.refresh(user)
+    return JSONResponse({"ok": True, "user": user_to_public_dict(user)})
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(
+    admin=Depends(require_admin),
+    db: Session = Depends(get_auth_db),
+) -> JSONResponse:
+    users = UserRepository.list_all(db)
+    return JSONResponse({"ok": True, "users": [user_to_public_dict(u) for u in users]})
+
+
+@app.get("/api/admin/users/pending")
+async def admin_list_pending(
+    admin=Depends(require_admin),
+    db: Session = Depends(get_auth_db),
+) -> JSONResponse:
+    users = UserRepository.list_pending(db)
+    return JSONResponse({"ok": True, "users": [user_to_public_dict(u) for u in users]})
+
+
+@app.post("/api/admin/users/{user_id}/approve")
+async def admin_approve_user(
+    user_id: int,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_auth_db),
+) -> JSONResponse:
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="cannot_modify_self")
+    target = UserRepository.get_by_id(db, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    UserRepository.approve(db, user_id, admin.id)
+    target = UserRepository.get_by_id(db, user_id)
+    return JSONResponse({"ok": True, "user": user_to_public_dict(target)})
+
+
+@app.post("/api/admin/users/{user_id}/reject")
+async def admin_reject_user(
+    user_id: int,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_auth_db),
+) -> JSONResponse:
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="cannot_modify_self")
+    target = UserRepository.get_by_id(db, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    UserRepository.reject(db, user_id)
+    target = UserRepository.get_by_id(db, user_id)
+    return JSONResponse({"ok": True, "user": user_to_public_dict(target)})
+
+
 @app.post("/api/generate", response_model=GenerateResponse)
-async def generate_prompt(request: GenerateRequest, db: Session = Depends(get_db)) -> JSONResponse:
+async def generate_prompt(
+    request: GenerateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
+) -> JSONResponse:
     """
     Generate NotebookLM prompt from title
 
@@ -277,6 +519,7 @@ async def generate_prompt(request: GenerateRequest, db: Session = Depends(get_db
         try:
             history_record = PromptHistoryRepository.create_history_record(
                 db=db,
+                user_id=current_user.id,
                 title=title,
                 slug=slug,
                 prompt_text=prompt_content,
@@ -338,23 +581,15 @@ async def get_history(
     limit: int = 100,
     q: Optional[str] = None,
     date_filter: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
     """
     Get prompt history list (non-deleted, latest version per group)
-
-    Args:
-        limit: Maximum number of records to return
-        q: Optional search query for title
-        date_filter: Optional date filter (all, 1h, 3h, today, yesterday, 7d, 30d)
-        db: Database session
-
-    Returns:
-        List of history records (without full prompt text) with version counts
     """
     try:
         records = PromptHistoryRepository.list_history_records(
-            db, limit=limit, q=q, date_filter=date_filter
+            db, current_user.id, limit=limit, q=q, date_filter=date_filter
         )
 
         items = []
@@ -362,7 +597,7 @@ async def get_history(
             item = record.to_dict(include_prompt=False)
 
             # Add version count
-            version_count = PromptHistoryRepository.get_version_count(db, record.topic_group_id)
+            version_count = PromptHistoryRepository.get_version_count(db, current_user.id, record.topic_group_id)
             item['version_count'] = version_count
 
             items.append(item)
@@ -382,20 +617,14 @@ async def get_history(
 @app.get("/api/history/{history_id}")
 async def get_history_by_id(
     history_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
     """
     Get a single prompt history record by ID (including deleted)
-
-    Args:
-        history_id: History record ID
-        db: Database session
-
-    Returns:
-        Full history record including prompt text and version count
     """
     try:
-        record = PromptHistoryRepository.get_history_record(db, history_id)
+        record = PromptHistoryRepository.get_history_record(db, current_user.id, history_id)
 
         if not record:
             return JSONResponse(
@@ -409,7 +638,7 @@ async def get_history_by_id(
         item = record.to_dict(include_prompt=True)
 
         # Add version count
-        version_count = PromptHistoryRepository.get_version_count(db, record.topic_group_id)
+        version_count = PromptHistoryRepository.get_version_count(db, current_user.id, record.topic_group_id)
         item['version_count'] = version_count
 
         return {
@@ -430,7 +659,8 @@ async def get_history_by_id(
 async def update_history_content(
     history_id: int,
     request: UpdateContentRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
     """
     Update prompt content for a specific view
@@ -518,7 +748,7 @@ async def update_history_content(
 
         # Proceed with save
         record = PromptHistoryRepository.update_prompt_content(
-            db, history_id, request.view, request.content
+            db, current_user.id, history_id, request.view, request.content
         )
 
         if not record:
@@ -534,7 +764,7 @@ async def update_history_content(
         if view == 'raw':
             try:
                 from web.db.repository_review import PromptReviewRepository
-                PromptReviewRepository.mark_review_stale(db, history_id)
+                PromptReviewRepository.mark_review_stale(db, current_user.id, history_id)
             except Exception:
                 # Silently fail if review marking fails
                 pass
@@ -559,20 +789,12 @@ async def update_history_content(
 @app.post("/api/history/{history_id}/pin")
 async def pin_history(
     history_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Pin a history record
-
-    Args:
-        history_id: History record ID to pin
-        db: Database session
-
-    Returns:
-        Success response with updated item
-    """
+    """Pin a history record."""
     try:
-        record = PromptHistoryRepository.pin_history_record(db, history_id)
+        record = PromptHistoryRepository.pin_history_record(db, current_user.id, history_id)
 
         if not record:
             return JSONResponse(
@@ -600,20 +822,12 @@ async def pin_history(
 @app.post("/api/history/{history_id}/unpin")
 async def unpin_history(
     history_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Unpin a history record
-
-    Args:
-        history_id: History record ID to unpin
-        db: Database session
-
-    Returns:
-        Success response with updated item
-    """
+    """Unpin a history record."""
     try:
-        record = PromptHistoryRepository.unpin_history_record(db, history_id)
+        record = PromptHistoryRepository.unpin_history_record(db, current_user.id, history_id)
 
         if not record:
             return JSONResponse(
@@ -641,20 +855,12 @@ async def unpin_history(
 @app.delete("/api/history/{history_id}")
 async def delete_history(
     history_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Delete a history record (legacy - for backward compatibility)
-
-    Args:
-        history_id: History record ID to delete
-        db: Database session
-
-    Returns:
-        Success response
-    """
+    """Delete a history record (legacy hard delete)."""
     try:
-        deleted = PromptHistoryRepository.delete_history_record(db, history_id)
+        deleted = PromptHistoryRepository.delete_history_record(db, current_user.id, history_id)
 
         if not deleted:
             return JSONResponse(
@@ -682,20 +888,12 @@ async def delete_history(
 @app.get("/api/history/group/{topic_group_id}/versions")
 async def get_group_versions(
     topic_group_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Get all versions of a topic group
-
-    Args:
-        topic_group_id: Topic group ID
-        db: Database session
-
-    Returns:
-        List of all versions
-    """
+    """Get all versions of a topic group."""
     try:
-        versions = PromptHistoryRepository.get_versions_by_group(db, topic_group_id)
+        versions = PromptHistoryRepository.get_versions_by_group(db, current_user.id, topic_group_id)
 
         if not versions:
             return JSONResponse(
@@ -734,21 +932,12 @@ async def get_group_versions(
 async def rename_history_group(
     topic_group_id: str,
     request: RenameRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Rename all versions in a topic group
-
-    Args:
-        topic_group_id: Topic group ID
-        request: New title
-        db: Database session
-
-    Returns:
-        Updated latest version item
-    """
+    """Rename all versions in a topic group."""
     try:
-        latest = PromptHistoryRepository.rename_history_group(db, topic_group_id, request.title)
+        latest = PromptHistoryRepository.rename_history_group(db, current_user.id, topic_group_id, request.title)
 
         if not latest:
             return JSONResponse(
@@ -760,7 +949,7 @@ async def rename_history_group(
             )
 
         # Add version count
-        version_count = PromptHistoryRepository.get_version_count(db, topic_group_id)
+        version_count = PromptHistoryRepository.get_version_count(db, current_user.id, topic_group_id)
         item = latest.to_dict(include_prompt=False)
         item['version_count'] = version_count
 
@@ -781,20 +970,12 @@ async def rename_history_group(
 @app.post("/api/history/group/{topic_group_id}/trash")
 async def trash_history_group(
     topic_group_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Soft delete a topic group (move to trash)
-
-    Args:
-        topic_group_id: Topic group ID
-        db: Database session
-
-    Returns:
-        Success response
-    """
+    """Soft delete a topic group (move to trash)."""
     try:
-        deleted = PromptHistoryRepository.soft_delete_history_group(db, topic_group_id)
+        deleted = PromptHistoryRepository.soft_delete_history_group(db, current_user.id, topic_group_id)
 
         if not deleted:
             return JSONResponse(
@@ -823,28 +1004,19 @@ async def trash_history_group(
 async def get_trash(
     limit: int = 100,
     q: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Get trash list (deleted records, latest version per group)
-
-    Args:
-        limit: Maximum number of records to return
-        q: Optional search query for title
-        db: Database session
-
-    Returns:
-        List of deleted records
-    """
+    """Get trash list (deleted records, latest version per group)."""
     try:
-        records = PromptHistoryRepository.list_trash_records(db, limit=limit, q=q)
+        records = PromptHistoryRepository.list_trash_records(db, current_user.id, limit=limit, q=q)
 
         items = []
         for record in records:
             item = record.to_dict(include_prompt=False)
 
             # Add version count
-            version_count = PromptHistoryRepository.get_version_count(db, record.topic_group_id)
+            version_count = PromptHistoryRepository.get_version_count(db, current_user.id, record.topic_group_id)
             item['version_count'] = version_count
 
             items.append(item)
@@ -864,20 +1036,12 @@ async def get_trash(
 @app.delete("/api/history/group/{topic_group_id}/permanent")
 async def permanently_delete_group(
     topic_group_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Permanently delete a topic group (hard delete from database)
-
-    Args:
-        topic_group_id: Topic group ID
-        db: Database session
-
-    Returns:
-        Success response
-    """
+    """Permanently delete a topic group (hard delete)."""
     try:
-        deleted = PromptHistoryRepository.permanently_delete_history_group(db, topic_group_id)
+        deleted = PromptHistoryRepository.permanently_delete_history_group(db, current_user.id, topic_group_id)
 
         if not deleted:
             return JSONResponse(
@@ -905,20 +1069,12 @@ async def permanently_delete_group(
 @app.post("/api/history/group/{topic_group_id}/restore")
 async def restore_history_group(
     topic_group_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Restore a topic group from trash
-
-    Args:
-        topic_group_id: Topic group ID
-        db: Database session
-
-    Returns:
-        Success response
-    """
+    """Restore a topic group from trash."""
     try:
-        restored = PromptHistoryRepository.restore_history_group(db, topic_group_id)
+        restored = PromptHistoryRepository.restore_history_group(db, current_user.id, topic_group_id)
 
         if not restored:
             return JSONResponse(
@@ -946,20 +1102,12 @@ async def restore_history_group(
 @app.post("/api/history/group/{topic_group_id}/favorite")
 async def favorite_history_group(
     topic_group_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Favorite a topic group
-
-    Args:
-        topic_group_id: Topic group ID
-        db: Database session
-
-    Returns:
-        Success response with updated item
-    """
+    """Favorite a topic group."""
     try:
-        latest = PromptHistoryRepository.favorite_history_group(db, topic_group_id)
+        latest = PromptHistoryRepository.favorite_history_group(db, current_user.id, topic_group_id)
 
         if not latest:
             return JSONResponse(
@@ -971,7 +1119,7 @@ async def favorite_history_group(
             )
 
         # Add version count
-        version_count = PromptHistoryRepository.get_version_count(db, topic_group_id)
+        version_count = PromptHistoryRepository.get_version_count(db, current_user.id, topic_group_id)
         item = latest.to_dict(include_prompt=False)
         item['version_count'] = version_count
 
@@ -992,20 +1140,12 @@ async def favorite_history_group(
 @app.post("/api/history/group/{topic_group_id}/unfavorite")
 async def unfavorite_history_group(
     topic_group_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Unfavorite a topic group
-
-    Args:
-        topic_group_id: Topic group ID
-        db: Database session
-
-    Returns:
-        Success response with updated item
-    """
+    """Unfavorite a topic group."""
     try:
-        latest = PromptHistoryRepository.unfavorite_history_group(db, topic_group_id)
+        latest = PromptHistoryRepository.unfavorite_history_group(db, current_user.id, topic_group_id)
 
         if not latest:
             return JSONResponse(
@@ -1017,7 +1157,7 @@ async def unfavorite_history_group(
             )
 
         # Add version count
-        version_count = PromptHistoryRepository.get_version_count(db, topic_group_id)
+        version_count = PromptHistoryRepository.get_version_count(db, current_user.id, topic_group_id)
         item = latest.to_dict(include_prompt=False)
         item['version_count'] = version_count
 
@@ -1039,28 +1179,19 @@ async def unfavorite_history_group(
 async def get_favorites(
     limit: int = 100,
     q: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Get favorite list (latest version per group)
-
-    Args:
-        limit: Maximum number of records to return
-        q: Optional search query for title
-        db: Database session
-
-    Returns:
-        List of favorite records
-    """
+    """Get favorite list (latest version per group)."""
     try:
-        records = PromptHistoryRepository.list_favorite_records(db, limit=limit, q=q)
+        records = PromptHistoryRepository.list_favorite_records(db, current_user.id, limit=limit, q=q)
 
         items = []
         for record in records:
             item = record.to_dict(include_prompt=False)
 
             # Add version count
-            version_count = PromptHistoryRepository.get_version_count(db, record.topic_group_id)
+            version_count = PromptHistoryRepository.get_version_count(db, current_user.id, record.topic_group_id)
             item['version_count'] = version_count
 
             items.append(item)
@@ -1215,19 +1346,10 @@ def _build_ai_review_markdown(review_data: Optional[dict]) -> str:
 @app.get("/api/history/{history_id}/download-all")
 async def download_all(
     history_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ):
-    """
-    Download all prompt views as a zip package
-
-    Args:
-        history_id: History record ID
-        db: Database session
-
-    Returns:
-        Streaming zip file containing raw_text.txt, preview.txt, overview.txt,
-        ai_review.md, and metadata.json
-    """
+    """Download all prompt views as a zip package."""
     from fastapi.responses import StreamingResponse
     from web.db.models import PromptReview
     import io
@@ -1235,7 +1357,7 @@ async def download_all(
 
     try:
         # Get history record
-        record = PromptHistoryRepository.get_history_record(db, history_id)
+        record = PromptHistoryRepository.get_history_record(db, current_user.id, history_id)
 
         if not record:
             return JSONResponse(
@@ -1294,7 +1416,10 @@ async def download_all(
         try:
             review_records = (
                 db.query(PromptReview)
-                .filter(PromptReview.history_id == history_id)
+                .filter(
+                    PromptReview.user_id == current_user.id,
+                    PromptReview.history_id == history_id,
+                )
                 .order_by(PromptReview.updated_at.desc())
                 .all()
             )
@@ -1504,22 +1629,13 @@ async def download_all(
 async def regenerate_prompt(
     history_id: int,
     request: RegenerateRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Regenerate prompt based on current version and user feedback
-
-    Args:
-        history_id: Current history record ID
-        request: Regenerate request with feedback
-        db: Database session
-
-    Returns:
-        New version record with regenerated content
-    """
+    """Regenerate prompt based on current version and user feedback."""
     try:
         # Get current record
-        current_record = PromptHistoryRepository.get_history_record(db, history_id)
+        current_record = PromptHistoryRepository.get_history_record(db, current_user.id, history_id)
 
         if not current_record:
             return JSONResponse(
@@ -1602,6 +1718,7 @@ async def regenerate_prompt(
             # Create new version in database
             new_record = PromptHistoryRepository.create_regenerated_version(
                 db=db,
+                user_id=current_user.id,
                 from_history_id=history_id,
                 feedback=user_feedback,
                 new_prompt_text=new_raw_text,
@@ -1661,24 +1778,16 @@ async def regenerate_prompt(
 @app.get("/api/history/{history_id}/review")
 async def get_review(
     history_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Get AI Review for a specific prompt version (read-only, never generates)
-
-    Args:
-        history_id: History record ID
-        db: Database session
-
-    Returns:
-        Review data with status: none/generating/completed/failed/stale
-    """
+    """Get AI Review for a specific prompt version (read-only, never generates)."""
     try:
         from web.db.repository_review import PromptReviewRepository
         from web.db.models import PromptReview
 
-        # Check if history record exists
-        record = PromptHistoryRepository.get_history_record(db, history_id)
+        # Check if history record exists (and is owned by current user)
+        record = PromptHistoryRepository.get_history_record(db, current_user.id, history_id)
         if not record:
             return JSONResponse(
                 status_code=404,
@@ -1689,7 +1798,7 @@ async def get_review(
             )
 
         # Get review status
-        status = PromptReviewRepository.get_review_status(db, history_id)
+        status = PromptReviewRepository.get_review_status(db, current_user.id, history_id)
 
         # Handle different statuses
         if status == 'none':
@@ -1706,7 +1815,8 @@ async def get_review(
             stale_review_data = None
             try:
                 stale_review = db.query(PromptReview).filter(
-                    PromptReview.history_id == history_id
+                    PromptReview.user_id == current_user.id,
+                    PromptReview.history_id == history_id,
                 ).order_by(PromptReview.updated_at.desc()).all()
                 # Prefer the latest review record that actually has parseable JSON
                 # with structured fields (not a placeholder/error envelope).
@@ -1747,7 +1857,7 @@ async def get_review(
 
         if status == 'failed':
             # Get error message if available
-            review = PromptReviewRepository.get_review_by_history_id(db, history_id)
+            review = PromptReviewRepository.get_review_by_history_id(db, current_user.id, history_id)
             error_data = None
             if review and review.review_json:
                 try:
@@ -1766,7 +1876,7 @@ async def get_review(
 
         if status == 'completed':
             # Get review data
-            review_data = PromptReviewRepository.get_review_json(db, history_id)
+            review_data = PromptReviewRepository.get_review_json(db, current_user.id, history_id)
 
             if review_data:
                 return {
@@ -1806,22 +1916,15 @@ async def get_review(
 @app.get("/api/history/{history_id}/review/debug")
 async def get_review_debug(
     history_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Get detailed debug information for AI Review (for development/debugging only)
-
-    Returns:
-        - Review database record (status, timestamps, error messages)
-        - Raw review JSON
-        - History record info (version, prompt hash)
-        - Schema version
-    """
+    """Get detailed debug information for AI Review (development/debugging only)."""
     try:
         from web.db.repository_review import PromptReviewRepository
 
-        # Check if history record exists
-        record = PromptHistoryRepository.get_history_record(db, history_id)
+        # Check if history record exists (and is owned by current user)
+        record = PromptHistoryRepository.get_history_record(db, current_user.id, history_id)
         if not record:
             return JSONResponse(
                 status_code=404,
@@ -1832,7 +1935,7 @@ async def get_review_debug(
             )
 
         # Get review record (if exists)
-        review = PromptReviewRepository.get_review_by_history_id(db, history_id)
+        review = PromptReviewRepository.get_review_by_history_id(db, current_user.id, history_id)
 
         # Compute a content fingerprint that helps explain why a review may
         # be stale. This is local-only metadata, not a real schema field.
@@ -1916,27 +2019,18 @@ async def get_review_debug(
 async def generate_review(
     history_id: int,
     force: bool = False,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    Generate AI Review for a specific prompt version (idempotent)
-
-    Args:
-        history_id: History record ID
-        force: Force regenerate even if review exists (default: False)
-        db: Database session
-
-    Returns:
-        Review data or status
-    """
+    """Generate AI Review for a specific prompt version (idempotent)."""
     try:
         from web.db.repository_review import PromptReviewRepository
         from scripts.llm_topic_enhancer import LLMTopicEnhancer
 
         current_schema = 'v0.4.6.9_strict'
 
-        # Check if history record exists
-        record = PromptHistoryRepository.get_history_record(db, history_id)
+        # Check if history record exists (and is owned by current user)
+        record = PromptHistoryRepository.get_history_record(db, current_user.id, history_id)
         if not record:
             return JSONResponse(
                 status_code=404,
@@ -1958,11 +2052,11 @@ async def generate_review(
             )
 
         # Get current review status
-        status = PromptReviewRepository.get_review_status(db, history_id, current_schema)
+        status = PromptReviewRepository.get_review_status(db, current_user.id, history_id, current_schema)
 
         # If review is completed and current, return it directly (idempotent)
         if status == 'completed' and not force:
-            review_data = PromptReviewRepository.get_review_json(db, history_id)
+            review_data = PromptReviewRepository.get_review_json(db, current_user.id, history_id)
             if review_data:
                 return {
                     "success": True,
@@ -1981,7 +2075,7 @@ async def generate_review(
 
         # If review failed and not forcing, return error
         if status == 'failed' and not force:
-            review = PromptReviewRepository.get_review_by_history_id(db, history_id)
+            review = PromptReviewRepository.get_review_by_history_id(db, current_user.id, history_id)
             error_data = None
             if review and review.review_json:
                 try:
@@ -1999,6 +2093,7 @@ async def generate_review(
         # Create or get generating placeholder
         review_obj, is_new = PromptReviewRepository.create_or_get_generating_review(
             db=db,
+            user_id=current_user.id,
             history_id=history_id,
             schema_version=current_schema
         )
@@ -2013,7 +2108,7 @@ async def generate_review(
 
         # If forcing or status is stale/none, update to generating
         if force or status in ['stale', 'none', 'failed']:
-            PromptReviewRepository.update_review_status(db, history_id, 'generating')
+            PromptReviewRepository.update_review_status(db, current_user.id, history_id, 'generating')
 
         # Call LLM to generate review
         try:
@@ -2024,6 +2119,7 @@ async def generate_review(
                 # Mark as failed
                 PromptReviewRepository.mark_review_failed(
                     db=db,
+                    user_id=current_user.id,
                     history_id=history_id,
                     error_message="Review generation returned empty result"
                 )
@@ -2039,6 +2135,7 @@ async def generate_review(
             # Update review with result
             PromptReviewRepository.update_review_with_result(
                 db=db,
+                user_id=current_user.id,
                 history_id=history_id,
                 review_data=review_data,
                 schema_version=current_schema
@@ -2058,6 +2155,7 @@ async def generate_review(
             # Mark as failed with real error
             PromptReviewRepository.mark_review_failed(
                 db=db,
+                user_id=current_user.id,
                 history_id=history_id,
                 error_message=error_detail,
                 schema_version=current_schema
@@ -2402,6 +2500,7 @@ def _safe_relative_outputs_path(path_str: Optional[str]) -> Optional[str]:
 
 def _run_image_video_pipeline(
     db: Session,
+    user_id: int,
     title: str,
     slug: str,
     duration_seconds: int,
@@ -2466,6 +2565,7 @@ def _run_image_video_pipeline(
         )
         VideoHistoryRepository.update_image_video_result(
             db=db,
+            user_id=user_id,
             history_id=history_id,
             video_file_path=relative_video_path,
             video_duration_seconds=int(duration_seconds),
@@ -2490,6 +2590,7 @@ def _run_image_video_pipeline(
         )
         VideoHistoryRepository.update_image_video_result(
             db=db,
+            user_id=user_id,
             history_id=history_id,
             video_file_path=None,
             video_duration_seconds=int(duration_seconds),
@@ -2674,16 +2775,15 @@ def _build_video_assets_metadata_json(pipeline_result: Dict[str, Any]) -> str:
 
 def _create_mock_video_job_for_record(
     db: Session,
+    user_id: int,
     record: VideoHistory,
     request_title: str,
 ) -> Optional[Dict[str, Any]]:
     """v0.5.3: create a Mock VideoJob for a freshly-saved Video Mode record
-    and return its `to_dict()` payload. Returns None on failure (the caller
-    proceeds without a job rather than erroring the user-facing flow).
+    and return its `to_dict()` payload. Returns None on failure.
 
-    The Mock provider performs no network call and yields a
-    `provider_not_configured` shell. This function only writes to the Video
-    Mode database; it never touches Prompt Mode tables.
+    v0.6.8: the job is owned by ``user_id`` (caller must pass the
+    authenticated user's id; the helper does not derive it).
     """
     try:
         provider = MockVideoProvider()
@@ -2715,6 +2815,7 @@ def _create_mock_video_job_for_record(
         now = datetime.utcnow()
         job = VideoJobRepository.create_job(
             db=db,
+            user_id=user_id,
             history_id=record.id,
             provider=provider.provider_name,
             provider_job_id=response_payload.get("provider_job_id"),
@@ -2842,6 +2943,7 @@ def _load_apx_assets_for_record(record: VideoHistory) -> Dict[str, Any]:
 
 def _create_apx_video_job_for_record(
     db: Session,
+    user_id: int,
     record: VideoHistory,
     request_title: str,
 ) -> Optional[Dict[str, Any]]:
@@ -2953,6 +3055,7 @@ def _create_apx_video_job_for_record(
             }
             job = VideoJobRepository.create_job(
                 db=db,
+                user_id=user_id,
                 history_id=record.id,
                 provider=provider.provider_name,
                 provider_job_id=None,
@@ -3005,6 +3108,7 @@ def _create_apx_video_job_for_record(
             }
             job = VideoJobRepository.create_job(
                 db=db,
+                user_id=user_id,
                 history_id=record.id,
                 provider=provider.provider_name,
                 provider_job_id=None,
@@ -3055,6 +3159,7 @@ def _create_apx_video_job_for_record(
 
         job = VideoJobRepository.create_job(
             db=db,
+            user_id=user_id,
             history_id=record.id,
             provider=provider.provider_name,
             provider_job_id=submit_result.get("provider_job_id"),
@@ -3108,16 +3213,17 @@ def _create_apx_video_job_for_record(
 
 def _create_video_job_for_record(
     db: Session,
+    user_id: int,
     record: VideoHistory,
     request_title: str,
 ) -> Optional[Dict[str, Any]]:
     """v0.6.0 dispatcher: prefer the APX provider when configured, otherwise
     fall back to the Mock provider so the UI keeps showing a status panel.
     """
-    apx_job = _create_apx_video_job_for_record(db, record, request_title)
+    apx_job = _create_apx_video_job_for_record(db, user_id, record, request_title)
     if apx_job is not None:
         return apx_job
-    return _create_mock_video_job_for_record(db, record, request_title)
+    return _create_mock_video_job_for_record(db, user_id, record, request_title)
 
 
 # ---------------------------------------------------------------------------
@@ -3174,6 +3280,7 @@ def _stages_for_method(generation_method: str) -> tuple:
 
 def _video_run_init(
     run_id: str,
+    user_id: int,
     title: str,
     duration_seconds: Optional[int],
     generation_method: str = "seedance_video",
@@ -3193,6 +3300,7 @@ def _video_run_init(
     ]
     run = {
         "run_id": run_id,
+        "user_id": user_id,
         "title": title,
         "duration_seconds": duration_seconds,
         "generation_method": generation_method,
@@ -3291,6 +3399,7 @@ def _video_run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
 
 def _video_run_worker(
     run_id: str,
+    user_id: int,
     title: str,
     duration_seconds: Optional[int],
     generation_method: str = "seedance_video",
@@ -3302,7 +3411,7 @@ def _video_run_worker(
     # never calls APX/Seedance/Image2/TTS. We surface a compact 4-stage
     # progress so the home-page UI doesn't lie about which work happened.
     if generation_method == "image_video":
-        _run_image_video_worker(run_id, title, duration_seconds)
+        _run_image_video_worker(run_id, user_id, title, duration_seconds)
         return
 
     try:
@@ -3376,7 +3485,7 @@ def _video_run_worker(
         model = os.getenv("AI_VIDEO_LLM_MODEL", "gpt-5-chat")
         db = VideoSessionLocal()
         record = VideoHistoryRepository.create_history_record(
-            db=db, title=title, slug=slug, prompt_text=prompt_content,
+            db=db, user_id=user_id, title=title, slug=slug, prompt_text=prompt_content,
             output_dir=str(output_dir), model=model, mode="video",
             status="success", overview_cn=overview_cn, web_copy_text=None,
         )
@@ -3396,7 +3505,7 @@ def _video_run_worker(
         pipeline_preview_text = pipeline_result.get("preview_text") or ""
         asset_metadata_json = _build_video_assets_metadata_json(pipeline_result)
         record = VideoHistoryRepository.update_asset_pipeline_result(
-            db=db, history_id=history_id, prompt_text=provider_prompt_text,
+            db=db, user_id=user_id, history_id=history_id, prompt_text=provider_prompt_text,
             preview_text=pipeline_preview_text, overview_cn=pipeline_overview_cn,
             metadata_json=asset_metadata_json,
         ) or record
@@ -3434,7 +3543,7 @@ def _video_run_worker(
         # Stage 8: submit video job (APX when configured, otherwise Mock,
         # otherwise blocked_prompt_quality if the gate failed).
         _video_run_set_stage(run_id, "submit_video_job", "running")
-        video_job_dict = _create_video_job_for_record(db, record, title)
+        video_job_dict = _create_video_job_for_record(db, user_id, record, title)
         _video_run_set_stage(run_id, "submit_video_job", "done")
 
         # Stage 9: open video status panel — sentinel that signals the UI
@@ -3481,7 +3590,7 @@ def _video_run_worker(
 
 
 def _run_image_video_worker(
-    run_id: str, title: str, duration_seconds: Optional[int]
+    run_id: str, user_id: int, title: str, duration_seconds: Optional[int]
 ) -> None:
     """v0.6.3.2 — background worker for the Image Video route.
 
@@ -3541,7 +3650,7 @@ def _run_image_video_worker(
                              "Persisting video history record + assets.")
         db = VideoSessionLocal()
         record = VideoHistoryRepository.create_history_record(
-            db=db, title=title, slug=slug,
+            db=db, user_id=user_id, title=title, slug=slug,
             prompt_text=f"[Image Video] {title}",
             output_dir=str(output_dir),
             model="image_video_local_renderer",
@@ -3591,7 +3700,7 @@ def _run_image_video_worker(
                 image2_requested=int(pipeline_result.get("image2_requested") or 0),
             )
             VideoHistoryRepository.update_image_video_result(
-                db=db, history_id=history_id,
+                db=db, user_id=user_id, history_id=history_id,
                 video_file_path=relative_video_path,
                 video_duration_seconds=int(duration_for_image),
                 video_status="ready",
@@ -3614,7 +3723,7 @@ def _run_image_video_worker(
                 image2_requested=int(pipeline_result.get("image2_requested") or 0),
             )
             VideoHistoryRepository.update_image_video_result(
-                db=db, history_id=history_id,
+                db=db, user_id=user_id, history_id=history_id,
                 video_file_path=None,
                 video_duration_seconds=int(duration_for_image),
                 video_status="failed",
@@ -3653,14 +3762,15 @@ def _run_image_video_worker(
 
 
 @app.post("/api/video/generate/start")
-async def video_generate_start(request: VideoGenerateRequest) -> JSONResponse:
-    """v0.6.2 — kick off a Video Mode generation run in the background and
-    return a ``run_id`` immediately. The home-page progress UI polls
-    ``GET /api/video/generate/runs/{run_id}`` to render real per-stage
-    progress instead of advancing on a fake setInterval timer.
+async def video_generate_start(
+    request: VideoGenerateRequest,
+    current_user=Depends(require_active_user),
+) -> JSONResponse:
+    """v0.6.2 — kick off a Video Mode generation run in the background.
 
-    v0.6.3 — also accepts ``generation_method`` ("seedance_video" or
-    "image_video"). Invalid values return 400."""
+    v0.6.8: the ``run_id`` is bound to ``current_user.id`` so other
+    authenticated users can't poll it.
+    """
     title = (request.title or "").strip()
     if not title:
         return JSONResponse(
@@ -3677,10 +3787,10 @@ async def video_generate_start(request: VideoGenerateRequest) -> JSONResponse:
         )
     duration_seconds = request.duration_seconds
     run_id = uuid.uuid4().hex
-    _video_run_init(run_id, title, duration_seconds, generation_method)
+    _video_run_init(run_id, current_user.id, title, duration_seconds, generation_method)
     thread = threading.Thread(
         target=_video_run_worker,
-        args=(run_id, title, duration_seconds, generation_method),
+        args=(run_id, current_user.id, title, duration_seconds, generation_method),
         name=f"video-run-{run_id[:8]}",
         daemon=True,
     )
@@ -3699,10 +3809,17 @@ async def video_generate_start(request: VideoGenerateRequest) -> JSONResponse:
 
 
 @app.get("/api/video/generate/runs/{run_id}")
-async def video_generate_run_status(run_id: str) -> JSONResponse:
-    """Return the current snapshot of a Video Mode generation run."""
+async def video_generate_run_status(
+    run_id: str,
+    current_user=Depends(require_active_user),
+) -> JSONResponse:
+    """Return the current snapshot of a Video Mode generation run.
+
+    v0.6.8: 404s if the run isn't owned by the current user — same error code
+    as missing run, so existence isn't leaked to other authenticated users.
+    """
     snap = _video_run_snapshot(run_id)
-    if not snap:
+    if not snap or snap.get("user_id") != current_user.id:
         return JSONResponse(
             status_code=404,
             content={"success": False, "error": f"Run {run_id} not found"},
@@ -3805,6 +3922,7 @@ def _build_video_generate_provider_contract_response(
 async def video_generate(
     request: VideoGenerateRequest,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> JSONResponse:
     """
     Generate a Video Mode entry.
@@ -3862,6 +3980,7 @@ async def video_generate(
         try:
             record = VideoHistoryRepository.create_history_record(
                 db=db,
+                user_id=current_user.id,
                 title=title,
                 slug=slug,
                 prompt_text=f"[Image Video] {title}",
@@ -3875,6 +3994,7 @@ async def video_generate(
             )
             pipeline_result = _run_image_video_pipeline(
                 db=db,
+                user_id=current_user.id,
                 title=title,
                 slug=slug,
                 duration_seconds=duration_for_image,
@@ -3970,6 +4090,7 @@ async def video_generate(
             # outputs (overwritten with the pipeline result a few lines below).
             record = VideoHistoryRepository.create_history_record(
                 db=db,
+                user_id=current_user.id,
                 title=title,
                 slug=slug,
                 prompt_text=prompt_content,
@@ -4003,6 +4124,7 @@ async def video_generate(
 
             record = VideoHistoryRepository.update_asset_pipeline_result(
                 db=db,
+                user_id=current_user.id,
                 history_id=record.id,
                 prompt_text=provider_prompt_text,
                 preview_text=pipeline_preview_text,
@@ -4010,11 +4132,9 @@ async def video_generate(
                 metadata_json=asset_metadata_json,
             ) or record
 
-            # v0.6.0: create a VideoJob — APX Seedance provider when
-            # configured, otherwise fall back to the Mock shell. /api/video/generate
-            # never blocks waiting for the video to finish; the frontend polls
-            # via /api/video/jobs/{id}/refresh.
-            video_job_dict = _create_video_job_for_record(db, record, title)
+            # v0.6.0: create a VideoJob — APX Seedance provider when configured,
+            # otherwise fall back to the Mock shell.
+            video_job_dict = _create_video_job_for_record(db, current_user.id, record, title)
             return JSONResponse(content={
                 'success': True,
                 'id': record.id,
@@ -4097,15 +4217,16 @@ async def video_get_history(
     q: Optional[str] = None,
     date_filter: Optional[str] = None,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
     try:
         records = VideoHistoryRepository.list_history_records(
-            db, limit=limit, q=q, date_filter=date_filter,
+            db, current_user.id, limit=limit, q=q, date_filter=date_filter,
         )
         items = []
         for r in records:
             item = r.to_dict(include_prompt=False)
-            item['version_count'] = VideoHistoryRepository.get_version_count(db, r.topic_group_id)
+            item['version_count'] = VideoHistoryRepository.get_version_count(db, current_user.id, r.topic_group_id)
             items.append(item)
         return {"success": True, "items": items}
     except Exception as e:
@@ -4116,16 +4237,17 @@ async def video_get_history(
 async def video_get_history_by_id(
     history_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
     try:
-        record = VideoHistoryRepository.get_history_record(db, history_id)
+        record = VideoHistoryRepository.get_history_record(db, current_user.id, history_id)
         if not record:
             return JSONResponse(
                 status_code=404,
                 content={"success": False, "error": f"Video history record {history_id} not found"},
             )
         item = record.to_dict(include_prompt=True)
-        item['version_count'] = VideoHistoryRepository.get_version_count(db, record.topic_group_id)
+        item['version_count'] = VideoHistoryRepository.get_version_count(db, current_user.id, record.topic_group_id)
         return {"success": True, "item": item}
     except Exception as e:
         return JSONResponse(
@@ -4139,6 +4261,7 @@ async def video_update_content(
     history_id: int,
     request: VideoUpdateContentRequest,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
     """
     Update editable content for a Video Mode record.
@@ -4173,7 +4296,7 @@ async def video_update_content(
 
     try:
         record = VideoHistoryRepository.update_prompt_content(
-            db, history_id=history_id, view=view, content=content,
+            db, current_user.id, history_id=history_id, view=view, content=content,
         )
         if not record:
             return JSONResponse(
@@ -4192,12 +4315,11 @@ async def video_update_content(
 async def video_get_versions_by_group(
     topic_group_id: str,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """v0.5.1.2: return ``versions`` (matching Prompt Mode's contract) so the
-    frontend version dropdown works for Video Mode. ``items`` is preserved
-    for older callers that may still consume the original v0.5.1 shape."""
+    """v0.5.1.2: return ``versions`` for the frontend version dropdown."""
     try:
-        versions = VideoHistoryRepository.get_versions_by_group(db, topic_group_id)
+        versions = VideoHistoryRepository.get_versions_by_group(db, current_user.id, topic_group_id)
         if not versions:
             return JSONResponse(
                 status_code=404,
@@ -4234,12 +4356,10 @@ async def video_regenerate(
     history_id: int,
     request: VideoRegenerateRequest,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> JSONResponse:
-    """
-    Regenerate a Video Mode version using the same script as the original
-    generate flow. Saves to Video Mode database only.
-    """
-    record = VideoHistoryRepository.get_history_record(db, history_id)
+    """Regenerate a Video Mode version. Saves to Video Mode database only."""
+    record = VideoHistoryRepository.get_history_record(db, current_user.id, history_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -4316,6 +4436,7 @@ async def video_regenerate(
         # the real new history_id, then write the pipeline result back.
         new_record = VideoHistoryRepository.create_regenerated_version(
             db=db,
+            user_id=current_user.id,
             from_history_id=history_id,
             feedback=feedback,
             new_prompt_text=new_prompt,
@@ -4352,6 +4473,7 @@ async def video_regenerate(
 
         new_record = VideoHistoryRepository.update_asset_pipeline_result(
             db=db,
+            user_id=current_user.id,
             history_id=new_record.id,
             prompt_text=provider_prompt_text,
             preview_text=pipeline_preview_text,
@@ -4361,7 +4483,7 @@ async def video_regenerate(
 
         # v0.6.0: create a VideoJob for the new version — APX when configured,
         # Mock fallback otherwise. Non-blocking; client refreshes for status.
-        video_job_dict = _create_video_job_for_record(db, new_record, new_record.title)
+        video_job_dict = _create_video_job_for_record(db, current_user.id, new_record, new_record.title)
         return JSONResponse(content={
             "success": True,
             "id": new_record.id,
@@ -4430,8 +4552,12 @@ async def video_regenerate(
 
 
 @app.post("/api/video/history/{history_id}/pin")
-async def video_pin(history_id: int, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
-    record = VideoHistoryRepository.pin_history_record(db, history_id)
+async def video_pin(
+    history_id: int,
+    db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
+) -> Dict[str, Any]:
+    record = VideoHistoryRepository.pin_history_record(db, current_user.id, history_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -4441,8 +4567,12 @@ async def video_pin(history_id: int, db: Session = Depends(get_video_db)) -> Dic
 
 
 @app.post("/api/video/history/{history_id}/unpin")
-async def video_unpin(history_id: int, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
-    record = VideoHistoryRepository.unpin_history_record(db, history_id)
+async def video_unpin(
+    history_id: int,
+    db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
+) -> Dict[str, Any]:
+    record = VideoHistoryRepository.unpin_history_record(db, current_user.id, history_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -4456,16 +4586,11 @@ async def video_rename_history_group(
     topic_group_id: str,
     request: RenameRequest,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """
-    v0.5.1.2: Rename a Video Mode topic group.
-
-    Independent from Prompt Mode rename: this endpoint only writes to
-    data/video_history.db (via Depends(get_video_db)) and never touches
-    Prompt Mode tables. Mirrors the Prompt Mode rename response shape.
-    """
+    """v0.5.1.2: Rename a Video Mode topic group."""
     try:
-        ok = VideoHistoryRepository.rename_topic_group(db, topic_group_id, request.title)
+        ok = VideoHistoryRepository.rename_topic_group(db, current_user.id, topic_group_id, request.title)
         if not ok:
             return JSONResponse(
                 status_code=404,
@@ -4475,11 +4600,11 @@ async def video_rename_history_group(
                 },
             )
         # Return latest version as the canonical updated item.
-        versions = VideoHistoryRepository.get_versions_by_group(db, topic_group_id)
+        versions = VideoHistoryRepository.get_versions_by_group(db, current_user.id, topic_group_id)
         latest = max(versions, key=lambda r: r.version_number) if versions else None
         item = latest.to_dict(include_prompt=False) if latest else {}
         if latest:
-            item['version_count'] = VideoHistoryRepository.get_version_count(db, topic_group_id)
+            item['version_count'] = VideoHistoryRepository.get_version_count(db, current_user.id, topic_group_id)
         return {"success": True, "item": item}
     except Exception as e:
         return JSONResponse(
@@ -4489,8 +4614,12 @@ async def video_rename_history_group(
 
 
 @app.post("/api/video/history/group/{topic_group_id}/trash")
-async def video_trash_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
-    ok = VideoHistoryRepository.soft_delete_history_group(db, topic_group_id)
+async def video_trash_group(
+    topic_group_id: str,
+    db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
+) -> Dict[str, Any]:
+    ok = VideoHistoryRepository.soft_delete_history_group(db, current_user.id, topic_group_id)
     if not ok:
         return JSONResponse(
             status_code=404,
@@ -4500,8 +4629,12 @@ async def video_trash_group(topic_group_id: str, db: Session = Depends(get_video
 
 
 @app.post("/api/video/history/group/{topic_group_id}/restore")
-async def video_restore_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
-    ok = VideoHistoryRepository.restore_history_group(db, topic_group_id)
+async def video_restore_group(
+    topic_group_id: str,
+    db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
+) -> Dict[str, Any]:
+    ok = VideoHistoryRepository.restore_history_group(db, current_user.id, topic_group_id)
     if not ok:
         return JSONResponse(
             status_code=404,
@@ -4511,8 +4644,12 @@ async def video_restore_group(topic_group_id: str, db: Session = Depends(get_vid
 
 
 @app.delete("/api/video/history/group/{topic_group_id}/permanent")
-async def video_permanent_delete_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
-    ok = VideoHistoryRepository.permanently_delete_history_group(db, topic_group_id)
+async def video_permanent_delete_group(
+    topic_group_id: str,
+    db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
+) -> Dict[str, Any]:
+    ok = VideoHistoryRepository.permanently_delete_history_group(db, current_user.id, topic_group_id)
     if not ok:
         return JSONResponse(
             status_code=404,
@@ -4526,9 +4663,10 @@ async def video_list_trash(
     limit: int = 100,
     q: Optional[str] = None,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
     try:
-        records = VideoHistoryRepository.list_trash_records(db, limit=limit, q=q)
+        records = VideoHistoryRepository.list_trash_records(db, current_user.id, limit=limit, q=q)
         return {
             "success": True,
             "items": [r.to_dict(include_prompt=False) for r in records],
@@ -4538,8 +4676,12 @@ async def video_list_trash(
 
 
 @app.post("/api/video/history/group/{topic_group_id}/favorite")
-async def video_favorite_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
-    record = VideoHistoryRepository.favorite_history_group(db, topic_group_id)
+async def video_favorite_group(
+    topic_group_id: str,
+    db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
+) -> Dict[str, Any]:
+    record = VideoHistoryRepository.favorite_history_group(db, current_user.id, topic_group_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -4549,8 +4691,12 @@ async def video_favorite_group(topic_group_id: str, db: Session = Depends(get_vi
 
 
 @app.post("/api/video/history/group/{topic_group_id}/unfavorite")
-async def video_unfavorite_group(topic_group_id: str, db: Session = Depends(get_video_db)) -> Dict[str, Any]:
-    record = VideoHistoryRepository.unfavorite_history_group(db, topic_group_id)
+async def video_unfavorite_group(
+    topic_group_id: str,
+    db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
+) -> Dict[str, Any]:
+    record = VideoHistoryRepository.unfavorite_history_group(db, current_user.id, topic_group_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -4564,9 +4710,10 @@ async def video_list_favorites(
     limit: int = 100,
     q: Optional[str] = None,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
     try:
-        records = VideoHistoryRepository.list_favorite_records(db, limit=limit, q=q)
+        records = VideoHistoryRepository.list_favorite_records(db, current_user.id, limit=limit, q=q)
         return {
             "success": True,
             "items": [r.to_dict(include_prompt=False) for r in records],
@@ -4579,6 +4726,7 @@ async def video_list_favorites(
 async def video_download_all(
     history_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Any:
     """
     Read-only Download All for Video Mode.
@@ -4594,7 +4742,7 @@ async def video_download_all(
     import zipfile
     from fastapi.responses import StreamingResponse
 
-    record = VideoHistoryRepository.get_history_record(db, history_id)
+    record = VideoHistoryRepository.get_history_record(db, current_user.id, history_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -4690,7 +4838,7 @@ async def video_download_all(
     # v0.6.0: surface latest VideoJob (APX or Mock) and check whether a real
     # local mp4 exists inside project_root/outputs/. The remote APX video_url,
     # api-key, request headers, request_json/response_json are NEVER exported.
-    latest_job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+    latest_job = VideoJobRepository.get_latest_job_for_history(db, current_user.id, history_id)
     latest_job_provider = latest_job.provider if latest_job else None
     latest_job_status = latest_job.status if latest_job else None
     latest_job_stage = latest_job.stage if latest_job else None
@@ -4899,20 +5047,16 @@ def _resolve_safe_outputs_path(candidate: Optional[str]) -> Optional[Path]:
 async def video_create_job(
     history_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """v0.5.3: explicitly create a Mock VideoJob for an existing record.
-
-    Used when the Video Mode generate flow could not auto-create a job (e.g.
-    older record without a job, or user clicks a future "retry provider"
-    affordance). No real provider is contacted.
-    """
-    record = VideoHistoryRepository.get_history_record(db, history_id)
+    """v0.5.3: explicitly create a Mock VideoJob for an existing record."""
+    record = VideoHistoryRepository.get_history_record(db, current_user.id, history_id)
     if not record:
         return JSONResponse(
             status_code=404,
             content={"success": False, "error": f"Video history record {history_id} not found"},
         )
-    job_dict = _create_video_job_for_record(db, record, record.title or "")
+    job_dict = _create_video_job_for_record(db, current_user.id, record, record.title or "")
     if job_dict is None:
         return JSONResponse(
             status_code=500,
@@ -4925,15 +5069,16 @@ async def video_create_job(
 async def video_get_latest_job(
     history_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
     """Return the most recent VideoJob for a Video Mode record, or null."""
-    record = VideoHistoryRepository.get_history_record(db, history_id)
+    record = VideoHistoryRepository.get_history_record(db, current_user.id, history_id)
     if not record:
         return JSONResponse(
             status_code=404,
             content={"success": False, "error": f"Video history record {history_id} not found"},
         )
-    job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+    job = VideoJobRepository.get_latest_job_for_history(db, current_user.id, history_id)
     return {"success": True, "job": job.to_dict() if job else None}
 
 
@@ -4941,8 +5086,9 @@ async def video_get_latest_job(
 async def video_get_job_detail(
     job_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    job = VideoJobRepository.get_job(db, job_id)
+    job = VideoJobRepository.get_job(db, current_user.id, job_id)
     if not job:
         return JSONResponse(
             status_code=404,
@@ -4955,13 +5101,10 @@ async def video_get_job_detail(
 async def video_refresh_job(
     job_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    """Refresh a job. v0.6.0: when the job's provider is ``apx_seedance``,
-    poll the APX gateway and on success download the mp4 + cover into
-    ``outputs/<slug>/``, then update VideoJob + VideoHistory. The Mock
-    branch keeps its v0.5.3 ``provider_not_configured`` semantics.
-    """
-    job = VideoJobRepository.get_job(db, job_id)
+    """Refresh a job. v0.6.0: APX-aware. v0.6.8: scoped to current_user."""
+    job = VideoJobRepository.get_job(db, current_user.id, job_id)
     if not job:
         return JSONResponse(
             status_code=404,
@@ -4972,7 +5115,7 @@ async def video_refresh_job(
         return {"success": True, "job": job.to_dict()}
 
     if job.provider == "apx_seedance":
-        return _refresh_apx_job(db, job)
+        return _refresh_apx_job(db, current_user.id, job)
 
     if job.provider != "mock":
         return JSONResponse(
@@ -4987,6 +5130,7 @@ async def video_refresh_job(
     response_payload = provider.get_status(job.provider_job_id or "")
     updated = VideoJobRepository.update_job_status(
         db,
+        current_user.id,
         job_id=job_id,
         status=response_payload.get("status", "provider_not_configured"),
         stage=response_payload.get("stage", "provider_not_connected"),
@@ -4996,7 +5140,7 @@ async def video_refresh_job(
     return {"success": True, "job": updated.to_dict() if updated else None}
 
 
-def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
+def _refresh_apx_job(db: Session, user_id: int, job: VideoJob) -> Dict[str, Any]:
     """v0.6.0 APX refresh branch.
 
     Calls ``ApxSeedanceProvider.poll`` once per request. When status maps to
@@ -5015,6 +5159,7 @@ def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
     if not job.provider_job_id:
         updated = VideoJobRepository.update_job_status(
             db,
+            user_id,
             job_id=job.id,
             status="failed",
             stage="poll_failed",
@@ -5023,7 +5168,7 @@ def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
         )
         return {"success": True, "job": updated.to_dict() if updated else None}
 
-    record = VideoHistoryRepository.get_history_record(db, job.history_id)
+    record = VideoHistoryRepository.get_history_record(db, user_id, job.history_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -5043,6 +5188,7 @@ def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
     if status_value in ("pending", "running"):
         updated = VideoJobRepository.update_job_status(
             db,
+            user_id,
             job_id=job.id,
             status=status_value,
             stage=stage_value,
@@ -5068,6 +5214,7 @@ def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
         err = poll_result.get("error_message") or poll_result.get("message") or "APX failed."
         updated = VideoJobRepository.update_job_status(
             db,
+            user_id,
             job_id=job.id,
             status="failed",
             stage="failed",
@@ -5093,6 +5240,7 @@ def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
     if status_value == "succeeded_but_no_video_url":
         updated = VideoJobRepository.update_job_status(
             db,
+            user_id,
             job_id=job.id,
             status="succeeded_but_no_video_url",
             stage="video_url_missing",
@@ -5128,6 +5276,7 @@ def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
         err_msg = "Refused to download video outside project outputs directory."
         updated = VideoJobRepository.update_job_status(
             db,
+            user_id,
             job_id=job.id,
             status="failed",
             stage="download_failed",
@@ -5165,6 +5314,7 @@ def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
         err_msg = download_result.get("message") or "Video download failed."
         updated = VideoJobRepository.update_job_status(
             db,
+            user_id,
             job_id=job.id,
             status="failed",
             stage="download_failed",
@@ -5205,6 +5355,7 @@ def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
 
     updated = VideoJobRepository.update_job_status(
         db,
+        user_id,
         job_id=job.id,
         status="succeeded",
         stage="video_ready",
@@ -5252,15 +5403,16 @@ def _refresh_apx_job(db: Session, job: VideoJob) -> Dict[str, Any]:
 async def video_cancel_job(
     job_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    job = VideoJobRepository.get_job(db, job_id)
+    job = VideoJobRepository.get_job(db, current_user.id, job_id)
     if not job:
         return JSONResponse(
             status_code=404,
             content={"success": False, "error": f"VideoJob {job_id} not found"},
         )
     cancelled = VideoJobRepository.mark_cancelled(
-        db, job_id=job_id, message="Cancelled by user."
+        db, current_user.id, job_id=job_id, message="Cancelled by user."
     )
     return {"success": True, "job": cancelled.to_dict() if cancelled else None}
 
@@ -5273,8 +5425,9 @@ async def video_cancel_job(
 async def video_get_provider_contract(
     history_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    record = VideoHistoryRepository.get_history_record(db, history_id)
+    record = VideoHistoryRepository.get_history_record(db, current_user.id, history_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -5420,7 +5573,7 @@ async def video_get_provider_contract(
 
     # v0.6.0: surface live VideoJob state and APX configuration. We never
     # return the API key, request headers, or the remote APX video_url.
-    latest_job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+    latest_job = VideoJobRepository.get_latest_job_for_history(db, current_user.id, history_id)
     latest_job_provider = latest_job.provider if latest_job else None
     latest_job_status = latest_job.status if latest_job else None
     latest_job_stage = latest_job.stage if latest_job else None
@@ -5567,8 +5720,9 @@ async def video_get_provider_contract(
 async def video_dry_run_submit(
     job_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    job = VideoJobRepository.get_job(db, job_id)
+    job = VideoJobRepository.get_job(db, current_user.id, job_id)
     if not job:
         return JSONResponse(
             status_code=404,
@@ -5584,8 +5738,9 @@ async def video_dry_run_submit(
 async def video_dry_run_poll(
     job_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    job = VideoJobRepository.get_job(db, job_id)
+    job = VideoJobRepository.get_job(db, current_user.id, job_id)
     if not job:
         return JSONResponse(
             status_code=404,
@@ -5601,8 +5756,9 @@ async def video_dry_run_poll(
 async def video_dry_run_download(
     job_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Dict[str, Any]:
-    job = VideoJobRepository.get_job(db, job_id)
+    job = VideoJobRepository.get_job(db, current_user.id, job_id)
     if not job:
         return JSONResponse(
             status_code=404,
@@ -5619,6 +5775,7 @@ async def video_asset_video(
     history_id: int,
     download: bool = False,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Any:
     """Serve the video asset for a Video Mode record, if and only if a real
     file exists under project_root/outputs.
@@ -5629,7 +5786,7 @@ async def video_asset_video(
     trigger a real save dialog. The streamed bytes are unchanged; only the
     filename header changes. Local absolute paths are never exposed.
     """
-    record = VideoHistoryRepository.get_history_record(db, history_id)
+    record = VideoHistoryRepository.get_history_record(db, current_user.id, history_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -5638,7 +5795,7 @@ async def video_asset_video(
 
     candidate = record.video_file_path
     if not candidate:
-        latest_job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+        latest_job = VideoJobRepository.get_latest_job_for_history(db, current_user.id, history_id)
         if latest_job:
             candidate = latest_job.result_video_path
 
@@ -5666,11 +5823,10 @@ async def video_asset_video(
 async def video_asset_thumbnail(
     history_id: int,
     db: Session = Depends(get_video_db),
+    current_user=Depends(require_active_user),
 ) -> Any:
-    """Serve the thumbnail asset for a Video Mode record, with the same
-    outputs-only path safety as the video endpoint. 404 when missing.
-    """
-    record = VideoHistoryRepository.get_history_record(db, history_id)
+    """Serve the thumbnail asset for a Video Mode record."""
+    record = VideoHistoryRepository.get_history_record(db, current_user.id, history_id)
     if not record:
         return JSONResponse(
             status_code=404,
@@ -5679,7 +5835,7 @@ async def video_asset_thumbnail(
 
     candidate = record.video_thumbnail_path
     if not candidate:
-        latest_job = VideoJobRepository.get_latest_job_for_history(db, history_id)
+        latest_job = VideoJobRepository.get_latest_job_for_history(db, current_user.id, history_id)
         if latest_job:
             candidate = latest_job.result_thumbnail_path
 
@@ -5708,7 +5864,9 @@ async def video_asset_thumbnail(
 
 
 @app.get("/api/video/diagnostics/ffmpeg")
-async def video_diagnostics_ffmpeg() -> Dict[str, Any]:
+async def video_diagnostics_ffmpeg(
+    admin=Depends(require_admin),
+) -> Dict[str, Any]:
     """v0.6.3 stabilization — read-only FFmpeg discovery report.
 
     Reuses ``image_video_pipeline.resolve_ffmpeg_binary()`` so the

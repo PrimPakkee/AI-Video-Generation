@@ -28,6 +28,10 @@ class VideoHistory(VideoBase):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
+    # Owning user (v0.6.8+). Logical FK to auth.db users.id; not enforced at
+    # the SQLite layer.
+    user_id = Column(Integer, nullable=True, index=True)
+
     # User input + generated slug
     title = Column(String(500), nullable=False, index=True)
     slug = Column(String(200), nullable=False, unique=True, index=True)
@@ -164,6 +168,9 @@ class VideoJob(VideoBase):
     __tablename__ = "video_jobs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Owning user (v0.6.8+). Logical FK to auth.db users.id.
+    user_id = Column(Integer, nullable=True, index=True)
 
     # Foreign key to VideoHistory.id (no DB-level FK to keep migrations simple).
     history_id = Column(Integer, nullable=False, index=True)

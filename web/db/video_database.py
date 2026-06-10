@@ -90,5 +90,21 @@ def init_video_db():
                     "ADD COLUMN generation_method VARCHAR(40) "
                     "NOT NULL DEFAULT 'seedance_video'"
                 ))
+            # v0.6.8: user_id (NULL-allowed initially; backfilled by the
+            # one-shot migrate_legacy_to_founder.py script).
+            if "user_id" not in existing_columns:
+                conn.execute(text("ALTER TABLE video_history ADD COLUMN user_id INTEGER"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_video_history_user_id ON video_history(user_id)"))
     except Exception as exc:  # pragma: no cover - non-SQLite or schema oddities
-        print(f"[Video Mode] generation_method migration skipped: {exc}")
+        print(f"[Video Mode] video_history migration skipped: {exc}")
+
+    # v0.6.8 migration on video_jobs.
+    try:
+        with video_engine.begin() as conn:
+            cols = conn.execute(text("PRAGMA table_info(video_jobs)")).fetchall()
+            job_columns = {row[1] for row in cols}
+            if "user_id" not in job_columns:
+                conn.execute(text("ALTER TABLE video_jobs ADD COLUMN user_id INTEGER"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_video_jobs_user_id ON video_jobs(user_id)"))
+    except Exception as exc:  # pragma: no cover
+        print(f"[Video Mode] video_jobs.user_id migration skipped: {exc}")

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Video Generator</title>
+    <link rel="stylesheet" href="/static/auth.css">
+</head>
+<body class="auth-body">
+    <main class="auth-stage">
+        <section class="auth-hero" id="authHero">
+            <h1 class="auth-headline">AI Video Generator</h1>
+            <p class="auth-tagline" id="authTagline">Sign in to continue.</p>
+
+            <div class="auth-tabs" role="tablist">
+                <button type="button" class="auth-tab active" data-tab="login" role="tab" aria-selected="true">Sign in</button>
+                <button type="button" class="auth-tab" data-tab="register" role="tab" aria-selected="false">Create account</button>
+            </div>
+
+            <form id="authForm" class="auth-form" autocomplete="on">
+                <input type="email" name="email" id="authEmail" required autocomplete="email" placeholder="Email" />
+                <input type="password" name="password" id="authPassword" required autocomplete="current-password" minlength="8" placeholder="Password" />
+                <button type="submit" class="auth-submit" id="authSubmit">Continue</button>
+            </form>
+
+            <p class="auth-error hidden" id="authError"></p>
+            <p class="auth-info hidden" id="authInfo"></p>
+        </section>
+
+        <!-- Forced password change overlay (shown only when must_change_password=true) -->
+        <section class="auth-hero hidden" id="changeHero">
+            <h1 class="auth-headline">Set a new password</h1>
+            <p class="auth-tagline">First sign-in requires a fresh password. Choose 8+ characters.</p>
+
+            <form id="changeForm" class="auth-form">
+                <input type="password" id="changeOld" required minlength="1" autocomplete="current-password" placeholder="Current password" />
+                <input type="password" id="changeNew" required minlength="8" autocomplete="new-password" placeholder="New password" />
+                <input type="password" id="changeNew2" required minlength="8" autocomplete="new-password" placeholder="Confirm new password" />
+                <button type="submit" class="auth-submit" id="changeSubmit">Save and continue</button>
+            </form>
+            <p class="auth-error hidden" id="changeError"></p>
+        </section>
+    </main>
+
+    <script src="/static/auth.js" defer></script>
+</body>
+</html>

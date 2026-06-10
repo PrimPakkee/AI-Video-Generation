@@ -153,19 +153,45 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-#### 2. 启动 Web 应用
+#### 2. v0.6.8 多用户首次启用（仅一次）
+
+`.env` 里需要一个 `SESSION_SECRET`（32 字节随机十六进制）：
+
+```bash
+python -c 'import secrets; print(secrets.token_hex(32))' >> /tmp/secret
+echo "SESSION_SECRET=$(cat /tmp/secret)" >> .env
+```
+
+种创始人账号（默认密码会被打印到终端一次，首次登陆后强制改）：
+
+```bash
+python -m scripts.create_founder --email you@example.com
+```
+
+把现有所有历史记录回填到创始人名下：
+
+```bash
+python -m scripts.migrate_legacy_to_founder
+```
+
+两个脚本都是幂等的，重复跑不会出问题。
+
+#### 3. 启动 Web 应用
 
 ```bash
 python -m uvicorn web.app:app --reload --port 8000
 ```
 
-#### 3. 访问
+#### 4. 访问
 
 打开浏览器访问：
 
 ```
 http://127.0.0.1:8000
 ```
+
+未登录会跳转到 `/auth.html`。其他人需要先注册，然后由创始人在 Admin 面板
+（右上角 user chip 旁边的 Manage 按钮）点 Approve 才能登陆。
 
 ---
 

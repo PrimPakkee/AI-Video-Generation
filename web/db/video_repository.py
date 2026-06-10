@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Video Mode repository (v0.5.1)
+Video Mode repository (v0.5.1).
 
-CRUD layer for VideoHistory. Mirrors PromptHistoryRepository semantics so that
-the frontend can reuse list/version/pin/favorite/trash patterns transparently.
+CRUD layer for VideoHistory. Mirrors PromptHistoryRepository semantics so the
+frontend can reuse list/version/pin/favorite/trash patterns transparently.
 
 Strict isolation: every method accepts a Session bound to VideoSessionLocal
-(data/video_history.db). It must NEVER read or write the Prompt Mode
-database (data/prompt_history.db).
+(data/video_history.db). It must NEVER read or write the Prompt Mode database
+(data/prompt_history.db).
+
+v0.6.8: every public method takes ``user_id`` as the 2nd positional parameter
+and scopes its query by owner.
 """
 
 import re
@@ -22,12 +25,6 @@ from .video_models import VideoHistory
 
 
 def normalize_video_title(title: str) -> str:
-    """
-    Normalize a Video Mode title for version grouping.
-
-    Same rules as Prompt Mode normalize_title(): trim, lowercase, collapse
-    whitespace, strip common trailing punctuation. Chinese characters preserved.
-    """
     if not title:
         return ''
     normalized = title.strip().lower()
@@ -37,11 +34,11 @@ def normalize_video_title(title: str) -> str:
 
 
 class VideoHistoryRepository:
-    """CRUD operations on the video_history table."""
 
     @staticmethod
     def create_history_record(
         db: Session,
+        user_id: int,
         title: str,
         slug: str,
         prompt_text: str,
@@ -54,10 +51,10 @@ class VideoHistoryRepository:
         metadata_json: Optional[str] = None,
         generation_method: Optional[str] = None,
     ) -> VideoHistory:
-        """Create a new video history record with version management."""
         title_normalized = normalize_video_title(title)
 
         existing = db.query(VideoHistory).filter(
+            VideoHistory.user_id == user_id,
             VideoHistory.title_normalized == title_normalized,
             VideoHistory.deleted_at.is_(None),
         ).order_by(desc(VideoHistory.created_at)).first()
@@ -65,7 +62,8 @@ class VideoHistoryRepository:
         if existing and existing.topic_group_id:
             topic_group_id = existing.topic_group_id
             max_version = db.query(func.max(VideoHistory.version_number)).filter(
-                VideoHistory.topic_group_id == topic_group_id
+                VideoHistory.user_id == user_id,
+                VideoHistory.topic_group_id == topic_group_id,
             ).scalar() or 0
             version_number = max_version + 1
         else:
@@ -73,6 +71,7 @@ class VideoHistoryRepository:
             version_number = 1
 
         record = VideoHistory(
+            user_id=user_id,
             title=title,
             slug=slug,
             prompt_text=prompt_text,
@@ -97,19 +96,18 @@ class VideoHistoryRepository:
     @staticmethod
     def list_history_records(
         db: Session,
+        user_id: int,
         limit: int = 100,
         q: Optional[str] = None,
         date_filter: Optional[str] = None,
     ) -> List[VideoHistory]:
-        """Latest non-deleted version per topic group."""
         subquery = db.query(
             VideoHistory.topic_group_id,
             func.max(VideoHistory.version_number).label('max_version'),
         ).filter(
-            VideoHistory.deleted_at.is_(None)
-        ).group_by(
-            VideoHistory.topic_group_id
-        ).subquery()
+            VideoHistory.user_id == user_id,
+            VideoHistory.deleted_at.is_(None),
+        ).group_by(VideoHistory.topic_group_id).subquery()
 
         query = db.query(VideoHistory).join(
             subquery,
@@ -117,7 +115,10 @@ class VideoHistoryRepository:
                 VideoHistory.topic_group_id == subquery.c.topic_group_id,
                 VideoHistory.version_number == subquery.c.max_version,
             ),
-        ).filter(VideoHistory.deleted_at.is_(None))
+        ).filter(
+            VideoHistory.user_id == user_id,
+            VideoHistory.deleted_at.is_(None),
+        )
 
         if q:
             pattern = f"%{q}%"
@@ -153,28 +154,39 @@ class VideoHistoryRepository:
         return query.all()
 
     @staticmethod
-    def get_history_record(db: Session, history_id: int) -> Optional[VideoHistory]:
-        return db.query(VideoHistory).filter(VideoHistory.id == history_id).first()
-
-    @staticmethod
-    def get_by_slug(db: Session, slug: str) -> Optional[VideoHistory]:
-        return db.query(VideoHistory).filter(VideoHistory.slug == slug).first()
-
-    @staticmethod
-    def get_versions_by_group(db: Session, topic_group_id: str) -> List[VideoHistory]:
+    def get_history_record(db: Session, user_id: int, history_id: int) -> Optional[VideoHistory]:
         return db.query(VideoHistory).filter(
-            VideoHistory.topic_group_id == topic_group_id
+            VideoHistory.id == history_id,
+            VideoHistory.user_id == user_id,
+        ).first()
+
+    @staticmethod
+    def get_by_slug(db: Session, user_id: int, slug: str) -> Optional[VideoHistory]:
+        return db.query(VideoHistory).filter(
+            VideoHistory.slug == slug,
+            VideoHistory.user_id == user_id,
+        ).first()
+
+    @staticmethod
+    def get_versions_by_group(db: Session, user_id: int, topic_group_id: str) -> List[VideoHistory]:
+        return db.query(VideoHistory).filter(
+            VideoHistory.user_id == user_id,
+            VideoHistory.topic_group_id == topic_group_id,
         ).order_by(VideoHistory.version_number.asc()).all()
 
     @staticmethod
-    def get_version_count(db: Session, topic_group_id: str) -> int:
+    def get_version_count(db: Session, user_id: int, topic_group_id: str) -> int:
         return db.query(VideoHistory).filter(
-            VideoHistory.topic_group_id == topic_group_id
+            VideoHistory.user_id == user_id,
+            VideoHistory.topic_group_id == topic_group_id,
         ).count()
 
     @staticmethod
-    def pin_history_record(db: Session, history_id: int) -> Optional[VideoHistory]:
-        record = db.query(VideoHistory).filter(VideoHistory.id == history_id).first()
+    def pin_history_record(db: Session, user_id: int, history_id: int) -> Optional[VideoHistory]:
+        record = db.query(VideoHistory).filter(
+            VideoHistory.id == history_id,
+            VideoHistory.user_id == user_id,
+        ).first()
         if record:
             record.is_pinned = 1
             record.pinned_at = datetime.utcnow()
@@ -183,8 +195,11 @@ class VideoHistoryRepository:
         return record
 
     @staticmethod
-    def unpin_history_record(db: Session, history_id: int) -> Optional[VideoHistory]:
-        record = db.query(VideoHistory).filter(VideoHistory.id == history_id).first()
+    def unpin_history_record(db: Session, user_id: int, history_id: int) -> Optional[VideoHistory]:
+        record = db.query(VideoHistory).filter(
+            VideoHistory.id == history_id,
+            VideoHistory.user_id == user_id,
+        ).first()
         if record:
             record.is_pinned = 0
             record.pinned_at = None
@@ -193,8 +208,9 @@ class VideoHistoryRepository:
         return record
 
     @staticmethod
-    def soft_delete_history_group(db: Session, topic_group_id: str) -> bool:
+    def soft_delete_history_group(db: Session, user_id: int, topic_group_id: str) -> bool:
         records = db.query(VideoHistory).filter(
+            VideoHistory.user_id == user_id,
             VideoHistory.topic_group_id == topic_group_id,
             VideoHistory.deleted_at.is_(None),
         ).all()
@@ -207,8 +223,9 @@ class VideoHistoryRepository:
         return True
 
     @staticmethod
-    def restore_history_group(db: Session, topic_group_id: str) -> bool:
+    def restore_history_group(db: Session, user_id: int, topic_group_id: str) -> bool:
         records = db.query(VideoHistory).filter(
+            VideoHistory.user_id == user_id,
             VideoHistory.topic_group_id == topic_group_id,
             VideoHistory.deleted_at.isnot(None),
         ).all()
@@ -220,9 +237,10 @@ class VideoHistoryRepository:
         return True
 
     @staticmethod
-    def permanently_delete_history_group(db: Session, topic_group_id: str) -> bool:
+    def permanently_delete_history_group(db: Session, user_id: int, topic_group_id: str) -> bool:
         records = db.query(VideoHistory).filter(
-            VideoHistory.topic_group_id == topic_group_id
+            VideoHistory.user_id == user_id,
+            VideoHistory.topic_group_id == topic_group_id,
         ).all()
         if not records:
             return False
@@ -234,15 +252,17 @@ class VideoHistoryRepository:
     @staticmethod
     def list_trash_records(
         db: Session,
+        user_id: int,
         limit: int = 100,
         q: Optional[str] = None,
     ) -> List[VideoHistory]:
         subquery = db.query(
             VideoHistory.topic_group_id,
             func.max(VideoHistory.version_number).label('max_version'),
-        ).filter(VideoHistory.deleted_at.isnot(None)).group_by(
-            VideoHistory.topic_group_id
-        ).subquery()
+        ).filter(
+            VideoHistory.user_id == user_id,
+            VideoHistory.deleted_at.isnot(None),
+        ).group_by(VideoHistory.topic_group_id).subquery()
 
         query = db.query(VideoHistory).join(
             subquery,
@@ -250,7 +270,10 @@ class VideoHistoryRepository:
                 VideoHistory.topic_group_id == subquery.c.topic_group_id,
                 VideoHistory.version_number == subquery.c.max_version,
             ),
-        ).filter(VideoHistory.deleted_at.isnot(None))
+        ).filter(
+            VideoHistory.user_id == user_id,
+            VideoHistory.deleted_at.isnot(None),
+        )
 
         if q:
             query = query.filter(VideoHistory.title.like(f"%{q}%"))
@@ -258,9 +281,10 @@ class VideoHistoryRepository:
         return query.order_by(desc(VideoHistory.deleted_at)).limit(limit).all()
 
     @staticmethod
-    def favorite_history_group(db: Session, topic_group_id: str) -> Optional[VideoHistory]:
+    def favorite_history_group(db: Session, user_id: int, topic_group_id: str) -> Optional[VideoHistory]:
         records = db.query(VideoHistory).filter(
-            VideoHistory.topic_group_id == topic_group_id
+            VideoHistory.user_id == user_id,
+            VideoHistory.topic_group_id == topic_group_id,
         ).all()
         if not records:
             return None
@@ -274,9 +298,10 @@ class VideoHistoryRepository:
         return latest
 
     @staticmethod
-    def unfavorite_history_group(db: Session, topic_group_id: str) -> Optional[VideoHistory]:
+    def unfavorite_history_group(db: Session, user_id: int, topic_group_id: str) -> Optional[VideoHistory]:
         records = db.query(VideoHistory).filter(
-            VideoHistory.topic_group_id == topic_group_id
+            VideoHistory.user_id == user_id,
+            VideoHistory.topic_group_id == topic_group_id,
         ).all()
         if not records:
             return None
@@ -291,6 +316,7 @@ class VideoHistoryRepository:
     @staticmethod
     def list_favorite_records(
         db: Session,
+        user_id: int,
         limit: int = 100,
         q: Optional[str] = None,
     ) -> List[VideoHistory]:
@@ -298,6 +324,7 @@ class VideoHistoryRepository:
             VideoHistory.topic_group_id,
             func.max(VideoHistory.version_number).label('max_version'),
         ).filter(
+            VideoHistory.user_id == user_id,
             VideoHistory.deleted_at.is_(None),
             VideoHistory.is_favorite == 1,
         ).group_by(VideoHistory.topic_group_id).subquery()
@@ -309,6 +336,7 @@ class VideoHistoryRepository:
                 VideoHistory.version_number == subquery.c.max_version,
             ),
         ).filter(
+            VideoHistory.user_id == user_id,
             VideoHistory.deleted_at.is_(None),
             VideoHistory.is_favorite == 1,
         )
@@ -328,19 +356,17 @@ class VideoHistoryRepository:
     @staticmethod
     def update_asset_pipeline_result(
         db: Session,
+        user_id: int,
         history_id: int,
         prompt_text: Optional[str] = None,
         preview_text: Optional[str] = None,
         overview_cn: Optional[str] = None,
         metadata_json: Optional[str] = None,
     ) -> Optional[VideoHistory]:
-        """Write v0.5.4 Video Content Asset Pipeline outputs back onto an
-        existing VideoHistory record using only existing columns
-        (``prompt_text`` / ``preview_text`` / ``overview_cn`` /
-        ``metadata_json``). No schema change. Fields with ``None`` are left
-        untouched so callers can selectively update.
-        """
-        record = db.query(VideoHistory).filter(VideoHistory.id == history_id).first()
+        record = db.query(VideoHistory).filter(
+            VideoHistory.id == history_id,
+            VideoHistory.user_id == user_id,
+        ).first()
         if not record:
             return None
         if prompt_text is not None:
@@ -359,6 +385,7 @@ class VideoHistoryRepository:
     @staticmethod
     def update_image_video_result(
         db: Session,
+        user_id: int,
         history_id: int,
         video_file_path: Optional[str],
         video_duration_seconds: Optional[int],
@@ -368,13 +395,10 @@ class VideoHistoryRepository:
         overview_cn: Optional[str] = None,
         prompt_text: Optional[str] = None,
     ) -> Optional[VideoHistory]:
-        """v0.6.3 — persist the result of the local Image Video pipeline.
-
-        Writes ``video_file_path`` (relative outputs path), the duration, the
-        status, and optional preview/overview/metadata. Never touches Prompt
-        Mode tables.
-        """
-        record = db.query(VideoHistory).filter(VideoHistory.id == history_id).first()
+        record = db.query(VideoHistory).filter(
+            VideoHistory.id == history_id,
+            VideoHistory.user_id == user_id,
+        ).first()
         if not record:
             return None
         if video_file_path is not None:
@@ -399,17 +423,15 @@ class VideoHistoryRepository:
     @staticmethod
     def update_prompt_content(
         db: Session,
+        user_id: int,
         history_id: int,
         view: str,
         content: str,
     ) -> Optional[VideoHistory]:
-        """
-        Update content for a specific Video Mode view.
-
-        Allowed views: 'raw', 'preview', 'overview', 'web_copy'.
-        Other views (video, review) are not editable in v0.5.1.
-        """
-        record = db.query(VideoHistory).filter(VideoHistory.id == history_id).first()
+        record = db.query(VideoHistory).filter(
+            VideoHistory.id == history_id,
+            VideoHistory.user_id == user_id,
+        ).first()
         if not record:
             return None
 
@@ -432,21 +454,16 @@ class VideoHistoryRepository:
     @staticmethod
     def rename_topic_group(
         db: Session,
+        user_id: int,
         topic_group_id: str,
         new_title: str,
     ) -> bool:
-        """
-        v0.5.1.2: Rename all rows belonging to a Video Mode topic group.
-
-        Updates BOTH `title` and `title_normalized` so subsequent regenerations
-        keep grouping with the renamed records. Operates ONLY on
-        data/video_history.db — never touches Prompt Mode tables.
-        """
         new_title_clean = (new_title or '').strip()
         if not new_title_clean:
             return False
         records = db.query(VideoHistory).filter(
-            VideoHistory.topic_group_id == topic_group_id
+            VideoHistory.user_id == user_id,
+            VideoHistory.topic_group_id == topic_group_id,
         ).all()
         if not records:
             return False
@@ -462,6 +479,7 @@ class VideoHistoryRepository:
     @staticmethod
     def create_regenerated_version(
         db: Session,
+        user_id: int,
         from_history_id: int,
         feedback: str,
         new_prompt_text: str,
@@ -471,15 +489,20 @@ class VideoHistoryRepository:
         output_dir: str,
         model: Optional[str] = None,
     ) -> Optional[VideoHistory]:
-        original = db.query(VideoHistory).filter(VideoHistory.id == from_history_id).first()
+        original = db.query(VideoHistory).filter(
+            VideoHistory.id == from_history_id,
+            VideoHistory.user_id == user_id,
+        ).first()
         if not original:
             return None
 
         max_version = db.query(func.max(VideoHistory.version_number)).filter(
-            VideoHistory.topic_group_id == original.topic_group_id
+            VideoHistory.user_id == user_id,
+            VideoHistory.topic_group_id == original.topic_group_id,
         ).scalar() or 0
 
         new_record = VideoHistory(
+            user_id=user_id,
             title=original.title,
             slug=slug,
             prompt_text=new_prompt_text,

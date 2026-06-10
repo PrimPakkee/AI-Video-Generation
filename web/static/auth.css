@@ -1,0 +1,262 @@
+/* v0.6.8.1 — Auth page (Apple landing-style).
+   Full-bleed white background, centered hero, no card chrome, dark
+   submit button. Inputs are wide and roomy. */
+
+:root {
+    --auth-bg: #ffffff;
+    --auth-text: #1d1d1f;
+    --auth-muted: #6e6e73;
+    --auth-border: rgba(0, 0, 0, 0.16);
+    --auth-border-soft: rgba(0, 0, 0, 0.08);
+    --auth-input-bg: #f5f5f7;
+    --auth-input-bg-focus: #ffffff;
+    --auth-button: #1d1d1f;
+    --auth-button-hover: #2d2d2f;
+    --auth-button-text: #ffffff;
+    --auth-error-bg: rgba(255, 59, 48, 0.08);
+    --auth-error-text: #b22a22;
+    --auth-error-border: rgba(255, 59, 48, 0.18);
+    --auth-info-bg: rgba(29, 29, 31, 0.05);
+    --auth-info-text: #1d1d1f;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    height: 100%;
+}
+
+body.auth-body {
+    margin: 0;
+    background: var(--auth-bg);
+    color: var(--auth-text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    min-height: 100vh;
+    display: flex;
+}
+
+.auth-stage {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 24px 100px;
+    width: 100%;
+}
+
+.auth-hero {
+    width: 100%;
+    max-width: 520px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.auth-headline {
+    font-size: clamp(40px, 6vw, 64px);
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    line-height: 1.05;
+    margin: 0 0 14px;
+    color: var(--auth-text);
+}
+
+.auth-tagline {
+    font-size: clamp(16px, 1.6vw, 19px);
+    font-weight: 400;
+    color: var(--auth-muted);
+    margin: 0 0 40px;
+    letter-spacing: -0.005em;
+}
+
+.auth-tabs {
+    display: inline-flex;
+    gap: 28px;
+    margin-bottom: 36px;
+    border-bottom: 1px solid var(--auth-border-soft);
+    padding-bottom: 0;
+}
+
+.auth-tab {
+    border: 0;
+    background: transparent;
+    padding: 10px 4px 14px;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--auth-muted);
+    cursor: pointer;
+    position: relative;
+    letter-spacing: -0.005em;
+    transition: color 0.15s ease;
+}
+
+.auth-tab:hover { color: var(--auth-text); }
+
+.auth-tab.active {
+    color: var(--auth-text);
+}
+
+.auth-tab.active::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: var(--auth-text);
+    border-radius: 2px;
+}
+
+.auth-form {
+    width: 100%;
+    max-width: 440px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 0 auto;
+}
+
+.auth-form input {
+    height: 52px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    background: var(--auth-input-bg);
+    padding: 0 18px;
+    font-size: 16px;
+    color: var(--auth-text);
+    outline: none;
+    width: 100%;
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    font-family: inherit;
+}
+
+.auth-form input::placeholder {
+    color: var(--auth-muted);
+}
+
+.auth-form input:focus {
+    background: var(--auth-input-bg-focus);
+    border-color: var(--auth-text);
+    box-shadow: 0 0 0 4px rgba(29, 29, 31, 0.08);
+}
+
+/* v0.6.8.3 — eye-toggle for password inputs. The wrapper is created
+   programmatically in auth.js around every input[type=password]. The
+   <input> keeps its full 52px height; the button sits absolutely in the
+   right padding zone. */
+.auth-password-wrap {
+    position: relative;
+    width: 100%;
+}
+.auth-password-wrap input {
+    padding-right: 52px;
+}
+.auth-eye-btn {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
+    width: 40px;
+    height: 40px;
+    border: 0;
+    background: transparent;
+    color: var(--auth-muted);
+    cursor: pointer;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+.auth-eye-btn:hover {
+    color: var(--auth-text);
+    background: rgba(0, 0, 0, 0.04);
+}
+.auth-eye-btn:focus-visible {
+    outline: 2px solid var(--auth-text);
+    outline-offset: 1px;
+}
+.auth-eye-btn svg { width: 20px; height: 20px; display: block; }
+.auth-eye-btn .eye-on  { display: block; }
+.auth-eye-btn .eye-off { display: none; }
+.auth-eye-btn[data-revealed="true"] .eye-on  { display: none; }
+.auth-eye-btn[data-revealed="true"] .eye-off { display: block; }
+@media (prefers-color-scheme: dark) {
+    .auth-eye-btn:hover { background: rgba(255, 255, 255, 0.08); }
+}
+
+.auth-submit {
+    margin-top: 12px;
+    height: 52px;
+    border-radius: 12px;
+    border: 0;
+    background: var(--auth-button);
+    color: var(--auth-button-text);
+    font-size: 16px;
+    font-weight: 500;
+    letter-spacing: -0.005em;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.05s ease;
+    font-family: inherit;
+}
+
+.auth-submit:hover { background: var(--auth-button-hover); }
+.auth-submit:active { transform: scale(0.99); }
+.auth-submit:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.auth-error,
+.auth-info {
+    width: 100%;
+    max-width: 440px;
+    margin: 18px auto 0;
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 14px;
+    line-height: 1.45;
+    text-align: left;
+}
+
+.auth-error {
+    background: var(--auth-error-bg);
+    color: var(--auth-error-text);
+    border: 1px solid var(--auth-error-border);
+}
+
+.auth-info {
+    background: var(--auth-info-bg);
+    color: var(--auth-info-text);
+    border: 1px solid var(--auth-border-soft);
+}
+
+.hidden { display: none !important; }
+
+@media (max-width: 520px) {
+    .auth-stage { padding: 60px 20px 80px; }
+    .auth-headline { font-size: 36px; }
+    .auth-tagline { margin-bottom: 32px; }
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --auth-bg: #000000;
+        --auth-text: #f5f5f7;
+        --auth-muted: #98989d;
+        --auth-border: rgba(255, 255, 255, 0.18);
+        --auth-border-soft: rgba(255, 255, 255, 0.1);
+        --auth-input-bg: #1c1c1e;
+        --auth-input-bg-focus: #2c2c2e;
+        --auth-button: #f5f5f7;
+        --auth-button-hover: #e5e5ea;
+        --auth-button-text: #1d1d1f;
+        --auth-info-bg: rgba(255, 255, 255, 0.06);
+        --auth-info-text: #f5f5f7;
+    }
+    .auth-form input:focus {
+        border-color: var(--auth-text);
+        box-shadow: 0 0 0 4px rgba(245, 245, 247, 0.12);
+    }
+}
