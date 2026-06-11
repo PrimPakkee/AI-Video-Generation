@@ -2,6 +2,68 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.6.8.4 - TTS metadata bugfix：edge-tts 依赖 + 真实状态透传
+
+> 最小 bugfix。**不动数据库 schema、不重构 pipeline、不动审批 / Seedance 主链路**。
+> 单纯修三件事：(1) `requirements.txt` 补上 `edge-tts`，fresh install 不再
+> 因为缺包导致 narration 阶段 `import_failed`；(2) Image Video 的成功
+> 旁白来源命名从误写的 `elevenlabs` 改为真实的 `edge_tts`；(3) 后端
+> `_build_image_video_metadata_json()` / `image_video` response 字段 /
+> `provider-contract` payload / 前端 main.js 全部停止硬编码
+> `tts_status="not_implemented_v0.6.5"` / `has_audio=False` /
+> `tts_called=False`，改为从 `pipeline_result` 真实透传，让 UI Generation
+> Evidence 显示真实状态。异步 `/api/video/generate/start` + run polling
+> 主链路保持不变。
+
+### 修改
+- `requirements.txt` 加 `edge-tts>=6.1.0`。
+- `web/image_video_pipeline.py` 成功路径 `voiceover_source: "elevenlabs"
+  if narration_status == "succeeded" else "none"` → `"edge_tts" if ...`。
+  6 处 early-return placeholder 把 `tts_status="not_implemented_v0.6.5"`
+  改为更准确的 `"not_started"`（这一阶段根本没跑到）。
+- `web/app.py` `_build_image_video_metadata_json()` 的 `image_video.has_audio`
+  / `tts_status` / `voiceover_source` 改为真实透传；顶层 `tts_called` 也从
+  pipeline 取真值。
+- `web/app.py` `/api/video/generate` 同步响应里的 `image_video` 子对象
+  和 `generation_evidence` 子对象同样改为真实透传，新增了 evidence 里
+  缺失的 `tts_status` / `voiceover_source` / `has_audio` 三个字段。
+- `web/app.py` `/api/video/history/{id}/provider-contract` 端点对
+  image_video 记录重建 payload 时，从 DB metadata 读真实 `has_audio` /
+  `tts_status` / `voiceover_source` / `tts_called`，不再写死 false。
+- `web/app.py` 新增 `_describe_audio_status()` helper，把 Overview 文本
+  里的「音频/旁白」一行从硬编码 `not_implemented_v0.6.3` 改为按真实状态
+  渲染（已生成 / 仅背景音乐 / 未生成 三种）。`_build_image_video_overview_text()`
+  签名加了 `tts_status` / `voiceover_source` / `has_audio`，4 处调用处
+  全部把 pipeline 真值串到这。
+- `web/static/main.js` `renderGenerationEvidencePanel()` 的 `tts_called` /
+  `has_audio` / `tts_status` 默认值改为读 `evidence` / `meta` 真值，不
+  再默认 false / `not_implemented_v0.6.3`。
+- `web/static/index.html` 的默认 `tts_status` placeholder 文案从
+  `not_implemented_v0.6.5` 改为 `unknown`。
+- `scripts/smoke_image_video_pipeline.py` 接受 `tts_status="not_started"`
+  作为 smoke 期望（旧版 `not_implemented_v0.6.5` 已删）。
+- `scripts/run_stability_checks.py` 三项新检查：(1) `requirements.txt`
+  必须含 `edge-tts`；(2) 仓库代码不得再出现旧的硬编码字符串
+  `not_implemented_v0.6.5` / `not_implemented_v0.6.3`；(3) image_video
+  pipeline 成功路径 `voiceover_source` 必须是 `edge_tts`，不得是
+  `elevenlabs`。STABILITY_CHECKS_VERSION 升到 `v0.6.8.4`。
+- README 当前版本号从 v0.6.8.1 升到 v0.6.8.4。
+
+### 不做
+- 不改数据库 schema、不重建表。
+- 不动审批 / Seedance / APX / Image2 / 异步 run store / 任务系统。
+- 不动 UI 大布局。
+- 不引入 ElevenLabs 真实 TTS。
+- 不动 `.env`。
+
+### 验收
+- `python3 -m compileall -q web scripts` 通过。
+- `python3 scripts/run_stability_checks.py` v0.6.8.4 检查通过。
+- `python3 -c "import edge_tts; print('edge_tts ok')"` 通过（前提：当前
+  环境已 `pip install -r requirements.txt`）。
+
+---
+
 ## v0.6.8.1 - Auth UX 抛光：登陆页换苹果风 + Settings 加 Account 面板
 
 > v0.6.8 用了一晚上发现登陆页太"小框感"、按钮蓝色不搭工具风格，而且改邮箱

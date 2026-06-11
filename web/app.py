@@ -2319,18 +2319,25 @@ def _build_image_video_metadata_json(pipeline_result: Dict[str, Any]) -> str:
             "bgm_disabled_by_env": bool(pipeline_result.get("bgm_disabled_by_env")),
             "bgm_fallback_used": bool(pipeline_result.get("bgm_fallback_used")),
             "bgm_fallback_reason": pipeline_result.get("bgm_fallback_reason"),
-            "has_audio": bool(pipeline_result.get("bgm_used")),
-            "tts_status": "not_implemented_v0.6.5",
-            "voiceover_source": "none",
+            # v0.6.8.4 — pass through real TTS metadata. Image Video has
+            # actually shipped edge-tts narration since v0.6.7; the
+            # previous hardcoded "not implemented" + has_audio=bgm-only
+            # made the UI lie about generated videos.
+            "has_audio": bool(
+                pipeline_result.get("has_audio")
+                or pipeline_result.get("bgm_used")
+            ),
+            "tts_status": pipeline_result.get("tts_status") or "unknown",
+            "voiceover_source": pipeline_result.get("voiceover_source") or "none",
         },
         # v0.6.3 stabilization + v0.6.4 — distinguish content LLM (text)
         # from media APIs (Image2 / Seedance / APX / TTS). The image_video
-        # route never calls Seedance/APX/TTS; it MAY call image2 in v0.6.4
-        # when APX_IMAGE2_ENABLED=true. `media_api_called` flips true only
-        # for media providers; `network_call_performed` is preserved as
-        # the broader signal that any external network call happened
-        # (image2 OR LLM). `llm_network_call_performed` is the LLM-only
-        # subset.
+        # route never calls Seedance/APX; it MAY call image2 in v0.6.4
+        # when APX_IMAGE2_ENABLED=true and edge-tts since v0.6.7.
+        # `media_api_called` flips true only for media providers;
+        # `network_call_performed` is preserved as the broader signal
+        # that any external network call happened (image2 OR LLM).
+        # `llm_network_call_performed` is the LLM-only subset.
         "external_api_called": bool(pipeline_result.get("external_api_called")),
         "content_llm_called": bool(pipeline_result.get("content_llm_called")),
         "media_api_called": bool(pipeline_result.get("media_api_called")),
@@ -2341,7 +2348,7 @@ def _build_image_video_metadata_json(pipeline_result: Dict[str, Any]) -> str:
         "image2_succeeded": int(pipeline_result.get("image2_succeeded") or 0),
         "image2_failed": int(pipeline_result.get("image2_failed") or 0),
         "image2_requested": int(pipeline_result.get("image2_requested") or 0),
-        "tts_called": False,
+        "tts_called": bool(pipeline_result.get("tts_called")),
         "llm_used": bool(pipeline_result.get("llm_used")),
         "real_video_generated": pipeline_result.get("route_status") == "succeeded",
         "real_video_downloaded": False,
@@ -2361,10 +2368,36 @@ def _build_image_video_metadata_json(pipeline_result: Dict[str, Any]) -> str:
         }, ensure_ascii=False)
 
 
+def _describe_audio_status(
+    tts_status: Optional[str],
+    voiceover_source: Optional[str],
+    has_audio: Optional[bool],
+) -> str:
+    """v0.6.8.4 — render the human-readable audio/旁白 line for the
+    Overview metadata block. Reflects real TTS state instead of the
+    old hardcoded "not_implemented" line."""
+    src = (voiceover_source or "none").lower()
+    status = (tts_status or "").lower()
+    if status == "succeeded" and src and src != "none":
+        provider_label = {
+            "edge_tts": "edge-tts",
+            "elevenlabs": "ElevenLabs",
+        }.get(src, src)
+        return f"已生成（has_audio=true, voiceover={provider_label}, tts_status={status}）"
+    if has_audio:
+        return f"仅背景音乐（has_audio=true, tts_status={status or 'unknown'}）"
+    if status in ("tts_failed", "import_failed"):
+        return f"未生成（tts_status={status}）"
+    return f"未生成（has_audio=false, tts_status={status or 'unknown'}）"
+
+
 def _build_image_video_overview_text(
     title: str, duration_seconds: int, slide_count: int, route_status: str,
     llm_overview_cn: Optional[str] = None,
     image2_succeeded: int = 0, image2_failed: int = 0, image2_requested: int = 0,
+    tts_status: Optional[str] = None,
+    voiceover_source: Optional[str] = None,
+    has_audio: Optional[bool] = None,
 ) -> str:
     """Build the Overview-tab text for image_video records.
 
@@ -2399,7 +2432,7 @@ def _build_image_video_overview_text(
         f"画面来源: {image_source_label}\n"
         f"合成方式: 本地 FFmpeg\n"
         f"文案来源: {'LLM (gpt-5-chat)' if llm_overview_cn else '本地静态模板（LLM 未启用或失败）'}\n"
-        f"音频/旁白: 本版本未生成（has_audio=false, tts_status=not_implemented_v0.6.3）\n"
+        f"音频/旁白: {_describe_audio_status(tts_status, voiceover_source, has_audio)}\n"
         f"是否调用 Seedance: 否\n"
         f"是否调用 APX: 否\n"
         f"是否调用 Image2: {image2_called_label}\n"
@@ -2579,6 +2612,12 @@ def _run_image_video_pipeline(
             image2_succeeded=int(pipeline_result.get("image2_succeeded") or 0),
             image2_failed=int(pipeline_result.get("image2_failed") or 0),
             image2_requested=int(pipeline_result.get("image2_requested") or 0),
+            tts_status=pipeline_result.get("tts_status"),
+            voiceover_source=pipeline_result.get("voiceover_source"),
+            has_audio=bool(
+                pipeline_result.get("has_audio")
+                or pipeline_result.get("bgm_used")
+            ),
         )
         VideoHistoryRepository.update_image_video_result(
             db=db,
@@ -2604,6 +2643,12 @@ def _run_image_video_pipeline(
             image2_succeeded=int(pipeline_result.get("image2_succeeded") or 0),
             image2_failed=int(pipeline_result.get("image2_failed") or 0),
             image2_requested=int(pipeline_result.get("image2_requested") or 0),
+            tts_status=pipeline_result.get("tts_status"),
+            voiceover_source=pipeline_result.get("voiceover_source"),
+            has_audio=bool(
+                pipeline_result.get("has_audio")
+                or pipeline_result.get("bgm_used")
+            ),
         )
         VideoHistoryRepository.update_image_video_result(
             db=db,
@@ -2698,9 +2743,15 @@ def _build_image_video_response_payload(
             "bgm_disabled_by_env": bool(pipeline_result.get("bgm_disabled_by_env")),
             "bgm_fallback_used": bool(pipeline_result.get("bgm_fallback_used")),
             "bgm_fallback_reason": pipeline_result.get("bgm_fallback_reason"),
-            "has_audio": bool(pipeline_result.get("bgm_used")),
-            "tts_status": "not_implemented_v0.6.5",
-            "voiceover_source": "none",
+            # v0.6.8.4 — pass real TTS metadata through to the response,
+            # so the frontend Generation Evidence panel can show
+            # "voiceover=edge_tts" instead of the old "not implemented".
+            "has_audio": bool(
+                pipeline_result.get("has_audio")
+                or pipeline_result.get("bgm_used")
+            ),
+            "tts_status": pipeline_result.get("tts_status") or "unknown",
+            "voiceover_source": pipeline_result.get("voiceover_source") or "none",
         },
         "generation_evidence": {
             "route": "image_video",
@@ -2713,7 +2764,13 @@ def _build_image_video_response_payload(
             "image2_succeeded": int(pipeline_result.get("image2_succeeded") or 0),
             "image2_failed": int(pipeline_result.get("image2_failed") or 0),
             "image2_requested": int(pipeline_result.get("image2_requested") or 0),
-            "tts_called": False,
+            "tts_called": bool(pipeline_result.get("tts_called")),
+            "tts_status": pipeline_result.get("tts_status") or "unknown",
+            "voiceover_source": pipeline_result.get("voiceover_source") or "none",
+            "has_audio": bool(
+                pipeline_result.get("has_audio")
+                or pipeline_result.get("bgm_used")
+            ),
             "bgm_used": bool(pipeline_result.get("bgm_used")),
             "bgm_display_name": pipeline_result.get("bgm_display_name"),
             "bgm_volume_db": pipeline_result.get("bgm_volume_db"),
@@ -3715,6 +3772,12 @@ def _run_image_video_worker(
                 image2_succeeded=int(pipeline_result.get("image2_succeeded") or 0),
                 image2_failed=int(pipeline_result.get("image2_failed") or 0),
                 image2_requested=int(pipeline_result.get("image2_requested") or 0),
+                tts_status=pipeline_result.get("tts_status"),
+                voiceover_source=pipeline_result.get("voiceover_source"),
+                has_audio=bool(
+                    pipeline_result.get("has_audio")
+                    or pipeline_result.get("bgm_used")
+                ),
             )
             VideoHistoryRepository.update_image_video_result(
                 db=db, user_id=user_id, history_id=history_id,
@@ -3738,6 +3801,12 @@ def _run_image_video_worker(
                 image2_succeeded=int(pipeline_result.get("image2_succeeded") or 0),
                 image2_failed=int(pipeline_result.get("image2_failed") or 0),
                 image2_requested=int(pipeline_result.get("image2_requested") or 0),
+                tts_status=pipeline_result.get("tts_status"),
+                voiceover_source=pipeline_result.get("voiceover_source"),
+                has_audio=bool(
+                    pipeline_result.get("has_audio")
+                    or pipeline_result.get("bgm_used")
+                ),
             )
             VideoHistoryRepository.update_image_video_result(
                 db=db, user_id=user_id, history_id=history_id,
@@ -5493,8 +5562,12 @@ async def video_get_provider_contract(
             "image2_failed": image2_failed,
             "image2_requested": image2_requested,
             "llm_model": iv.get("llm_model"),
-            "has_audio": False,
-            "tts_status": iv.get("tts_status") or "not_implemented_v0.6.3",
+            # v0.6.8.4 — pull TTS metadata from the persisted image_video
+            # blob so historical records served via provider-contract
+            # also reflect the real edge-tts state.
+            "has_audio": bool(iv.get("has_audio") or meta_blob.get("has_audio")),
+            "tts_status": iv.get("tts_status") or "unknown",
+            "voiceover_source": iv.get("voiceover_source") or "none",
         }
         return {
             "success": True,
@@ -5516,7 +5589,10 @@ async def video_get_provider_contract(
                 "image2_succeeded": image2_succeeded,
                 "image2_failed": image2_failed,
                 "image2_requested": image2_requested,
-                "tts_called": False,
+                "tts_called": bool(meta_blob.get("tts_called")),
+                "tts_status": iv.get("tts_status") or "unknown",
+                "voiceover_source": iv.get("voiceover_source") or "none",
+                "has_audio": bool(iv.get("has_audio") or meta_blob.get("has_audio")),
                 "llm_used_for_text": bool(iv.get("llm_used")),
                 "llm_model": iv.get("llm_model"),
                 "local_slides_generated": True,

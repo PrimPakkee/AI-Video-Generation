@@ -86,9 +86,13 @@ def _check_pipeline(generate_fn, resolve_fn, ranges, title: str, duration: int,
                 f"--with-bgm set but has_audio=False (bgm_track={result.get('bgm_filename')!r}, "
                 f"reason={result.get('bgm_fallback_reason')!r})"
             )
-    if result.get("tts_status") != "not_implemented_v0.6.5":
+    # v0.6.8.4 — smoke runs with TTS disabled (no narration phase reached),
+    # so the pipeline returns tts_status="not_started". Accept any non-
+    # success status; success would imply edge-tts was actually called.
+    tts_status = result.get("tts_status")
+    if tts_status == "succeeded":
         failures.append(
-            f"tts_status={result.get('tts_status')} != 'not_implemented_v0.6.5'"
+            f"tts_status='succeeded' but TTS should not run in smoke mode"
         )
 
     slide_plan_path = result.get("slide_plan_path")

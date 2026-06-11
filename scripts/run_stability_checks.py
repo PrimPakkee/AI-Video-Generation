@@ -9,7 +9,7 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.6.5"
+STABILITY_CHECKS_VERSION = "v0.6.8.4"
 
 import sys
 import os
@@ -4550,11 +4550,14 @@ class StabilityChecker:
                         f"pipeline mentions output artifact '{needle}'")
 
         # 5. has_audio / tts_status flags present.
-        assert_true("not_implemented_v0.6.5" in pipeline_text,
-                    "pipeline marks tts_status='not_implemented_v0.6.5'")
-        assert_true('"has_audio": False' in pipeline_text or '"has_audio":False' in pipeline_text
-                    or "'has_audio': False" in pipeline_text,
-                    "pipeline marks has_audio=False")
+        # v0.6.8.4 — narration is real now (edge-tts since v0.6.7), so the
+        # old assertions that the pipeline hardcoded
+        # tts_status='not_implemented_v0.6.5' / has_audio=False are
+        # obsolete. Just confirm the keys exist somewhere in the pipeline.
+        assert_true('"tts_status"' in pipeline_text,
+                    "pipeline emits tts_status field")
+        assert_true('"has_audio"' in pipeline_text,
+                    "pipeline emits has_audio field")
 
         # 6. shutil.which("ffmpeg") graceful failure.
         assert_true('shutil.which("ffmpeg")' in pipeline_text,
@@ -5138,6 +5141,115 @@ class StabilityChecker:
             print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} BGM integration checks failed")
             self.checks_failed += 1
 
+    def check_v0684_tts_metadata(self):
+        """v0.6.8.4 — three lightweight checks:
+
+        1. requirements.txt declares edge-tts.
+        2. Hardcoded TTS placeholders not_implemented_v0.6.5 /
+           not_implemented_v0.6.3 are gone from the codebase (they were
+           lying about the UI state since edge-tts shipped in v0.6.7).
+        3. The image_video pipeline's success-path voiceover_source is
+           edge_tts, NOT elevenlabs.
+        """
+        print("\n[v0.6.8.4 TTS metadata bugfix]")
+
+        results = []
+
+        def assert_true(cond, msg):
+            results.append((bool(cond), msg))
+
+        try:
+            req_path = Path("requirements.txt")
+            req_text = req_path.read_text(encoding="utf-8") if req_path.exists() else ""
+            assert_true(
+                "edge-tts" in req_text or "edge_tts" in req_text,
+                "requirements.txt declares edge-tts",
+            )
+
+            # Scan code (web/ + scripts/) for stale TTS placeholders. We
+            # whitelist this script itself + CHANGELOG.md so historical
+            # references in changelogs don't trigger.
+            stale_markers = ("not_implemented_v0.6.5", "not_implemented_v0.6.3")
+            offenders = []
+            scan_roots = [Path("web"), Path("scripts")]
+            self_path = Path("scripts/run_stability_checks.py").resolve()
+            for root in scan_roots:
+                if not root.exists():
+                    continue
+                for p in root.rglob("*"):
+                    if not p.is_file():
+                        continue
+                    if p.suffix not in (".py", ".js", ".html", ".css", ".md"):
+                        continue
+                    if p.resolve() == self_path:
+                        continue
+                    try:
+                        text = p.read_text(encoding="utf-8")
+                    except Exception:
+                        continue
+                    for marker in stale_markers:
+                        if marker in text:
+                            offenders.append(f"{p} contains {marker!r}")
+            assert_true(
+                not offenders,
+                "no hardcoded not_implemented_v0.6.x markers in code"
+                + (f" (offenders: {offenders})" if offenders else ""),
+            )
+
+            pipeline_path = Path("web/image_video_pipeline.py")
+            pipeline_text = (
+                pipeline_path.read_text(encoding="utf-8")
+                if pipeline_path.exists() else ""
+            )
+            assert_true(
+                '"voiceover_source": "edge_tts"' in pipeline_text,
+                "pipeline success path uses voiceover_source='edge_tts'",
+            )
+            assert_true(
+                '"voiceover_source": "elevenlabs"' not in pipeline_text,
+                "pipeline does NOT mislabel voiceover_source as 'elevenlabs'",
+            )
+
+            # The frontend should no longer default to the old marker.
+            mainjs_path = Path("web/static/main.js")
+            mainjs_text = (
+                mainjs_path.read_text(encoding="utf-8")
+                if mainjs_path.exists() else ""
+            )
+            assert_true(
+                "not_implemented_v0.6.3" not in mainjs_text,
+                "main.js does not default tts_status to not_implemented_v0.6.3",
+            )
+
+            indexhtml_path = Path("web/static/index.html")
+            indexhtml_text = (
+                indexhtml_path.read_text(encoding="utf-8")
+                if indexhtml_path.exists() else ""
+            )
+            assert_true(
+                "not_implemented_v0.6.5" not in indexhtml_text,
+                "index.html does not show not_implemented_v0.6.5 default",
+            )
+        except Exception as e:
+            self.checks_failed += 1
+            print(f"  [FAIL] check_v0684_tts_metadata raised: {e}")
+            return False
+
+        all_ok = True
+        for ok, msg in results:
+            if ok:
+                print(f"  [OK] {msg}")
+            else:
+                all_ok = False
+                print(f"  [FAIL] {msg}")
+        if all_ok:
+            self.checks_passed += 1
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} TTS metadata bugfix checks passed")
+            return True
+        self.checks_failed += 1
+        print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} TTS metadata bugfix checks failed")
+        return False
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -5240,6 +5352,7 @@ def main():
         checker.check_v063_stabilization()
         checker.check_v064_image2_integration()
         checker.check_v065_bgm_integration()
+        checker.check_v0684_tts_metadata()
         checker.check_git_status_hygiene()
         checker.check_database_integrity()
     except Exception as e:

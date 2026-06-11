@@ -23,6 +23,11 @@ requests>=2.31.0
 # Seedance / TTS calls are made.
 Pillow>=10.0.0
 
+# v0.6.7+ — TTS narration via Microsoft edge-tts (free, no API key).
+# Used by web/audio_providers/edge_tts_provider.py to generate the
+# English voiceover for Image Video.
+edge-tts>=6.1.0
+
 # v0.6.8 — auth (login/register + admin approval)
 # bcrypt: password hashing for the users table
 # itsdangerous: required by Starlette's SessionMiddleware for the

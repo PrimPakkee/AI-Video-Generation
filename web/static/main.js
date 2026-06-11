@@ -2122,7 +2122,12 @@ function renderGenerationEvidencePanel(record, payload) {
     const bgmVol = (evidence.bgm_volume_db != null
         ? evidence.bgm_volume_db : meta.bgm_volume_db);
     set('bgm_volume_db', (bgmUsed && bgmVol != null) ? `${bgmVol} dB` : null);
-    set('tts_called', false);
+    // v0.6.8.4 — read real TTS metadata from the response. Image Video
+    // has actually shipped edge-tts narration since v0.6.7, so the old
+    // hardcoded "tts_called=false / has_audio=false" was a UI lie.
+    set('tts_called', Boolean(
+        (evidence && evidence.tts_called) || (meta && meta.tts_called)
+    ));
     set('local_slides_generated', evidence.local_slides_generated != null
         ? !!evidence.local_slides_generated : true);
     set('ffmpeg_composed', !!evidence.ffmpeg_composed);
@@ -2130,8 +2135,11 @@ function renderGenerationEvidencePanel(record, payload) {
     set('slide_count', meta.slide_count);
     set('duration_seconds', meta.duration_seconds != null
         ? `${meta.duration_seconds}s` : null);
-    set('has_audio', false);
-    set('tts_status', meta.tts_status || 'not_implemented_v0.6.3');
+    set('has_audio', Boolean(
+        (evidence && evidence.has_audio) || (meta && meta.has_audio)
+    ));
+    set('tts_status',
+        (meta && meta.tts_status) || (evidence && evidence.tts_status) || 'unknown');
 }
 
 function renderProviderEvidencePanel(historyId, payload) {
