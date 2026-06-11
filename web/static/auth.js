@@ -15,6 +15,11 @@
   const errorEl = document.getElementById('authError');
   const infoEl = document.getElementById('authInfo');
 
+  const modalBackdrop = document.getElementById('authModalBackdrop');
+  const modalTitle = document.getElementById('authModalTitle');
+  const modalBody = document.getElementById('authModalBody');
+  const modalClose = document.getElementById('authModalClose');
+
   const changeHero = document.getElementById('changeHero');
   const changeForm = document.getElementById('changeForm');
   const changeOld = document.getElementById('changeOld');
@@ -52,6 +57,22 @@
   function hide(el) {
     el.classList.add('hidden');
   }
+
+  function showModal(title, body) {
+    modalTitle.textContent = title;
+    modalBody.textContent = body;
+    modalBackdrop.classList.remove('hidden');
+  }
+  function hideModal() {
+    modalBackdrop.classList.add('hidden');
+  }
+  if (modalClose) modalClose.addEventListener('click', hideModal);
+  if (modalBackdrop) modalBackdrop.addEventListener('click', (e) => {
+    if (e.target === modalBackdrop) hideModal();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modalBackdrop.classList.contains('hidden')) hideModal();
+  });
 
   function describeError(detail) {
     const map = {
@@ -135,7 +156,15 @@
       if (mode === 'login') {
         const r = await postJson('/api/auth/login', { email, password });
         if (!r.ok) {
-          show(errorEl, describeError(r.payload && r.payload.detail));
+          const detail = r.payload && r.payload.detail;
+          if (detail === 'account_pending_approval') {
+            showModal(
+              'Pending approval',
+              'Your account is waiting on founder approval. You will be able to sign in once it is approved.'
+            );
+            return;
+          }
+          show(errorEl, describeError(detail));
           return;
         }
         const user = r.payload && r.payload.user;
@@ -151,7 +180,11 @@
           show(errorEl, describeError(r.payload && r.payload.detail));
           return;
         }
-        show(infoEl, 'Account created. The founder must approve it before you can sign in.');
+        showModal(
+          'Account created',
+          'Your account has been created. The founder needs to approve it before you can sign in.'
+        );
+        form.reset();
         setMode('login');
       }
     } catch (err) {

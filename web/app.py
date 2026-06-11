@@ -407,6 +407,23 @@ async def admin_reject_user(
     return JSONResponse({"ok": True, "user": user_to_public_dict(target)})
 
 
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(
+    user_id: int,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_auth_db),
+) -> JSONResponse:
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="cannot_modify_self")
+    target = UserRepository.get_by_id(db, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    if target.is_admin:
+        raise HTTPException(status_code=400, detail="cannot_delete_admin")
+    ok = UserRepository.delete_user(db, user_id)
+    return JSONResponse({"ok": bool(ok)})
+
+
 @app.post("/api/generate", response_model=GenerateResponse)
 async def generate_prompt(
     request: GenerateRequest,

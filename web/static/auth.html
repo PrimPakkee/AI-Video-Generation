@@ -17,9 +17,9 @@
                 <button type="button" class="auth-tab" data-tab="register" role="tab" aria-selected="false">Create account</button>
             </div>
 
-            <form id="authForm" class="auth-form" autocomplete="on">
-                <input type="email" name="email" id="authEmail" required autocomplete="email" placeholder="Email" />
-                <input type="password" name="password" id="authPassword" required autocomplete="current-password" minlength="8" placeholder="Password" />
+            <form id="authForm" class="auth-form" autocomplete="off" spellcheck="false">
+                <input type="email" name="auth_email_field" id="authEmail" required autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Email" />
+                <input type="password" name="auth_password_field" id="authPassword" required autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" minlength="8" placeholder="Password" />
                 <button type="submit" class="auth-submit" id="authSubmit">Continue</button>
             </form>
 
@@ -32,15 +32,29 @@
             <h1 class="auth-headline">Set a new password</h1>
             <p class="auth-tagline">First sign-in requires a fresh password. Choose 8+ characters.</p>
 
-            <form id="changeForm" class="auth-form">
-                <input type="password" id="changeOld" required minlength="1" autocomplete="current-password" placeholder="Current password" />
-                <input type="password" id="changeNew" required minlength="8" autocomplete="new-password" placeholder="New password" />
-                <input type="password" id="changeNew2" required minlength="8" autocomplete="new-password" placeholder="Confirm new password" />
+            <form id="changeForm" class="auth-form" autocomplete="off" spellcheck="false">
+                <input type="password" id="changeOld" required minlength="1" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Current password" />
+                <input type="password" id="changeNew" required minlength="8" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="New password" />
+                <input type="password" id="changeNew2" required minlength="8" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Confirm new password" />
                 <button type="submit" class="auth-submit" id="changeSubmit">Save and continue</button>
             </form>
             <p class="auth-error hidden" id="changeError"></p>
         </section>
     </main>
+
+    <!-- v0.6.8.2 — friendly modal shown after a successful registration
+         (replaces the red error banner that made users think something
+         had failed). -->
+    <div class="auth-modal-backdrop hidden" id="authModalBackdrop">
+        <div class="auth-modal" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
+            <div class="auth-modal-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+            </div>
+            <h2 class="auth-modal-title" id="authModalTitle">Account created</h2>
+            <p class="auth-modal-body" id="authModalBody">Your account has been created. The founder needs to approve it before you can sign in.</p>
+            <button type="button" class="auth-modal-button" id="authModalClose">Got it</button>
+        </div>
+    </div>
 
     <script src="/static/auth.js" defer></script>
 </body>

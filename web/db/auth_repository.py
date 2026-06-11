@@ -89,6 +89,15 @@ class UserRepository:
         return user
 
     @staticmethod
+    def delete_user(db: Session, user_id: int) -> bool:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return False
+        db.delete(user)
+        db.commit()
+        return True
+
+    @staticmethod
     def set_password(db: Session, user_id: int, new_hash: str) -> Optional[User]:
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
