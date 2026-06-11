@@ -1,22 +1,35 @@
 # AI Video Generation
 
-> AI-powered educational short-video prompt generation tool —— 现阶段聚焦 Prompt Mode，长期演进到 Video Mode 端到端教育短视频生成。
+> 一个面向教育短视频场景的 AI 端到端生成工具。从 v0.4.x 的 NotebookLM Prompt
+> 生成器，演进到 v0.6.8 的多用户视频生成平台 —— 输入题目，自动产出带英文旁白、
+> 字幕、背景音乐、Apple 风格画面的 16:9 横屏教育短视频。
 
 ---
 
 ## 中文版
 
-### 项目简介
+### 项目当前状态（v0.6.8.1）
 
-**AI Video Generation** 是一个面向教育短视频场景的 AI 生成工作流工具。
+**这个项目现在能做什么：**
 
-- **当前短期目标**：构建一个 *AI-powered educational short-video prompt generation tool*，用户输入一个教育短视频题目，系统自动生成可直接复制到 **NotebookLM** 的高质量视频生成 Prompt。
-- **当前核心阶段**：**Prompt Mode**。本项目当前阶段不直接生成视频文件，而是负责生成结构化、可控、可审核的视频创作 Prompt。
-- **长期目标**：**Video Mode**。未来计划接入 **Seedance 2.0 / SeeDance 2.0** 等视频生成能力，实现「输入题目 → 自动生成 Prompt → 自动生成视频 → 网页端播放、预览、下载、管理」的端到端闭环。
+- **登陆 / 注册 / 多用户隔离**：每个朋友都能注册自己的账号，由创始人在 Admin
+  面板批准后才能使用；每人只看到自己的生成历史，互相不可见。
+- **Image Video（本地静态图视频管线，主推线路）**：输入题目 → LLM 写脚本和分镜
+  → gpt-image-2 真实生成每一张幻灯片底图 → Pillow 叠 title/caption/badge →
+  edge-tts 生成英文旁白 → ffmpeg 合成视频 + 字幕烧录 + 背景音乐混音 → 浏览器内
+  直接播放下载。一条完整流水线，全部自动跑完，无需任何人工干预。
+- **Seedance Video（云端视频生成线路，备线）**：通过公司 APX 异步视频网关
+  （底层 `doubao-seedance-2.0`）真实生成视频。已完成完整的 prompt 编译器、
+  契约适配器、quality gate、submit/poll/download 全链路；通过
+  `APX_VIDEO_ENABLED` 显式开启。
+- **Prompt Mode（v0.4.x 老路径，仍然保留）**：生成 NotebookLM 可直接复制的
+  结构化短视频 Prompt。多版本管理、AI Review 自动质检、收藏 / 置顶 / 回收站全部
+  保留。
+- **Apple 风格 UI**：登陆页全屏白底大字 hero，6 段式生成进度面板，深色 / 浅色
+  双主题（系统主题 + 应用内手动切换都能跑），账号管理面板自助改邮箱 / 改密码。
 
-> ⚠️ 当前阶段并未实现端到端视频生成。请明确区分：
-> - ✅ 已实现：**Prompt Mode**（生成 NotebookLM Prompt）
-> - 🔜 规划中：**Video Mode**（端到端视频生成）
+> 当前阶段已经不只是 Prompt 生成器——**主推路径 Image Video 是真实端到端视频生成**，
+> 调用真实图像 / TTS / FFmpeg，输出真实可播放的 mp4。
 
 ---
 
@@ -24,97 +37,109 @@
 
 - **平台**：TikTok、YouTube Shorts、Instagram Reels 等短视频平台
 - **题材**：数学、逻辑、概率、商业数学、认知心理等教育类短视频
-- **风格**：单人旁白、白底线稿、逻辑推理画面、短视频节奏、字幕与画面强约束
+- **风格**：单人英文旁白、Apple 风格简约画面、大字号屏幕文字、字幕烧录、
+  16:9 横屏 1920×1080 @ 24fps
+- **时长**：5 / 15 / 30 / 60 / 90 秒可选（默认 15s）
 
 ---
 
 ### 核心功能
 
-#### A. Prompt Mode（当前主路径）
+#### A. 多用户体系（v0.6.8 / v0.6.8.1）
 
-- 用户输入教育短视频题目。
-- 系统生成结构化的 NotebookLM Prompt。
-- 适用于 TikTok / YouTube Shorts / Instagram Reels 等短视频平台。
-- 支持数学、逻辑、概率、商业数学、认知心理等教育类题材。
+- **三库分离架构**：
+  - `data/auth.db` —— users 表
+  - `data/prompt_history.db` —— Prompt Mode 历史 + AI Review
+  - `data/video_history.db` —— Video Mode 历史 + VideoJob
+  - 跨库通过 `user_id` 逻辑外键关联，仓储层强制每个查询都带 `user_id`，
+    任何越权访问统一返回 404（不泄漏存在性）。
+- **Session 机制**：Starlette `SessionMiddleware`，HttpOnly + SameSite=Lax cookie
+  （`aivg_session`，30 天有效），由 `SESSION_SECRET` 签名。Cookie 只携带
+  `user_id`，每次请求从 `auth.db` 重新水合用户信息，支持即时撤销。
+- **密码安全**：bcrypt 直接哈希（不依赖 passlib），首次登陆强制改密码。
+- **创始人 + 审核制**：通过 `scripts/create_founder.py` 一次性 seed 创始人；
+  其他人注册后状态为 `pending`，必须在 Admin 面板（右上角 user chip → Manage）
+  被点 Approve 才能登陆。
+- **账号自助管理**：Settings 弹窗的 Account 面板可改邮箱（带当前密码 +
+  格式校验 + 撞号校验）、改密码（旧密码 + 新密码 + 确认），不需要找 admin。
+- **登陆页 Apple 风格**（v0.6.8.1 重写）：全屏白底，正中 clamp(40-64px) 大字
+  "AI Video Generator"，灰底输入框 + 深灰按钮（`#1d1d1f`，不是蓝色），
+  深色模式自动反相，密码栏带眼睛切换。
 
-#### B. Topic-based Prompt Generation
+#### B. Image Video 管线（v0.6.3 → v0.6.7，主推路径）
 
-根据用户输入题目生成完整视频创作 Prompt，Prompt 内容包含但不限于：
+- **LLM 内容生成（v0.6.3）**：单次调用 `AI_VIDEO_LLM_*`（默认 gpt-5-chat）
+  写完每一页幻灯片的 title / caption / highlight / visual_focus / badge +
+  整段 narration_script_en + 中文 overview_cn。
+- **真实图像生成（v0.6.4）**：每一张 slide 通过 `gpt-image-2` 真发到公司
+  OpenAI-compatible 网关取真实底图（PNG，1792×1024 → 比例放大 + 中心裁剪
+  到 1920×1080）。Pillow 只负责文字叠加（避免图像模型乱写字）。失败的 slide
+  自动 fallback 到几何 placeholder，整段视频不崩。
+- **背景音乐（v0.6.5）**：本地 `assets/bgm/` 库 + 操作员手写 manifest
+  描述每首曲子的 mood / tempo / energy / instruments；LLM 在写内容时挑曲；
+  ffmpeg `-stream_loop -1` + `volume=-15dB` + `afade=t=out:st=N-1:d=1`
+  混音，TTS 旁白时自动 duck 到 -22dB。
+- **TTS 旁白 + 字幕烧录（v0.6.7）**：
+  - **edge-tts**（en-US-JennyNeural，免费，无需 API key）取代 ElevenLabs
+    （免费层封禁 library voices）。
+  - **图音强对应**：LLM schema 加 `narration_line` 字段，每页幻灯片必须
+    对应一句 8-22 词的英文。edge-tts 的 SentenceBoundary 时间戳驱动
+    每页幻灯片真实在屏时长，**句子 N 必须在第 N 张幻灯片在屏时被听到**，
+    不再"音轨说一件事画面播另一件"。
+  - **字幕烧录**：`BorderStyle=1`（无黑底框，只有外描边 + 阴影）+
+    `Outline=5` 厚黑色白字 + `\pos(960,1010)` 锚定底部居中，1 行 / 2 行
+    自动换行共享同一底边。
+- **6 段式 Apple 风格进度（v0.6.6.1）**：Hero title + 全局进度条 +
+  6 个阶段卡（Plan / Write content / Select music / Generate images /
+  Render overlays / Compose video），实时显示真实后端 `stage.message`，
+  深色浅色双主题。
 
-- 标题（Title）
-- 目标平台（Target Platform）
-- 目标受众（Target Audience）
-- 视频时长（Duration）
-- 核心概念（Core Concept）
-- 题面（Problem Statement）
-- 答案（Correct Answer）
-- 推理过程（Reasoning Steps）
-- 旁白稿（Narration Script）
-- 字幕建议（Subtitle Segments）
-- 视觉风格（Visual Style）
-- 禁止事项与错误限制（Restrictions & Pitfalls）
+#### C. Seedance Video 管线（v0.5.x → v0.6.2，备线）
 
-强调：
-- **单人旁白**、教育短视频风格、白底线稿、逻辑推理画面、短视频节奏；
-- 字幕与画面的强约束；
-- 系统当前生成的是 **NotebookLM 可直接使用的 Prompt**，而**不是视频文件本身**。
+- **Provider Contract Adapter（v0.5.5）**：Dry-run 契约层，把内容资产
+  校验为"未来可被 Seedance 接收的载荷"。
+- **Prompt Compiler（v0.5.6）**：离线编译器，把结构化资产编译为英文
+  Seedance prompt 包（主 prompt + negative prompt + debug metadata），
+  通过 `config/provider_profiles/seedance.json` 配置 must-include /
+  negative-defaults。
+- **APX 真实接口（v0.6.0）**：`web/video_providers/apx_seedance_provider.py`
+  是项目内**唯一允许真实 video API 网络调用**的文件。`POST /v1/async/chat` →
+  `GET /v1/async/results/{id}` 轮询 → 成功后下载 `response.video_url` 到
+  `outputs/<slug>/video.mp4` → 前端通过本地路径播放。
+- **Quality Gate（v0.6.2）**：default-deny 校验：CJK 字符 / `this topic` /
+  `A` / `AB` / `BAB` / `Question` / `Answer` 等占位符 / 缺失 narration /
+  缺失 scene plan → **绝不调用 APX**，job 写入
+  `status=blocked_prompt_quality`，避免烧配额。
+- **English-only 16:9 规范（v0.6.1）**：管线全链路硬绑定 1920×1080 横屏，
+  output_language 锁 `en`，中文题目通过 `_english_topic_label` 转英文 subject。
+- **APX key 卫生**：never logged / never written / never returned。Header 永不
+  落入 `request_json` 快照。`download_video` 拒绝非 http(s)、清洗文件名、
+  阻止 path traversal、`.part → rename` 原子下载。
 
-#### C. History Management（历史记录）
+#### D. Prompt Mode（v0.4.x，仍然保留）
 
-- 左侧历史题目列表。
-- 支持历史记录查看。
-- 支持搜索、置顶、收藏、删除、废纸篓、日期筛选等功能。
-- 历史记录用于管理不同题目和不同生成结果。
+- 用户输入教育短视频题目 → 生成结构化 NotebookLM Prompt。
+- **Topic-based Prompt Generation**：包含标题 / 平台 / 受众 / 时长 /
+  核心概念 / 题面 / 答案 / 推理过程 / 旁白稿 / 字幕建议 / 视觉风格 /
+  禁忌项；强调单人旁白、白底线稿、短视频节奏、字幕画面强约束。
+- **History Management**：左侧历史列表，支持搜索 / 置顶 / 收藏 / 删除 /
+  废纸篓 / 日期筛选。
+- **Version Management**：同一题目多版本，每次 Regenerate 生成新版本，
+  旧版本不会被覆盖；下拉框切换版本。
+- **Prompt View Modes**：Raw Text（NotebookLM 直接可用）/ Preview（结构化
+  预览）/ Overview（中文内容概览）/ AI Review（多维度自动质检）。
+- **AI Review**：完整性 / 逻辑正确性 / NotebookLM 可用性 / 视觉可控性 /
+  短视频适配度 / 单人旁白约束 / 教育清晰度 / 风险控制。支持手动重新质检。
+- **Regenerate Workflow**：基于当前版本继续输入修改要求，生成新版本，
+  Overview 中说明本次新增或改动内容。
 
-#### D. Version Management（版本管理）
+#### E. 本地 Web 应用
 
-- 同一题目支持多个版本。
-- 每次 Regenerate 会生成新版本。
-- 用户可在 **Version 下拉框**中切换不同版本。
-- 旧版本不会被覆盖，便于比较、回看、回退。
-
-#### E. Prompt View Modes（视图切换）
-
-- **Raw Text**：原始 NotebookLM Prompt，适合直接复制使用。
-- **Preview**：结构化预览，便于快速检查 Prompt 各组成部分。
-- **Overview**：中文内容概览，解释这条视频准备讲什么、怎么讲、画面如何呈现。
-- **AI Review**：基于多维度质量维度对 Prompt 进行自动质检。
-
-#### F. AI Review（自动质检）
-
-对 Prompt 进行多维度质量评估，评价维度包括但不限于：
-
-- 完整性
-- 逻辑正确性
-- NotebookLM 可用性
-- 视觉可控性
-- 短视频适配度
-- 单人旁白约束
-- 教育清晰度
-- 风险与错误控制
-
-支持：
-- 各维度评分与点评
-- 总分与整体评价
-- 手动触发重新质检
-
-> 当前 AI Review 仍在持续校准评分严格性和评价质量，避免出现过度宽松或模板化结果。
-
-#### G. Regeneration Workflow（再生成流程）
-
-- 用户可基于当前版本继续输入修改要求。
-- 系统根据已有 Prompt 与新增要求生成新版本。
-- Regenerate **不会覆盖旧版本**，而是生成新的 Version。
-- Overview 中会说明本次新增或改动内容，帮助用户理解新版本相对旧版本的变化。
-
-#### H. Local Web App（本地 Web 应用）
-
-- **后端**：FastAPI
-- **前端**：静态前端页面 + JS 脚本
-- **数据库**：SQLite（本地）
-- **访问方式**：本地运行后通过 `http://127.0.0.1:8000` 访问
-
-> 当前项目以本地开发和原型验证为主，后续可扩展到云端部署。
+- **后端**：FastAPI + SQLAlchemy + SQLite
+- **前端**：原生 HTML + JS（main.js 5290 行），Apple 风格 CSS
+- **数据库**：3 个独立 SQLite 文件（auth / prompt / video）
+- **访问方式**：本地运行后通过 `http://127.0.0.1:8000`，未登录自动跳转
+  `/auth.html`
 
 ---
 
@@ -122,24 +147,32 @@
 
 ```
 AI Video Generation/
-├── README.md           # 项目说明（当前文件）
-├── CHANGELOG.md        # 版本更新记录
-├── requirements.txt    # Python 依赖
-├── web/                # Web 应用入口、API、静态页面与前端脚本
-├── scripts/            # Prompt 生成、LLM 调用、AI Review、数据修复与测试辅助脚本
-├── templates/          # NotebookLM Prompt、QA checklist、storyboard 等模板文件
-├── docs/               # 版本说明、产品文档、技术路线和功能设计记录
-├── tests/              # 测试用例和测试数据
-├── config/             # 配置示例文件（example.env 等）
-├── data/               # 本地数据和示例数据
-├── outputs/            # 本地生成结果目录
-└── assets/             # 视觉资源和素材
+├── README.md                    # 项目说明（当前文件）
+├── CHANGELOG.md                 # 版本更新记录（详细到每个 .x 版本）
+├── requirements.txt             # Python 依赖
+├── web/                         # FastAPI 应用 + 前端 + 各类 provider
+│   ├── app.py                   # 主入口，路由注册（51 路由 + 10 auth 路由）
+│   ├── auth.py                  # bcrypt + session + FastAPI 依赖
+│   ├── image_video_pipeline.py  # Image Video 主管线（LLM / image2 / TTS / ffmpeg）
+│   ├── video_asset_pipeline.py  # Seedance Video 内容资产管线
+│   ├── audio_providers/         # edge-tts + bgm_selector
+│   ├── image_providers/         # gpt-image-2 (apx_image2_provider.py)
+│   ├── video_providers/         # Seedance prompt compiler + contract adapter + APX provider
+│   ├── db/                      # 三个 ORM/Repository 模块（auth / prompt / video）
+│   └── static/                  # 前端：auth.html / index.html / main.js / app_bootstrap.js / 等
+├── scripts/                     # 一次性 CLI（create_founder / migrate_legacy / 稳定性检查）
+├── templates/                   # NotebookLM Prompt + Seedance video asset prompt 模板
+├── docs/                        # 每个版本的设计说明书 + 技术路线 + freeze spec
+├── tests/                       # 测试用例 / fixture
+├── config/                      # provider_profiles + example.env
+├── data/                        # 本地三个 SQLite（不进 git）
+├── outputs/                     # 本地生成结果（不进 git）
+└── assets/                      # bgm/ 本地 BGM 库 + manifest.json
 ```
 
-> 注意：
-> - `.env` **不会**提交到 GitHub，需要用户在本地自行配置；
-> - `.venv`、`outputs/`、本地数据库文件等**不进入** Git 版本管理；
-> - 不要在 README 或任何提交内容中写入真实 API Key、内部密钥或敏感地址。
+> **不进 Git**：`.env` / `.venv/` / `data/*.db` / `outputs/` / `*.mp4`。
+> **永远不要**在 README、commit、issue、任何提交中写入真实 API Key、内部
+> 密钥或公司内部地址。
 
 ---
 
@@ -153,14 +186,40 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-#### 2. v0.6.8 多用户首次启用（仅一次）
+#### 2. 配置 `.env`
 
-`.env` 里需要一个 `SESSION_SECRET`（32 字节随机十六进制）：
+参考 `config/example.env`，至少需要配置：
+
+```
+# 必填：内容生成 LLM（gpt-5-chat 等 OpenAI-compatible 网关）
+AI_VIDEO_LLM_PROVIDER=openai
+AI_VIDEO_LLM_BASE_URL=https://...
+AI_VIDEO_LLM_MODEL=gpt-5-chat
+AI_VIDEO_LLM_API_KEY=sk-...
+
+# 必填：v0.6.8 后多用户 session 签名秘钥
+SESSION_SECRET=<32 字节随机十六进制>
+
+# 选填：gpt-image-2 真实图像生成（不配则 fallback 到 Pillow 几何图）
+APX_IMAGE2_ENABLED=true
+APX_IMAGE2_BASE_URL=https://...
+APX_IMAGE2_API_KEY=...
+APX_IMAGE2_MODEL=gpt-image-2
+
+# 选填:Seedance Video 备线（不配则只跑 Image Video）
+APX_VIDEO_ENABLED=false
+APX_VIDEO_API_KEY=...
+```
+
+生成 `SESSION_SECRET`：
 
 ```bash
-python -c 'import secrets; print(secrets.token_hex(32))' >> /tmp/secret
-echo "SESSION_SECRET=$(cat /tmp/secret)" >> .env
+python -c 'import secrets; print("SESSION_SECRET=" + secrets.token_hex(32))' >> .env
 ```
+
+> ⚠️ **永远不要**把 `.env` 提交到 git。仓库 `.gitignore` 已经覆盖。
+
+#### 3. v0.6.8 多用户首次启用（仅一次）
 
 种创始人账号（默认密码会被打印到终端一次，首次登陆后强制改）：
 
@@ -168,7 +227,7 @@ echo "SESSION_SECRET=$(cat /tmp/secret)" >> .env
 python -m scripts.create_founder --email you@example.com
 ```
 
-把现有所有历史记录回填到创始人名下：
+把现有所有历史记录回填到创始人名下（如果是从 v0.6.7 之前升级上来的）：
 
 ```bash
 python -m scripts.migrate_legacy_to_founder
@@ -176,15 +235,13 @@ python -m scripts.migrate_legacy_to_founder
 
 两个脚本都是幂等的，重复跑不会出问题。
 
-#### 3. 启动 Web 应用
+#### 4. 启动 Web 应用
 
 ```bash
 python -m uvicorn web.app:app --reload --port 8000
 ```
 
-#### 4. 访问
-
-打开浏览器访问：
+#### 5. 访问
 
 ```
 http://127.0.0.1:8000
@@ -195,116 +252,133 @@ http://127.0.0.1:8000
 
 ---
 
-### 环境变量说明
-
-请在项目根目录创建本地 `.env` 文件（不要提交到 GitHub）。常用变量如下：
+### 关键环境变量
 
 | 变量名 | 用途 |
 | --- | --- |
-| `AI_VIDEO_LLM_PROVIDER` | LLM provider 类型（如 OpenAI-compatible） |
-| `AI_VIDEO_LLM_BASE_URL` | OpenAI-compatible API base URL |
-| `AI_VIDEO_LLM_MODEL` | 用于 Prompt 生成和 AI Review 的模型名称 |
-| `AI_VIDEO_LLM_API_KEY` | 本地配置的 API Key（**不应提交到 GitHub**） |
-| `AI_VIDEO_LLM_MAX_TOKENS` | 模型最大输出 token 配置 |
-| `AI_VIDEO_LLM_TIMEOUT` | 模型请求超时时间 |
-
-> ⚠️ 任何真实 API Key、公司内部密钥、内部地址都不应出现在 README、提交记录或仓库任何文件中。
-
----
-
-### 当前版本状态
-
-- **当前版本阶段**：`v0.6.5 — 本地 BGM 库 + LLM 选曲 + FFmpeg 同步混音`
-- **已完成**：
-  - Prompt Mode v0.4.10 全部能力（Prompt 生成、历史、版本、视图、AI Review、Regenerate、本地 Web 应用）；
-  - Video Mode 独立框架（v0.5.2）：独立数据库 / API / 6 tab / 播放器骨架 / 全局 tooltip portal；
-  - Video Mode Job/Provider/Asset 基础层（v0.5.3）：`video_jobs` 表、`VideoJobRepository`、`VideoProvider` 抽象层、`MockVideoProvider`、Job/Asset endpoint、首页 `Generate Video` 动态入口、多阶段进度面板、Video Job 状态面板；
-  - Video Content Asset Pipeline（v0.5.4）：LLM 驱动的 7 个内容资产、Download All 升级、9 步进度面板、`AI_VIDEO_LLM_*` 配置体系；
-  - Seedance Provider Contract Adapter（v0.5.5）：dry-run 契约层、3 个新契约文件、4 个 dry-run API 端点、Provider Contract Summary 区块、stage 升级到 `contract_ready`；
-  - Seedance Prompt Compiler（v0.5.6）：离线 prompt 编译器、provider profile (`config/provider_profiles/seedance.json`)、3 个新资产文件（`seedance_prompt.txt` / `seedance_negative_prompt.txt` / `seedance_prompt_debug.json`）、`payload.prompt` 优先取自 compiled prompt；
-  - **APX Seedance Real Provider（v0.6.0）**：首次接入公司 APX 异步视频网关（底层 `doubao-seedance-2.0`），新增 `web/video_providers/apx_seedance_provider.py`（仅此文件允许真实网络调用）、`POST /v1/async/chat` 提交 + `GET /v1/async/results/{id}` 轮询 + 成功后下载 `response.video_url` 到 `outputs/<slug>/video.mp4` 并通过 `/api/video/history/{id}/asset/video` 在前端播放本地 mp4；新增 `blocked_fallback_prompt` 安全状态避免在 fallback 资产上烧 APX 配额；`api-key` 永不入库 / 不写入 metadata / 不出现在 Download All；通过 `APX_VIDEO_ENABLED` + `APX_VIDEO_API_KEY` 显式开启，否则自动 fallback 到 v0.5.3 Mock。
-  - **English-only 16:9 视频规范 + 进度 UX 加固（v0.6.1）**：管线 / 编译器 / 契约适配器 / `seedance.json` 全链路锁定 16:9 横屏 1920x1080，输出语言固定 `en`，中文题目通过 `_english_topic_label` 转成英文 subject 再注入 on-screen text；首页新增 5 / 15 / 30 / 60 / 90 时长选择器（默认 15s）；视频播放区新增覆盖式进度条；切换历史记录时清空 `<video>.src` 与残留路径。
-  - **Seedance Prompt Quality Gate + 真实进度修复（v0.6.2，当前版本）**：APX 真实接口已经在 v0.6.0 接通，但回看真实 `submit_payload.prompt` 出现了大量占位符（`this topic` / `A` / `AB` / `BAB` / `Question` / `Answer` / `Why?`）。v0.6.2 重写 `seedance_prompt_compiler.py`：新增 `normalize_seedance_prompt_input(...)` 把上游资产抽取成 English-only 结构化输入，**绝不再 fallback 成 `this topic` / `A` / `AB` / `BAB`**；最终 prompt 改为紧凑的 Task / Format / Voiceover / Core explanation / Scene plan / Allowed on-screen text only / Text rules / Motion / Negative constraints / Final rules 段落格式，删除「does not yet generate audio」相关文案，正向要求英文旁白。新增 `validate_seedance_prompt_quality()` default-deny gate，真实 APX submit 前调用：失败时创建 `blocked_prompt_quality` VideoJob 并**绝不调用 APX**。新增 `/api/video/generate/start` + `/api/video/generate/runs/{id}` 真实 run store + 9 个真实阶段，前端彻底删除 1.5s setInterval 假动画。新增 Provider Evidence Summary 面板。`APX_VIDEO_PROMPT_EXTEND` 默认改为 `false`。Schema bump：`seedance_prompt_compiler_v0.6.2` / `seedance_prompt_profile_v0.6.2` / `seedance_prompt_debug_v0.6.2`。本版本仍**不调用真实 APX、不生成真实视频**（详见 [`docs/v0.6.2_seedance_prompt_quality_gate.md`](docs/v0.6.2_seedance_prompt_quality_gate.md)）。
-- **正在进行**：v0.6.2 自检通过后，下一步是真实视频回归与 Video Review 独立评分协议设计。
-- **尚未完成**：批量批处理、retry / cancel 真实 job、独立 Video Review 协议、deterministic subtitle overlay（计划在 v0.6.x / v0.7.x 完成）。
+| `SESSION_SECRET` | **v0.6.8 必填**，session cookie 签名秘钥（32 字节十六进制） |
+| `AI_VIDEO_LLM_PROVIDER` | 内容生成 LLM 类型（openai / openai-compat） |
+| `AI_VIDEO_LLM_BASE_URL` | LLM 网关 base URL |
+| `AI_VIDEO_LLM_MODEL` | 内容生成模型（默认 gpt-5-chat） |
+| `AI_VIDEO_LLM_API_KEY` | LLM API key（**永远不要提交**） |
+| `AI_VIDEO_LLM_TIMEOUT` | LLM 请求超时秒数 |
+| `APX_IMAGE2_ENABLED` | 是否启用真实 gpt-image-2（false 则走 Pillow 几何图） |
+| `APX_IMAGE2_API_KEY` | image2 API key |
+| `APX_IMAGE2_CONCURRENCY` | image2 并发数（默认 4） |
+| `APX_IMAGE2_TIMEOUT` | image2 单次请求超时秒数（默认 300） |
+| `IMAGE_VIDEO_DISABLE_BGM` | 关闭 BGM（smoke 测试用） |
+| `IMAGE_VIDEO_BGM_VOLUME_DB` | BGM 基础音量，默认 -15dB |
+| `IMAGE_VIDEO_BGM_FORCE` | 强制指定一首 BGM 文件名 |
+| `APX_VIDEO_ENABLED` | 是否启用 Seedance 真实接口 |
+| `APX_VIDEO_API_KEY` | Seedance APX key |
+| `APX_VIDEO_PROMPT_EXTEND` | 默认 false（避免被 prompt 改写） |
 
 ---
 
-### Roadmap（规划路线）
+### 版本路线（已发布）
 
-| 版本 | 主要内容 |
+| 版本 | 主题 |
 | --- | --- |
-| **v0.4.x** | Prompt Mode 稳定性修复、AI Review 校准、README 与 GitHub 仓库规范化（已完成） |
-| **v0.5.2** | Video Mode 独立框架与播放器界面稳定版（已完成） |
-| **v0.5.3** | Video Job / Provider / Asset 基础层 + Generate Video 动态入口 + 多阶段进度（已完成） |
-| **v0.5.4** | Video Content Asset Pipeline + Download All 升级 + 9 步进度（已完成） |
-| **v0.5.5** | Seedance Provider Contract Adapter (dry-run) + 3 个契约文件 + 4 个 dry-run API（已完成） |
-| **v0.5.6** | Seedance Prompt Compiler (dry-run) + provider profile + 3 个新资产文件 + Overview Compiler 行（已完成） |
-| **v0.5.x（继续）** | Web Copy 模板预设、播放器交互细节 |
-| **v0.6.0** | APX Seedance Real Provider：首次接入公司 APX 异步视频网关（底层 `doubao-seedance-2.0`），真实 submit / poll / 下载 mp4 / 前端播放本地视频，`blocked_fallback_prompt` 安全状态保护 fallback 资产，api-key 不入库（已完成） |
-| **v0.6.1** | English-only 16:9 横屏视频规范、5/15/30/60/90 时长选择器、覆盖式进度条、history-switch 残留清理（已完成） |
-| **v0.6.2** | Seedance Prompt Quality Gate（默认拒绝 `this topic` / `A` / `AB` / `BAB`）、English compiler 重写、`/api/video/generate/start` 真实 run store、Provider Evidence Summary、`APX_VIDEO_PROMPT_EXTEND` 默认 `false` |
-| **v0.6.3** | Static Image Video MVP（本地 Pillow + FFmpeg）、首页 Generation Method selector、`generation_method` 数据库列、Generation Evidence 面板、Dark mode 大白框修复 |
-| **v0.6.4** | gpt-image-2 真实图像生成接入（每张 slide 调 image2 拿底图，Pillow 仅负责文字叠加；ThreadPoolExecutor 并发；per-slide failure fallback 到 Pillow 几何图） |
-| **v0.6.5** | 本地 BGM 库 + LLM 选曲 + FFmpeg 同步混音（视频开始 BGM 开始，视频结束 BGM 结束；最后 1 秒淡出；-15dB 音量为之后 TTS 旁白留头）（当前版本） |
-| **v0.6.5** | TTS 接入（旁白 + 音频合成） |
-| **v0.6.6+** | Subtitle burn-in、Video Job 真实 retry / cancel、批量批处理、独立 Video Review prompt / schema |
-| **v0.7.x – v1.0** | 用户登录、用户空间、权限管控、产品化 |
+| v0.4.x | Prompt Mode 主路径稳定（NotebookLM Prompt 生成 / AI Review / 版本管理 / Download All） |
+| v0.5.2 | Video Mode 独立框架与播放器界面 |
+| v0.5.3 | Video Job / Provider / Asset 基础层 + 多阶段进度 |
+| v0.5.4 | Video Content Asset Pipeline（LLM 写 7 个内容资产文件） |
+| v0.5.5 | Seedance Provider Contract Adapter（dry-run 契约层） |
+| v0.5.6 | Seedance Prompt Compiler + provider profile（离线编译器） |
+| v0.6.0 | APX Seedance 真实接口集成（首次跑通真实视频生成） |
+| v0.6.1 | English-only 16:9 横屏规范 + 5/15/30/60/90 时长选择器 + 进度条 |
+| v0.6.2 | Seedance Prompt Quality Gate（拒绝占位符）+ 真实进度修复 |
+| v0.6.3 | Static Image Video MVP（本地 Pillow + ffmpeg）+ Generation Method selector + Dark Mode 修复 |
+| v0.6.4 | gpt-image-2 真实图像生成接入 + Pillow 文字叠加 + ThreadPoolExecutor 并发 |
+| v0.6.5 | 本地 BGM 库 + LLM 选曲 + ffmpeg 同步混音 |
+| v0.6.6 | Video 播放区只显示播放器（evidence 移到 Overview 底部）+ 首帧自动显示 + 点击切换播放 |
+| v0.6.6.1 | Apple 风格 6 段式生成 UI（Hero + 全局进度条 + 6 个阶段卡） |
+| v0.6.7 | edge-tts 旁白 + 字幕烧录 + 图音强对应（每页 narration_line） |
+| **v0.6.8** | **多用户登陆 / 注册 / 创始人审核 + 数据隔离（当前版本）** |
+| v0.6.8.1 | Auth UX 抛光：登陆页苹果风重写 + Settings 加 Account 面板 + 自助改邮箱 |
 
-未来可继续扩展：
-- 用户登录系统
-- 用户空间与权限
-- 云端部署
-- 视频生成任务队列
-- 视频资产管理
+### 已知遗留问题
+
+- **uvicorn `--reload` 会丢 in-memory runs**：`VIDEO_GENERATION_RUNS` 是
+  进程内字典；`--reload` 在 run 进行中改代码会让前端轮询拿到 404。
+  目前用 4 次容忍 + 清晰错误提示兜底。生产部署前需要把 run state 落到磁盘
+  或 Redis。
+- **founder@local 占位邮箱**：v0.6.8 setup 时如果不指定 `--email`，会用
+  `founder@local` 占位。可以通过登陆后 Account 面板自助改成真实邮箱（v0.6.8.1
+  支持）。
+
+### 后续可能的方向（未排期）
+
+- **生产化部署**：Run state 持久化、Redis、容器化。
+- **Brute-force lockout / rate limit**：当前小范围分享所以没做，朋友圈外推
+  之前需要补。
+- **付费 TTS 升级**：edge-tts 免费够用，如果声线疲劳可以换 ElevenLabs
+  paid（项目里曾经有 elevenlabs_tts.py，已删除，但实现方式记在 changelog 里）。
+- **更多画风**：当前 5-style rotation，如果反馈说"风格单调"可以扩。
+- **批量批处理 / Video Job 真实 retry / cancel**：单次生成已经稳，批处理
+  还没做。
+- **独立 Video Review 协议**：当前 AI Review 只覆盖 Prompt Mode；视频质检
+  需要专门 schema。
 
 ---
 
 ## English Version
 
-### Overview
+### Current State (v0.6.8.1)
 
-**AI Video Generation** is an AI-powered workflow tool for creating educational short videos.
+**What this project does today:**
 
-- **Short-term goal**: an *AI-powered educational short-video prompt generation tool*. The user provides an educational short-video topic, and the system generates a structured **NotebookLM** prompt that can be copied directly into NotebookLM to drive video generation.
-- **Current stage — Prompt Mode**: the project currently focuses on generating high-quality, structured prompts. It does **not** generate video files at this stage.
-- **Long-term goal — Video Mode**: integrate **Seedance 2.0 / SeeDance 2.0** so that users can input a topic and the system automatically produces a finished educational short video, with in-browser playback, preview, download, and management.
+- **Login / register / multi-user isolation**: each friend signs up their own
+  account; the founder approves them in the Admin panel; everyone sees only
+  their own generation history.
+- **Image Video pipeline (primary path)**: end-to-end. Topic in →
+  LLM writes script + per-slide content → gpt-image-2 generates real
+  background images → Pillow overlays title/caption/badge → edge-tts
+  generates English narration → ffmpeg composes video with burnt-in
+  subtitles + background music → playable mp4 in browser. Fully automated.
+- **Seedance Video pipeline (alternate path)**: real cloud video generation
+  through the in-house APX async video gateway (`doubao-seedance-2.0`).
+  Full pipeline: prompt compiler → contract adapter → quality gate →
+  submit/poll/download. Gated behind `APX_VIDEO_ENABLED`.
+- **Prompt Mode (v0.4.x legacy, preserved)**: structured NotebookLM
+  prompts, copy-ready. Multi-version, AI Review, favorite/pin/trash.
+- **Apple-style UI**: full-bleed login hero, 6-phase Apple-style progress
+  panel, dark/light themes covering both system preference and an in-app
+  toggle, self-service Account panel.
 
-> Today's reality:
-> - ✅ Implemented: **Prompt Mode** (NotebookLM prompt generation)
-> - 🔜 Planned: **Video Mode** (end-to-end video generation)
+> This is no longer "just" a prompt generator — the primary Image Video
+> path is **real end-to-end video generation** with real image / TTS /
+> ffmpeg calls and real playable mp4 output.
 
 ### Target Platforms & Topics
 
 - **Platforms**: TikTok, YouTube Shorts, Instagram Reels.
-- **Topics**: math, logic, probability, business math, cognitive psychology, and other educational subjects.
-- **Style**: single-narrator monologue, white background with line art, reasoning-driven visuals, short-form pacing, strong subtitle and visual constraints.
+- **Topics**: math, logic, probability, business math, cognitive psychology.
+- **Style**: single English narrator, Apple-style minimalist visuals,
+  large on-screen text, burnt-in subtitles, 16:9 1920×1080 @ 24fps.
+- **Duration**: 5 / 15 / 30 / 60 / 90 seconds (default 15s).
 
-### Core Features
+### Architecture Highlights
 
-- **Prompt Mode** — generate a structured NotebookLM prompt from a user-supplied topic.
-- **Topic-based Prompt Generation** — full prompt covering title, platform, audience, duration, core concept, problem statement, correct answer, reasoning steps, narration script, subtitles, visual style, and restrictions. The output is a NotebookLM-ready prompt, **not** a video file.
-- **History Management** — left-side history list with search, pin, favorite, delete, trash, and date filtering.
-- **Version Management** — multiple versions per topic; each Regenerate creates a new version without overwriting old ones; switch via the Version dropdown.
-- **Prompt View Modes** — Raw Text (copy-ready), Preview (structured), Overview (Chinese summary of intent and visuals), AI Review (automated QA).
-- **AI Review** — multi-dimensional automated quality check (completeness, logical correctness, NotebookLM usability, visual controllability, short-form fit, single-narrator constraint, educational clarity, risk control). Scoring strictness is still being calibrated.
-- **Regeneration Workflow** — users can refine the current version with extra requirements; the system creates a new version, and the Overview explains what changed.
-- **Local Web App** — FastAPI backend + static frontend + local SQLite database, accessible at `http://127.0.0.1:8000`.
-
-### Project Structure
-
-```
-web/         FastAPI app, API routes, static frontend, JS scripts
-scripts/     Prompt generation, LLM calls, AI Review, data tools
-templates/   NotebookLM prompt, QA checklist, storyboard templates
-docs/        Product docs, version notes, technical roadmap
-tests/       Test cases and fixtures
-config/      Example configuration files
-data/        Local and sample data
-outputs/     Local generation outputs
-```
-
-`.env`, `.venv/`, `outputs/`, and local database files are **not** committed to Git. Never put real API keys or sensitive addresses in this repository.
+- **Three-DB split**: `auth.db` / `prompt_history.db` / `video_history.db`.
+  Cross-DB joins handled in app code via logical `user_id` foreign keys.
+  Repository layer enforces ownership on every query — wrong owner returns
+  None, never leaks existence.
+- **Session auth**: Starlette `SessionMiddleware`, HttpOnly Lax cookie
+  (`aivg_session`, 30 days), signed by `SESSION_SECRET`. Cookie carries
+  only `user_id`; user state rehydrates from `auth.db` per request.
+- **bcrypt** for password hashing; founder-approval gate; first-login
+  forced password change.
+- **Frontend bootstrap pattern**: `app_bootstrap.js` runs before main.js,
+  patches `fetch()` to auto-redirect on 401, mounts the user chip and
+  Admin modal — main.js (5290 lines) untouched.
+- **Image Video stack**: gpt-image-2 (real PNG) → Pillow (text overlay) →
+  edge-tts (narration with SentenceBoundary timing for image↔audio
+  alignment) → ffmpeg (compose + ASS subtitles + BGM mix).
+- **Seedance hygiene**: `apx_seedance_provider.py` is the ONLY file in
+  the repo allowed to make real video API network calls. API key never
+  logged, never persisted, never returned to frontend. Path-traversal
+  protection on downloaded mp4s. Atomic `.part → rename` writes.
 
 ### Local Setup
 
@@ -312,38 +386,67 @@ outputs/     Local generation outputs
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# 1. Generate session secret + write to .env
+python -c 'import secrets; print("SESSION_SECRET=" + secrets.token_hex(32))' >> .env
+
+# 2. Configure AI_VIDEO_LLM_* in .env (required) and APX_IMAGE2_* (optional)
+
+# 3. Seed the founder account (one-time)
+python -m scripts.create_founder --email you@example.com
+
+# 4. Backfill existing rows to founder (one-time, idempotent)
+python -m scripts.migrate_legacy_to_founder
+
+# 5. Start the server
 python -m uvicorn web.app:app --reload --port 8000
 ```
 
-Then open `http://127.0.0.1:8000`.
+Open `http://127.0.0.1:8000`. You'll be redirected to `/auth.html`.
+Log in as the founder, change the default password, and you're in.
 
 ### Environment Variables
 
-Configure a local `.env` (do not commit):
+See the [Chinese section](#关键环境变量) above for the full table —
+the names are identical.
 
-- `AI_VIDEO_LLM_PROVIDER` — LLM provider type.
-- `AI_VIDEO_LLM_BASE_URL` — OpenAI-compatible API base URL.
-- `AI_VIDEO_LLM_MODEL` — model used for prompt generation and AI Review.
-- `AI_VIDEO_LLM_API_KEY` — local API key (must not be committed).
-- `AI_VIDEO_LLM_MAX_TOKENS` — max output tokens.
-- `AI_VIDEO_LLM_TIMEOUT` — request timeout.
+`.env` is gitignored. **Never commit real API keys.**
 
-### Current Status
+### Roadmap (shipped)
 
-The project is at **v0.6.0 — APX Seedance Real Provider Integration**. Prompt Mode v0.4.10 features remain frozen and intact. Video Mode now ships an independent framework (v0.5.2), a Job/Provider/Asset base layer (v0.5.3), an LLM-driven Video Content Asset Pipeline (v0.5.4), a dry-run Seedance contract adapter (v0.5.5), an offline Seedance Prompt Compiler (v0.5.6), and — new in v0.6.0 — a real provider (`web/video_providers/apx_seedance_provider.py`) that submits the v0.5.6 compiled prompt to the in-house APX async video gateway (`doubao-seedance-2.0` underneath), polls for completion, downloads `response.video_url` to `outputs/<slug>/video.mp4`, persists `video_history.video_file_path`, and lets the frontend stream the local mp4 via `/api/video/history/{id}/asset/video`. Real network calls are gated behind `APX_VIDEO_ENABLED=true` + `APX_VIDEO_API_KEY`; without them the system falls back to the v0.5.3 Mock provider. A `blocked_fallback_prompt` safety state prevents APX submissions on fallback content, and the `api-key` is never written to the database, metadata exports, or Download All bundles.
+See the [Chinese section's version table](#版本路线已发布) above. Highlights:
 
-### Roadmap
+- **v0.4.x** — Prompt Mode + AI Review (NotebookLM prompt generation only).
+- **v0.5.x** — Video Mode framework, content asset pipeline, Seedance
+  contract adapter, prompt compiler.
+- **v0.6.0** — APX Seedance real provider — first end-to-end real video.
+- **v0.6.1–v0.6.2** — English-only 16:9, duration selector, prompt quality
+  gate.
+- **v0.6.3–v0.6.5** — Static Image Video MVP, real gpt-image-2 integration,
+  local BGM library + ffmpeg sync mix.
+- **v0.6.6–v0.6.7** — Apple-style 6-phase progress UI, edge-tts narration,
+  burnt-in subtitles, image↔audio strict alignment.
+- **v0.6.8 / v0.6.8.1 (current)** — multi-user login/register/founder
+  approval, Apple-style auth page, self-service Account panel.
 
-- **v0.4.x** — Prompt Mode stability fixes, AI Review calibration, repository normalization (complete).
-- **v0.5.2** — Video Mode independent framework + player UI stabilization (complete).
-- **v0.5.3** — Video Job / Provider / Asset base layer + dynamic Generate Video entry + multi-stage progress (complete).
-- **v0.5.4** — Video Content Asset Pipeline + Download All upgrade + 9-step progress (complete).
-- **v0.5.5** — Seedance Provider Contract Adapter (dry-run) + 3 contract files + 4 dry-run APIs (complete).
-- **v0.5.6** — Seedance Prompt Compiler (dry-run) + provider profile + 3 new asset files + Overview Compiler line (complete).
-- **v0.6.0** — APX Seedance Real Provider: real submit / poll / download / local mp4 playback, fallback-prompt safety, API-key hygiene (current).
-- **v0.5.x (continued)** — Web Copy templates, player interaction polish.
-- **v0.6.1** — Real retry / cancel for Video Jobs, batch processing, standalone Video Review prompt and schema.
-- **v0.6.2+** — Refined failure state machine and regression baseline.
-- **v0.7.x – v1.0** — User accounts, user workspaces, permissions, productionization.
+### Known Issues
 
-Future extensions: user accounts, user workspaces, cloud deployment, video job queue, and video asset management.
+- **`uvicorn --reload` drops in-memory runs**: `VIDEO_GENERATION_RUNS`
+  is process-local; saving a code edit mid-run causes a 404 on poll.
+  Mitigated with 4-strike tolerance. Move to disk/Redis before deploying
+  to production.
+- **`founder@local` placeholder**: if `--email` was omitted during
+  v0.6.8 setup, the founder gets a `founder@local` placeholder. Change it
+  via the Account panel after logging in (v0.6.8.1).
+
+### Possible Future Directions (not scheduled)
+
+- Production hardening: persistent run state, Redis, containerization.
+- Brute-force lockout / rate limit (small audience now, must add before
+  wider sharing).
+- Paid TTS upgrade (edge-tts → ElevenLabs paid voices) if narrator quality
+  becomes a complaint.
+- More art styles beyond the current 5-style rotation.
+- Batch processing / real Video Job retry + cancel.
+- Standalone Video Review protocol (current AI Review covers Prompt Mode
+  only).
