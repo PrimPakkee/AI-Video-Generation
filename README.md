@@ -8,7 +8,7 @@
 
 ## 中文版
 
-### 项目当前状态（v0.6.8.4）
+### 项目当前状态（v0.6.8.5）
 
 **这个项目现在能做什么：**
 
@@ -296,7 +296,8 @@ http://127.0.0.1:8000
 | v0.6.7 | edge-tts 旁白 + 字幕烧录 + 图音强对应（每页 narration_line） |
 | v0.6.8 | 多用户登陆 / 注册 / 创始人审核 + 数据隔离 |
 | v0.6.8.1 | Auth UX 抛光：登陆页苹果风重写 + Settings 加 Account 面板 + 自助改邮箱 |
-| **v0.6.8.4** | **TTS metadata bugfix：requirements 补 edge-tts、不再硬编码 not_implemented_v0.6.5、voiceover_source 改为 edge_tts（当前版本）** |
+| v0.6.8.4 | TTS metadata bugfix：requirements 补 edge-tts、不再硬编码 not_implemented_v0.6.5、voiceover_source 改为 edge_tts |
+| **v0.6.8.5** | **结构性拆分：把 Auth/Admin 路由从 `web/app.py` 抽到 `web/routers/auth_routes.py` 与 `web/routers/admin_routes.py`，对外接口路径完全不变（当前版本）** |
 
 ### 已知遗留问题
 

@@ -2,6 +2,32 @@
 
 本文件用于记录 **AI Video Generation** 项目的版本更新历史。
 
+## v0.6.8.5 - 结构重构：Auth / Admin 路由拆分
+
+> 最小、可回滚的结构性拆分，**没有任何功能变更**。
+
+### Refactor
+- 新增 `web/routers/__init__.py`、`web/routers/auth_routes.py`、
+  `web/routers/admin_routes.py`。
+- `web/app.py` 删除原来 `/api/auth/*` 和 `/api/admin/*` 共 11 个路由
+  以及它们的 helpers（`_EMAIL_RE` / `_normalize_email` / `_validate_email`
+  / `_validate_password`）和 pydantic 模型（`AuthCredentials` /
+  `ChangePasswordRequest` / `ChangeEmailRequest`），改为
+  `app.include_router(auth_router)` + `app.include_router(admin_router)`。
+- `web/app.py` 不再使用的 import 已清理：`UserRepository` / `get_auth_db`
+  / `hash_password` / `verify_password` / `login_session` / `logout_session`
+  / `get_current_user` / `user_to_public_dict`；仍在其他路由依赖中使用的
+  `require_active_user` / `require_admin` / `init_auth_db` 保留。
+- `scripts/run_stability_checks.py`：`STABILITY_CHECKS_VERSION` 从
+  `v0.6.8.4` → `v0.6.8.5`，新文件加入 compileall 列表，新增
+  `check_v0685_router_modularization()` source-level 检查。
+
+### 不变（回归不该有任何感知）
+- 所有 `/api/auth/*` 与 `/api/admin/*` 端点路径完全不变。
+- 数据库 schema、`SessionMiddleware` 配置、登陆 cookie、视频生成主链路、
+  Image Video / Seedance / Prompt Mode 完全不动。
+- 启动命令仍然是 `python -m uvicorn web.app:app --host 127.0.0.1 --port 8000`。
+
 ## v0.6.8.4 - TTS metadata bugfix：edge-tts 依赖 + 真实状态透传
 
 > 最小 bugfix。**不动数据库 schema、不重构 pipeline、不动审批 / Seedance 主链路**。

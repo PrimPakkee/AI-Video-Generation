@@ -49,21 +49,14 @@ from web.db import (
 )
 
 # Auth (v0.6.8) — login/register, founder approval, session middleware.
-from web.db import (
-    UserRepository,
-    init_auth_db,
-    get_auth_db,
-)
-from web.auth import (
-    hash_password,
-    verify_password,
-    login_session,
-    logout_session,
-    get_current_user,
-    require_active_user,
-    require_admin,
-    user_to_public_dict,
-)
+# v0.6.8.5: Auth/Admin route definitions and their helpers moved to
+# web/routers/auth_routes.py + web/routers/admin_routes.py. Only the
+# dependency functions still used by Prompt Mode / Video Mode routes
+# stay imported here.
+from web.db import init_auth_db
+from web.auth import require_active_user, require_admin
+from web.routers.auth_routes import router as auth_router
+from web.routers.admin_routes import router as admin_router
 from web.video_providers import MockVideoProvider, ApxSeedanceProvider
 from web.video_providers.apx_seedance_provider import _scrub_api_key as _apx_scrub_api_key
 from web.video_providers.seedance_prompt_compiler import (
@@ -115,6 +108,12 @@ async def startup_event():
 # Mount static files
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+# v0.6.8.5 — register the Auth and Admin routers extracted from this module.
+# Endpoint paths are unchanged (the routers carry the /api/auth and /api/admin
+# prefixes themselves), so frontend fetch URLs continue to work as-is.
+app.include_router(auth_router)
+app.include_router(admin_router)
 
 
 class GenerateRequest(BaseModel):
@@ -220,209 +219,8 @@ async def serve_auth_page():
     return FileResponse(auth_file)
 
 
-# ---------------------------------------------------------------------------
-# v0.6.8 — Auth + admin routes
-# ---------------------------------------------------------------------------
-
-_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
-_MIN_PASSWORD_LEN = 8
-
-
-def _normalize_email(email: str) -> str:
-    return (email or "").strip().lower()
-
-
-def _validate_email(email: str) -> str:
-    e = _normalize_email(email)
-    if not e or not _EMAIL_RE.match(e) or len(e) > 320:
-        raise HTTPException(status_code=400, detail="invalid_email")
-    return e
-
-
-def _validate_password(pw: str) -> str:
-    if not isinstance(pw, str) or len(pw) < _MIN_PASSWORD_LEN or len(pw) > 200:
-        raise HTTPException(status_code=400, detail="invalid_password")
-    return pw
-
-
-class AuthCredentials(BaseModel):
-    email: str = Field(..., min_length=3, max_length=320)
-    password: str = Field(..., min_length=1, max_length=200)
-
-
-class ChangePasswordRequest(BaseModel):
-    old_password: str = Field(..., min_length=1, max_length=200)
-    new_password: str = Field(..., min_length=_MIN_PASSWORD_LEN, max_length=200)
-
-
-class ChangeEmailRequest(BaseModel):
-    current_password: str = Field(..., min_length=1, max_length=200)
-    new_email: str = Field(..., min_length=3, max_length=320)
-
-
-@app.post("/api/auth/register")
-async def auth_register(
-    request: Request,
-    credentials: AuthCredentials,
-    db: Session = Depends(get_auth_db),
-) -> JSONResponse:
-    email = _validate_email(credentials.email)
-    _validate_password(credentials.password)
-
-    if UserRepository.get_by_email(db, email) is not None:
-        # Don't leak existence — but here we explicitly tell the user since
-        # this is an internal friend-share tool and "your email is taken" is
-        # the actually-useful UX.
-        raise HTTPException(status_code=409, detail="email_already_registered")
-
-    user = UserRepository.create_pending(db, email, hash_password(credentials.password))
-    return JSONResponse({
-        "ok": True,
-        "user": user_to_public_dict(user),
-        "message": "registered_pending_approval",
-    })
-
-
-@app.post("/api/auth/login")
-async def auth_login(
-    request: Request,
-    credentials: AuthCredentials,
-    db: Session = Depends(get_auth_db),
-) -> JSONResponse:
-    email = _normalize_email(credentials.email)
-    user = UserRepository.get_by_email(db, email)
-    if user is None or not verify_password(credentials.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="invalid_credentials")
-
-    if user.status == "pending":
-        raise HTTPException(status_code=403, detail="account_pending_approval")
-    if user.status == "rejected":
-        raise HTTPException(status_code=403, detail="account_rejected")
-    if user.status != "active":
-        raise HTTPException(status_code=403, detail="account_inactive")
-
-    login_session(request, user.id)
-    return JSONResponse({"ok": True, "user": user_to_public_dict(user)})
-
-
-@app.post("/api/auth/logout")
-async def auth_logout(request: Request) -> JSONResponse:
-    logout_session(request)
-    return JSONResponse({"ok": True})
-
-
-@app.get("/api/auth/me")
-async def auth_me(user=Depends(get_current_user)) -> JSONResponse:
-    return JSONResponse({"ok": True, "user": user_to_public_dict(user)})
-
-
-@app.post("/api/auth/change-password")
-async def auth_change_password(
-    body: ChangePasswordRequest,
-    user=Depends(get_current_user),
-    db: Session = Depends(get_auth_db),
-) -> JSONResponse:
-    if user.status not in ("active",):
-        raise HTTPException(status_code=403, detail="account_inactive")
-    if not verify_password(body.old_password, user.password_hash):
-        raise HTTPException(status_code=400, detail="old_password_mismatch")
-    if body.new_password == body.old_password:
-        raise HTTPException(status_code=400, detail="new_password_same_as_old")
-    _validate_password(body.new_password)
-    UserRepository.set_password(db, user.id, hash_password(body.new_password))
-    return JSONResponse({"ok": True})
-
-
-@app.post("/api/auth/change-email")
-async def auth_change_email(
-    body: ChangeEmailRequest,
-    user=Depends(require_active_user),
-    db: Session = Depends(get_auth_db),
-) -> JSONResponse:
-    """v0.6.8.1 — let a signed-in user change their own email after
-    re-confirming the current password. Email format validated server-side;
-    collisions return 409.
-    """
-    new_email = _validate_email(body.new_email)
-    if not verify_password(body.current_password, user.password_hash):
-        raise HTTPException(status_code=400, detail="current_password_mismatch")
-    if new_email == user.email:
-        raise HTTPException(status_code=400, detail="new_email_same_as_old")
-    existing = UserRepository.get_by_email(db, new_email)
-    if existing is not None and existing.id != user.id:
-        raise HTTPException(status_code=409, detail="email_already_registered")
-    user.email = new_email
-    db.commit()
-    db.refresh(user)
-    return JSONResponse({"ok": True, "user": user_to_public_dict(user)})
-
-
-@app.get("/api/admin/users")
-async def admin_list_users(
-    admin=Depends(require_admin),
-    db: Session = Depends(get_auth_db),
-) -> JSONResponse:
-    users = UserRepository.list_all(db)
-    return JSONResponse({"ok": True, "users": [user_to_public_dict(u) for u in users]})
-
-
-@app.get("/api/admin/users/pending")
-async def admin_list_pending(
-    admin=Depends(require_admin),
-    db: Session = Depends(get_auth_db),
-) -> JSONResponse:
-    users = UserRepository.list_pending(db)
-    return JSONResponse({"ok": True, "users": [user_to_public_dict(u) for u in users]})
-
-
-@app.post("/api/admin/users/{user_id}/approve")
-async def admin_approve_user(
-    user_id: int,
-    admin=Depends(require_admin),
-    db: Session = Depends(get_auth_db),
-) -> JSONResponse:
-    if user_id == admin.id:
-        raise HTTPException(status_code=400, detail="cannot_modify_self")
-    target = UserRepository.get_by_id(db, user_id)
-    if target is None:
-        raise HTTPException(status_code=404, detail="user_not_found")
-    UserRepository.approve(db, user_id, admin.id)
-    target = UserRepository.get_by_id(db, user_id)
-    return JSONResponse({"ok": True, "user": user_to_public_dict(target)})
-
-
-@app.post("/api/admin/users/{user_id}/reject")
-async def admin_reject_user(
-    user_id: int,
-    admin=Depends(require_admin),
-    db: Session = Depends(get_auth_db),
-) -> JSONResponse:
-    if user_id == admin.id:
-        raise HTTPException(status_code=400, detail="cannot_modify_self")
-    target = UserRepository.get_by_id(db, user_id)
-    if target is None:
-        raise HTTPException(status_code=404, detail="user_not_found")
-    UserRepository.reject(db, user_id)
-    target = UserRepository.get_by_id(db, user_id)
-    return JSONResponse({"ok": True, "user": user_to_public_dict(target)})
-
-
-@app.delete("/api/admin/users/{user_id}")
-async def admin_delete_user(
-    user_id: int,
-    admin=Depends(require_admin),
-    db: Session = Depends(get_auth_db),
-) -> JSONResponse:
-    if user_id == admin.id:
-        raise HTTPException(status_code=400, detail="cannot_modify_self")
-    target = UserRepository.get_by_id(db, user_id)
-    if target is None:
-        raise HTTPException(status_code=404, detail="user_not_found")
-    if target.is_admin:
-        raise HTTPException(status_code=400, detail="cannot_delete_admin")
-    ok = UserRepository.delete_user(db, user_id)
-    return JSONResponse({"ok": bool(ok)})
-
+# Auth + admin routes are defined in web/routers/auth_routes.py and
+# web/routers/admin_routes.py and registered above via app.include_router.
 
 @app.post("/api/generate", response_model=GenerateResponse)
 async def generate_prompt(

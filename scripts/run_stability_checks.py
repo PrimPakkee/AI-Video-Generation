@@ -9,7 +9,7 @@ Usage:
     python scripts/run_stability_checks.py
 """
 
-STABILITY_CHECKS_VERSION = "v0.6.8.4"
+STABILITY_CHECKS_VERSION = "v0.6.8.5"
 
 import sys
 import os
@@ -42,6 +42,10 @@ class StabilityChecker:
             "web/db/video_models.py",
             "web/db/video_repository.py",
             "web/db/video_job_repository.py",
+            # v0.6.8.5: Auth/Admin routers split out of web/app.py.
+            "web/routers/__init__.py",
+            "web/routers/auth_routes.py",
+            "web/routers/admin_routes.py",
             "web/video_providers/__init__.py",
             "web/video_providers/base.py",
             "web/video_providers/mock_provider.py",
@@ -5250,6 +5254,114 @@ class StabilityChecker:
         print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} TTS metadata bugfix checks failed")
         return False
 
+    def check_v0685_router_modularization(self):
+        """v0.6.8.5 — source-level check that the Auth/Admin route split
+        from web/app.py to web/routers/* actually happened and didn't drift.
+
+        This is a structural, read-only check. It does not import the FastAPI
+        app, does not start uvicorn, and does not hit any network. It just
+        verifies the file layout and a handful of textual markers.
+        """
+        print("\n[v0.6.8.5 router modularization]")
+
+        results = []
+
+        def assert_true(cond, msg):
+            results.append((bool(cond), msg))
+
+        try:
+            auth_routes_path = Path("web/routers/auth_routes.py")
+            admin_routes_path = Path("web/routers/admin_routes.py")
+            init_path = Path("web/routers/__init__.py")
+            app_path = Path("web/app.py")
+
+            assert_true(init_path.exists(), "web/routers/__init__.py exists")
+            assert_true(
+                auth_routes_path.exists(), "web/routers/auth_routes.py exists"
+            )
+            assert_true(
+                admin_routes_path.exists(),
+                "web/routers/admin_routes.py exists",
+            )
+
+            app_text = app_path.read_text(encoding="utf-8") if app_path.exists() else ""
+            assert_true(
+                "include_router(auth_router)" in app_text,
+                "web/app.py registers auth_router via include_router",
+            )
+            assert_true(
+                "include_router(admin_router)" in app_text,
+                "web/app.py registers admin_router via include_router",
+            )
+
+            # The old in-app route definitions must be gone — if they
+            # come back, both will respond and one will shadow the other.
+            stale_decorators = [
+                '@app.post("/api/auth/register")',
+                '@app.post("/api/auth/login")',
+                '@app.post("/api/auth/logout")',
+                '@app.get("/api/auth/me")',
+                '@app.post("/api/auth/change-password")',
+                '@app.post("/api/auth/change-email")',
+                '@app.get("/api/admin/users")',
+                '@app.get("/api/admin/users/pending")',
+                '@app.post("/api/admin/users/{user_id}/approve")',
+                '@app.post("/api/admin/users/{user_id}/reject")',
+                '@app.delete("/api/admin/users/{user_id}")',
+            ]
+            for marker in stale_decorators:
+                assert_true(
+                    marker not in app_text,
+                    f"web/app.py no longer defines {marker}",
+                )
+
+            auth_text = auth_routes_path.read_text(encoding="utf-8") if auth_routes_path.exists() else ""
+            assert_true(
+                'APIRouter(prefix="/api/auth"' in auth_text,
+                "auth_routes router prefix is /api/auth",
+            )
+            for sub in ("/register", "/login", "/logout", "/me", "/change-password", "/change-email"):
+                assert_true(
+                    f'"{sub}"' in auth_text,
+                    f"auth_routes defines path {sub}",
+                )
+
+            admin_text = admin_routes_path.read_text(encoding="utf-8") if admin_routes_path.exists() else ""
+            assert_true(
+                'APIRouter(prefix="/api/admin"' in admin_text,
+                "admin_routes router prefix is /api/admin",
+            )
+            for sub in (
+                '"/users"',
+                '"/users/pending"',
+                '"/users/{user_id}/approve"',
+                '"/users/{user_id}/reject"',
+                '"/users/{user_id}"',
+            ):
+                assert_true(
+                    sub in admin_text,
+                    f"admin_routes defines path {sub}",
+                )
+        except Exception as e:
+            self.checks_failed += 1
+            print(f"  [FAIL] check_v0685_router_modularization raised: {e}")
+            return False
+
+        all_ok = True
+        for ok, msg in results:
+            if ok:
+                print(f"  [OK] {msg}")
+            else:
+                all_ok = False
+                print(f"  [FAIL] {msg}")
+        if all_ok:
+            self.checks_passed += 1
+            print(f"\n[OK] {STABILITY_CHECKS_VERSION} router modularization checks passed")
+            return True
+        self.checks_failed += 1
+        print(f"\n[FAIL] {STABILITY_CHECKS_VERSION} router modularization checks failed")
+        return False
+
     def check_required_files(self):
         """Check required files exist"""
         import glob
@@ -5353,6 +5465,7 @@ def main():
         checker.check_v064_image2_integration()
         checker.check_v065_bgm_integration()
         checker.check_v0684_tts_metadata()
+        checker.check_v0685_router_modularization()
         checker.check_git_status_hygiene()
         checker.check_database_integrity()
     except Exception as e:
